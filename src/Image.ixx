@@ -5,7 +5,8 @@
 #include <cstdio>
 #include <filesystem>
 
-export module RawImage;
+export module Image;
+
 struct my_error_mgr {
 	struct jpeg_error_mgr pub;
 	jmp_buf setjmp_buffer;

@@ -1,5 +1,3 @@
-#include <algorithm>
-#include <format>
 #include <memory>
 #include <vector>
 #include <iostream>
@@ -8,7 +6,6 @@
 #include <format>
 #include <thread>
 #include <filesystem>
-#include <cstdio>
 
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>
@@ -16,67 +13,22 @@
 
 #include <boost/lockfree/spsc_queue.hpp>
 
+import TexturePool;
+import Image;
 export module UserInterface;
-import RawImage;
-
-export struct GLTexturePool
-{
-private:
-	size_t size;
-	size_t capacity;
-	GLuint* textures;
-
-public:
-	GLTexturePool(size_t capacity)
-		: size(0), capacity(capacity), textures(new GLuint[capacity])
-	{
-		glGenTextures(capacity, textures);
-	}
-	
-	GLTexturePool(GLTexturePool&&) = default;
-	GLTexturePool(const GLTexturePool&) = delete;
-
-	~GLTexturePool()
-	{
-		glDeleteTextures(capacity, textures);
-		delete[] textures;
-	}
-
-	void Bind(int index)
-	{
-		if (index < 0)
-		{
-			[[unlikely]]
-			throw std::runtime_error("negative index");
-		}
-		glBindTexture(GL_TEXTURE_2D, textures[index]);
-	}
-
-	GLuint AddTexture(const Image& image)
-	{
-		if (size >= capacity)
-		{
-			[[unlikely]]
-			throw std::runtime_error("Max capacity reached for texture pool");
-		}
-
-		glBindTexture(GL_TEXTURE_2D, textures[size]);
-
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);	
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, image.width, image.height, 0, GL_RGB, GL_UNSIGNED_BYTE, image.data);
-		return textures[size++];
-	}
-};
 
 export class Window
 {
 protected:
 	static void window_size_callback(GLFWwindow* window, int width, int height)
 	{
+		Window* win = (Window*)glfwGetWindowUserPointer(window);
+		if (win != nullptr)
+		{
+			win->width = width;
+			win->height = height;
+		}
+
 		glViewport(0, 0, width, height);
 		glMatrixMode(GL_PROJECTION);
 		glLoadIdentity();
@@ -107,10 +59,12 @@ private:
 	static Window* gWindow;
 
 	GLFWwindow* const window;
+	int width;
+	int height;
 	int scroll;
 	double zoom;
 
-	GLFWwindow* InitializeWindow(int width, int height)
+	GLFWwindow* InitializeWindow(int width, int height, Window* containerWindow)
 	{
 		if (!glfwInit()) {
 			[[unlikely]]
@@ -123,6 +77,8 @@ private:
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
 
 		GLFWwindow* window = glfwCreateWindow(width, height, "ImageViewer", NULL, NULL);
+		
+		glfwSetWindowUserPointer(window, (void*)containerWindow);
 
 		glfwMakeContextCurrent(window);
 
@@ -143,9 +99,8 @@ private:
 
 
 	Window(int width, int height)
-		: window(InitializeWindow(width, height)), scroll(0), zoom(1.0)
+		: window(InitializeWindow(width, height, this)), width(width), height(height), scroll(0), zoom(1.0)
 	{
-		glfwSetWindowUserPointer(window, (void*)this);
 	}
 
 public:
