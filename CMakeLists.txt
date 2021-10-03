@@ -32,7 +32,7 @@ target_sources(
             src/main.cpp
             src/Window.ixx
             src/TexturePool.ixx
-            src/RawImage.ixx
+            src/Image.ixx
             third-party/glad/src/glad.c
             third-party/glad/include/glad/glad.h
 )

@@ -13,7 +13,7 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
-import RawImage;
+import Image;
 import UserInterface;
 
 template <class T>
