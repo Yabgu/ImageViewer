@@ -16,6 +16,8 @@ endif()
 find_package(JPEG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
+set(Boost_USE_STATIC_LIBS ON)
+find_package(Boost REQUIRED COMPONENTS thread)
 
 # Main executable
 if(WIN32)
@@ -27,7 +29,10 @@ endif()
 target_sources(
     ImageViewer
         PRIVATE
-            main.cpp
+            src/main.cpp
+            src/Window.ixx
+            src/TexturePool.ixx
+            src/RawImage.ixx
             third-party/glad/src/glad.c
             third-party/glad/include/glad/glad.h
 )
@@ -38,6 +43,7 @@ target_include_directories(
     ImageViewer
         PRIVATE
             ${JPEG_INCLUDE_DIR}
+            ${Boost_INCLUDE_DIRS}
             third-party/glad/include
 )
 
@@ -45,5 +51,6 @@ target_link_libraries(
     ImageViewer
         PRIVATE
             glfw
+            Boost::thread
             ${JPEG_LIBRARIES}
 )
