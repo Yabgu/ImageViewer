@@ -62,8 +62,8 @@ public:
 
 		glBindTexture(GL_TEXTURE_2D, textures[size]);
 
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);	
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);	
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
@@ -82,6 +82,10 @@ protected:
 		glLoadIdentity();
 		glOrtho(0, width, height, 0, -1, 1);
 
+		glMatrixMode(GL_TEXTURE);
+		glLoadIdentity();
+		glScalef(1.0/256, 1.0/256, 1.0);
+
 		glMatrixMode(GL_MODELVIEW);
 	}
 
@@ -91,16 +95,26 @@ protected:
 		//draw(window);
 	}
 
+
+	static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
+	{
+		Window* win = (Window*)glfwGetWindowUserPointer(window);
+		win->scroll = std::min(std::max(win->scroll - (int)(yoffset * 16), -75), 400);
+		win->zoom = 100.0 / (100 + win->scroll);
+	}
+
 private:
 	static Window* gWindow;
 
 	GLFWwindow* const window;
+	int scroll;
+	double zoom;
 
 	GLFWwindow* InitializeWindow(int width, int height)
 	{
 		if (!glfwInit()) {
 			[[unlikely]]
-			std::cerr << "glfwInit failed" << std::endl;
+			throw std::runtime_error("glfwInit failed");
 			return nullptr;
 		}
 
@@ -113,27 +127,31 @@ private:
 		glfwMakeContextCurrent(window);
 
 		glfwSetWindowSizeCallback(window, window_size_callback);
+		glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+		glfwSetScrollCallback(window, scroll_callback);
+
 		if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
 		{
 			[[unlikely]]
-			std::cerr << "gladLoadGLLoader failed" << std::endl;
-			return nullptr;
+			throw std::runtime_error("gladLoadGLLoader failed");
 		}
+
+		// Resize the window
 		window_size_callback(window, width, height);
-		glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 		return window;
 	}
 
 
 	Window(int width, int height)
-		: window(InitializeWindow(width, height))
+		: window(InitializeWindow(width, height)), scroll(0), zoom(1.0)
 	{
+		glfwSetWindowUserPointer(window, (void*)this);
 	}
 
 public:
 	static constexpr int PreferredTextureWidth = 256;
 	static constexpr int PreferredTextureHeight = 256;
-	static constexpr int PreferredRedundantBorder = 1;
+	static constexpr int PreferredRedundantBorder = 2;
 
 	static Window* Initialize()
 	{
@@ -150,21 +168,6 @@ public:
 		delete gWindow;
 		gWindow = nullptr;
 		glfwTerminate();
-	}
-
-	GLuint MakeTexture(const Image& image)
-	{
-		GLuint texture;
-		glGenTextures(1, &texture);
-		glBindTexture(GL_TEXTURE_2D, texture);
-
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, image.width, image.height, 0, GL_RGB, GL_UNSIGNED_BYTE, image.data);
-		return texture;
 	}
 
 	int CalculateNumberOfSlices(const unsigned int size, const unsigned int segment, const unsigned int redundantBorder)
@@ -242,13 +245,14 @@ public:
 			for (auto x = 0; x < 4; ++x)
 			{
 				glLoadIdentity();
+				glScaled(zoom, zoom, 0);
 				glTranslated((double)x * (PreferredTextureWidth - PreferredRedundantBorder), (double)y * (PreferredTextureHeight - PreferredRedundantBorder), 0.0);
 				pool.Bind(x + y * 4);
 				glBegin(GL_TRIANGLE_STRIP);
-				glTexCoord2f(0.0f, 1.0f); glVertex3f(0.0f, PreferredTextureHeight, 0.0f);
-				glTexCoord2f(1.0f, 1.0f); glVertex3f(PreferredTextureWidth, PreferredTextureHeight, 0.0f);
-				glTexCoord2f(0.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f);
-				glTexCoord2f(1.0f, 0.0f); glVertex3f(PreferredTextureWidth, 0.0f, 0.0f);
+				glTexCoord2i(1, 255); glVertex2i(1, PreferredTextureHeight-1);
+				glTexCoord2i(255, 255); glVertex2i(PreferredTextureWidth-1, PreferredTextureHeight-1);
+				glTexCoord2i(1, 1); glVertex2i(1, 1);
+				glTexCoord2i(255, 1); glVertex2i(PreferredTextureWidth-1, 1);
 				glEnd();
 			}
 		}
