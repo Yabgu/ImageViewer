@@ -8,6 +8,7 @@
 #include <thread>
 #include <filesystem>
 #include <cstdio>
+#include <regex>
 
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>
@@ -26,7 +27,7 @@ Image* ProcessInput(int argc, T* argv[])
 
 	std::filesystem::path path(argv[argc-1]);
 	auto extension = path.extension().string();
-	if (extension.compare(".jpeg") != 0 && extension.compare(".jpg") != 0)
+	if (!std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex::icase)))
 	{
 		[[unlikely]]
 		throw std::runtime_error("Only jpeg format is supported now");
