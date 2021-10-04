@@ -25,6 +25,13 @@ Image* ProcessInput(int argc, T* argv[])
 	}
 
 	std::filesystem::path path(argv[argc-1]);
+	auto extension = path.extension().string();
+	if (extension.compare(".jpeg") != 0 && extension.compare(".jpg") != 0)
+	{
+		[[unlikely]]
+		throw std::runtime_error("Only jpeg format is supported now");
+	}
+
 	return Image::FromFile(path);
 }
 
@@ -44,8 +51,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 int main(int argc, char* argv[])
 {
 #endif
-	Window* window;
-	std::unique_ptr<GLTexturePool> texturePool;
+	std::unique_ptr<Window> window;
 	std::unique_ptr<Image> image;
 
 	#pragma omp parallel num_threads(2)
@@ -56,33 +62,36 @@ int main(int argc, char* argv[])
 			try
 			{
 				Image* imageLocal = ProcessInput(argc, argv);
-				image.reset(imageLocal);
+				if (imageLocal != nullptr)
+				{
+					image.reset(imageLocal);
+				}
 			}
 			catch (std::exception& ex)
 			{
 				std::cerr << "Failed to process the request : " << ex.what() << std::endl;
 			}
 
-			window = Window::Initialize();
+			window.reset(new Window(640, 640));
 		}
 	}
-	if (window == nullptr) {
-		[[unlikely]]
-		return EXIT_FAILURE;
+
+	if (image != nullptr)
+	{
+		static constexpr int PreferredTextureWidth = 256;
+		static constexpr int PreferredTextureHeight = 256;
+		static constexpr int PreferredRedundantBorder = 2;
+		window->LoadTextures(
+			*image,
+			PreferredTextureWidth,
+			PreferredTextureHeight,
+			PreferredRedundantBorder);
+
+		image.reset();
 	}
-	glEnable(GL_TEXTURE_2D);
 
-	GLTexturePool *pool = window->MakeTexturesFromRaw(
-		*image,
-		Window::PreferredTextureWidth,
-		Window::PreferredTextureHeight,
-		Window::PreferredRedundantBorder);
-
-	image.reset();
-
-	window->Main(*pool);
-
-	delete pool;
+	window->Main();
+	window.reset();
 	Window::Deinitialize();
 	return 0;
 }
