@@ -23,6 +23,7 @@ private:
 
 	static int CalculateNumberOfSlices(const int textureSize, const int segmentSize, const int redundantBorderSize)
 	{
+		// TODO fix this problem without iteration
 		int slices = (textureSize + segmentSize + redundantBorderSize * 2 - 1) / segmentSize;
 		while (slices * (segmentSize - redundantBorderSize) < textureSize)
 		{
