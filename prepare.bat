@@ -5,16 +5,17 @@ md %~dp0third-party
 rem This actually saves a lot of space and it usually is faster this way
 pushd %~dp0third-party
 
+set VCPKG_DISABLE_METRICS=1
+
 if not exist vcpkg\vcpkg.exe (
-	mkdir vcpkg
-	compact /c vcpkg /i /Q
+    mkdir vcpkg
+    compact /c vcpkg /i /Q
     git clone https://github.com/microsoft/vcpkg
-    vcpkg\bootstrap-vcpkg.bat
+    cmd /C vcpkg\bootstrap-vcpkg.bat
 )
 
+vcpkg\vcpkg install glad
 vcpkg\vcpkg install glfw3
-rem Glad package from vcpkg tries to load all OpenGL functionalities which we don't need at the time
-rem vcpkg\vcpkg install glad
 vcpkg\vcpkg install boost
 vcpkg\vcpkg install libjpeg-turbo
 popd
