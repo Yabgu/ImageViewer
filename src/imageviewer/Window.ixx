@@ -11,7 +11,6 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
-
 import TexturePool;
 import Image;
 export module UserInterface;
@@ -42,12 +41,10 @@ protected:
 		//draw(window);
 	}
 
-
 	static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 	{
 		Window* win = (Window*)glfwGetWindowUserPointer(window);
 		win->scroll = std::min(std::max(win->scroll - (int)(yoffset * 16), -75), 400);
-		win->zoom = 100.0 / (100 + win->scroll);
 	}
 
 private:
@@ -55,23 +52,16 @@ private:
 	int width;
 	int height;
 	int scroll;
-	double zoom;
 	std::unique_ptr<TextureCollection> textureCollection;
 
 	static GLFWwindow* InitializeWindow(int width, int height, Window* containerWindow)
 	{
-		if (!glfwInit()) {
-			[[unlikely]]
-			throw std::runtime_error("glfwInit failed");
-			return nullptr;
-		}
-
 		// Check that the window was successfully created
-		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 1);
+		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
 
 		GLFWwindow* glfwWindow = glfwCreateWindow(width, height, "ImageViewer", NULL, NULL);
-		
+
 		glfwSetWindowUserPointer(glfwWindow, (void*)containerWindow);
 
 		glfwMakeContextCurrent(glfwWindow);
@@ -82,8 +72,7 @@ private:
 
 		if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
 		{
-			[[unlikely]]
-			throw std::runtime_error("gladLoadGLLoader failed");
+			[[unlikely]] throw std::runtime_error("gladLoadGLLoader failed");
 		}
 
 		glEnable(GL_TEXTURE_2D);
@@ -94,6 +83,13 @@ private:
 	}
 
 public:
+	static void Initialize()
+	{
+		if (!glfwInit())
+		{
+			[[unlikely]] throw std::runtime_error("glfwInit failed");
+		}
+	}
 
 	static void Deinitialize()
 	{
@@ -101,7 +97,7 @@ public:
 	}
 
 	Window(int width, int height)
-		: glfwWindow(InitializeWindow(width, height, this)), width(width), height(height), scroll(0), zoom(1.0)
+		: glfwWindow(InitializeWindow(width, height, this)), width(width), height(height), scroll(0)
 	{
 	}
 
@@ -112,7 +108,8 @@ public:
 		const int redundantBorderSize)
 	{
 		this->textureCollection.reset(new TextureCollection(image, segmentWidth, segmentHeight, redundantBorderSize));
-		zoom = std::min<double>((double)width / textureCollection->width, (double)height / textureCollection->height);
+		double zoom = std::min<double>((double)width / textureCollection->width, (double)height / textureCollection->height);
+		this->scroll = 100.0 / zoom - 100;
 	}
 
 	void Draw()
@@ -122,20 +119,20 @@ public:
 		glLoadIdentity();
 		if (textureCollection != nullptr)
 		{
+			double zoom = 100.0 / (100 + this->scroll);
 			glTranslated((width - textureCollection->width * zoom) * 0.5, (height - textureCollection->height * zoom) * 0.5, 0);
 			glScaled(zoom, zoom, 0);
 			textureCollection->Draw();
 		}
 		glfwSwapBuffers(glfwWindow);
 	}
-	
+
 	void Main()
 	{
 		glfwMakeContextCurrent(this->glfwWindow);
 		while (!glfwWindowShouldClose(this->glfwWindow))
 		{
-			[[likely]]
-			glfwWaitEventsTimeout(1.0 / 60);
+			[[likely]] glfwWaitEventsTimeout(1.0 / 60);
 			Draw();
 		}
 	}

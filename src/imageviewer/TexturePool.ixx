@@ -12,6 +12,7 @@ export struct TextureCollection
 public:
 	const int width;
 	const int height;
+
 private:
 	const int segmentWidth;
 	const int segmentHeight;
@@ -32,13 +33,12 @@ private:
 		return slices;
 	}
 
-	int GetTextureIndex(int column, int row)
+	inline int GetTextureIndex(int column, int row) const
 	{
 		return column + row * numberOfVerticalSlices;
 	}
 
 public:
-
 	TextureCollection(
 		const Image& image,
 		const int segmentWidth,
@@ -51,20 +51,20 @@ public:
 		redundantBorderSize(redundantBorderSize),
 		numberOfVerticalSlices(CalculateNumberOfSlices(width, segmentWidth, redundantBorderSize)),
 		numberOfHorizontalSlices(CalculateNumberOfSlices(height, segmentHeight, redundantBorderSize)),
-		capacity((size_t)numberOfHorizontalSlices * numberOfVerticalSlices),
+		capacity((size_t)numberOfHorizontalSlices* numberOfVerticalSlices),
 		textures(new GLuint[capacity])
 	{
 		glGenTextures(capacity, textures);
 
 		std::vector<Image*> subsection(capacity);
 
-		#pragma omp parallel shared(subsection, image)
+#pragma omp parallel shared(subsection, image)
 		{
-			#pragma omp master
+#pragma omp master
 			{
-				#pragma omp task
+#pragma omp task
 				{
-					#pragma omp parallel for ordered collapse(2)
+#pragma omp parallel for ordered collapse(2)
 					for (auto y = 0; y < numberOfHorizontalSlices; ++y)
 					{
 						for (auto x = 0; x < numberOfVerticalSlices; ++x)
@@ -101,8 +101,7 @@ public:
 	{
 		if (index < 0)
 		{
-			[[unlikely]]
-			throw std::runtime_error("negative index");
+			[[unlikely]] throw std::runtime_error("negative index");
 		}
 		glBindTexture(GL_TEXTURE_2D, textures[index]);
 	}
@@ -111,13 +110,12 @@ public:
 	{
 		if (index >= capacity)
 		{
-			[[unlikely]]
-			throw std::runtime_error("Max capacity reached for texture pool");
+			[[unlikely]] throw std::runtime_error("Max capacity reached for texture pool");
 		}
 
 		glBindTexture(GL_TEXTURE_2D, textures[index]);
 
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);	
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -153,10 +151,14 @@ public:
 
 				Bind(x + y * numberOfVerticalSlices);
 				glBegin(GL_TRIANGLE_STRIP);
-				glTexCoord2i(textureLeft, textureBottom); glVertex2i(left, bottom);
-				glTexCoord2i(textureRight, textureBottom); glVertex2i(right, bottom);
-				glTexCoord2i(textureLeft, textureTop); glVertex2i(left, top);
-				glTexCoord2i(textureRight, textureTop); glVertex2i(right, top);
+				glTexCoord2i(textureLeft, textureBottom);
+				glVertex2i(left, bottom);
+				glTexCoord2i(textureRight, textureBottom);
+				glVertex2i(right, bottom);
+				glTexCoord2i(textureLeft, textureTop);
+				glVertex2i(left, top);
+				glTexCoord2i(textureRight, textureTop);
+				glVertex2i(right, top);
 				glEnd();
 			}
 		}

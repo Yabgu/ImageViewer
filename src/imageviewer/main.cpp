@@ -20,17 +20,16 @@ import UserInterface;
 template <class T>
 Image* ProcessInput(int argc, T* argv[])
 {
-	if (argc <= 0) {
-		[[unlikely]]
-		throw std::runtime_error("Argc cannot be less than zero");
+	if (argc <= 0)
+	{
+		[[unlikely]] throw std::runtime_error("Argc cannot be less than zero");
 	}
 
-	std::filesystem::path path(argv[argc-1]);
+	std::filesystem::path path(argv[argc - 1]);
 	auto extension = path.extension().string();
 	if (!std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex::icase)))
 	{
-		[[unlikely]]
-		throw std::runtime_error("Only jpeg format is supported now");
+		[[unlikely]] throw std::runtime_error("Only jpeg format is supported now");
 	}
 
 	return Image::FromFile(path);
@@ -40,14 +39,6 @@ Image* ProcessInput(int argc, T* argv[])
 #include <Windows.h>
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
 {
-	LPWSTR *argv;
-	int argc;
-
-	argv = CommandLineToArgvW(pCmdLine, &argc);
-	if(argv == nullptr)
-	{
-		return EXIT_FAILURE;
-	}
 #else
 int main(int argc, char* argv[])
 {
@@ -55,13 +46,24 @@ int main(int argc, char* argv[])
 	std::unique_ptr<Window> window;
 	std::unique_ptr<Image> image;
 
-	#pragma omp parallel num_threads(2)
+#pragma omp parallel num_threads(2)
 	{
-		#pragma omp master
+#pragma omp master
 		{
-			#pragma omp task
+#pragma omp task
 			try
 			{
+#if defined(_WIN32)
+				LPWSTR* argv;
+				int argc;
+
+				argv = CommandLineToArgvW(pCmdLine, &argc);
+				if (argv == nullptr)
+				{
+					argc = 0;
+				}
+#endif
+
 				Image* imageLocal = ProcessInput(argc, argv);
 				if (imageLocal != nullptr)
 				{
@@ -73,6 +75,7 @@ int main(int argc, char* argv[])
 				std::cerr << "Failed to process the request : " << ex.what() << std::endl;
 			}
 
+			Window::Initialize();
 			window.reset(new Window(640, 640));
 		}
 	}

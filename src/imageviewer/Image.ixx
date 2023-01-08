@@ -7,19 +7,21 @@
 
 export module Image;
 
-struct my_error_mgr {
+struct my_error_mgr
+{
 	struct jpeg_error_mgr pub;
 	jmp_buf setjmp_buffer;
 };
 
-METHODDEF(void) my_error_exit(j_common_ptr cinfo)
+METHODDEF(void)
+my_error_exit(j_common_ptr cinfo)
 {
 	/* cinfo->err really points to a my_error_mgr struct, so coerce pointer */
 	struct my_error_mgr* myerr = (struct my_error_mgr*)cinfo->err;
 
 	/* Always display the message. */
 	/* We could postpone this until after returning, if we chose. */
-	(*cinfo->err->output_message) (cinfo);
+	(*cinfo->err->output_message)(cinfo);
 
 	/* Return control to the setjmp point */
 	longjmp(myerr->setjmp_buffer, 1);
@@ -32,8 +34,7 @@ private:
 	{
 		if (width <= 0 || height <= 0 || componentsPerPixel <= 0)
 		{
-			[[unlikely]]
-			throw std::runtime_error("Size cannot be zero or negative");
+			[[unlikely]] throw std::runtime_error("Size cannot be zero or negative");
 		}
 		return width * height * componentsPerPixel;
 	}
@@ -48,7 +49,16 @@ public:
 
 	Image(Image&&) = default;
 
-	Image(const Image&) = delete;
+	Image(const Image& o)
+		: width(o.width),
+		height(o.height),
+		componentsPerPixel(o.componentsPerPixel),
+		stride(o.stride),
+		size(o.size),
+		data(new uint8_t[o.size])
+	{
+		std::copy(o.data, o.data + o.size, data);
+	}
 
 	Image(const int width, const int height, const int componentsPerPixel)
 		: width(width),
@@ -67,29 +77,27 @@ public:
 
 	static Image* FromFile(const std::filesystem::path& filePath)
 	{
-		#ifdef WIN32
+#ifdef WIN32
 		FILE* infile = nullptr;
 		auto err = _wfopen_s(&infile, filePath.native().c_str(), L"rb");
-		#else
+#else
 		FILE* infile = ::fopen((const char*)filePath.u8string().c_str(), "rb");
-		#endif
-		if (infile == nullptr) {
+#endif
+		if (infile == nullptr)
+		{
 			fprintf(stderr, "can't open %s\n", filePath.u8string().c_str());
-			[[unlikely]]
-			throw std::runtime_error("Cannot open file");
+			[[unlikely]] throw std::runtime_error("Cannot open file");
 		}
 
 		struct my_error_mgr jerr = {
 			.pub = {
-				.error_exit = my_error_exit
-			}
-		};
+				.error_exit = my_error_exit} };
 
 		struct jpeg_decompress_struct cinfo = {
-			.err = jpeg_std_error(&jerr.pub)
-		};
+			.err = jpeg_std_error(&jerr.pub) };
 
-		if (setjmp(jerr.setjmp_buffer)) {
+		if (setjmp(jerr.setjmp_buffer))
+		{
 			jpeg_destroy_decompress(&cinfo);
 			fclose(infile);
 			throw std::runtime_error("Jpeg decode failed");
@@ -98,7 +106,8 @@ public:
 		jpeg_create_decompress(&cinfo);
 		jpeg_stdio_src(&cinfo, infile);
 
-		(void)jpeg_read_header(&cinfo, TRUE);
+		jpeg_read_header(&cinfo, TRUE);
+
 		(void)jpeg_start_decompress(&cinfo);
 		int row_stride = cinfo.output_width * cinfo.output_components;
 
@@ -108,7 +117,8 @@ public:
 
 		Image* res = new Image(cinfo.output_width, cinfo.output_height, cinfo.output_components);
 
-		while (cinfo.output_scanline < cinfo.output_height) {
+		while (cinfo.output_scanline < cinfo.output_height)
+		{
 			auto current_scanline = cinfo.output_scanline;
 			auto readlines = jpeg_read_scanlines(&cinfo, buffer, MaxLinesToRead);
 			if (readlines == 0)
@@ -130,8 +140,7 @@ public:
 	{
 		if (width < 0 || height < 0)
 		{
-			[[unlikely]]
-			throw std::runtime_error("");
+			[[unlikely]] throw std::runtime_error("");
 		}
 
 		Image* res = new Image(width, height, componentsPerPixel);
@@ -139,8 +148,7 @@ public:
 
 		if (-x >= width || x >= this->width || -y >= height || y >= this->height)
 		{
-			[[unlikely]]
-			return res;
+			[[unlikely]] return res;
 		}
 
 		const int destX = std::max<int>(-x, 0);
