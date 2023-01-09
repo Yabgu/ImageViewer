@@ -3,10 +3,10 @@ export module media;
 
 namespace media
 {
-    export class Correspondance // Buffer, Transaction, Operation, shader
+    export class Correspondence // Buffer, Transaction, Operation, shader
     {
     public:
-        virtual ~Correspondance() = default;
+        virtual ~Correspondence() = default;
         virtual void correspond() = 0;
     };
 
