@@ -7,22 +7,23 @@ namespace media
     {
     public:
         virtual ~Correspondence() = default;
-        virtual void correspond() = 0;
     };
 
-    export class Corresponder // String builder, transaction builder, shader compiler
-    {
-    public:
-        virtual ~Corresponder() = default;
-    };
-
-    export class View // File, screen, buffer, ....
+    export class View // File, screen, image, ....
     {
     public:
         virtual ~View() = default;
-
-        virtual void sync() = 0;
     };
+
+    // StringFormatter, TransactionBuilder, ImageGenerator
+    export class Corresponder
+    {
+    public:
+        virtual ~Corresponder() = default;
+
+        virtual void interpret(Correspondence&) = 0;
+    };
+
 
     export template <class View, class Corresponder>
     class Scene
