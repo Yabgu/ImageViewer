@@ -1,3 +1,6 @@
-install/**
-third-party/vcpkg/**
-build/**
+/install
+/third-party
+/build
+
+# Added by cargo
+/target
