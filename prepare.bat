@@ -17,7 +17,6 @@ if not exist vcpkg\vcpkg.exe (
 
 vcpkg\vcpkg install glad
 vcpkg\vcpkg install glfw3
-vcpkg\vcpkg install boost
 vcpkg\vcpkg install libjpeg-turbo
 popd
 
@@ -26,7 +25,7 @@ set CMAKE_TOOLCHAIN_FILE=%~dp0third-party\vcpkg\scripts\buildsystems\vcpkg.cmake
 md %~dp0build
 compact /c "%~dp0build" /i /Q
 pushd build
-call :CALL_CMAKE .. -DCMAKE_TOOLCHAIN_FILE="%CMAKE_TOOLCHAIN_FILE%" && cmake --build .
+call :CALL_CMAKE .. -DCMAKE_TOOLCHAIN_FILE="%CMAKE_TOOLCHAIN_FILE%" && call :CALL_CMAKE --build .
 popd
 goto :EOF
 

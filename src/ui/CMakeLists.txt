@@ -14,8 +14,7 @@ endif()
 find_package(JPEG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
-set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost REQUIRED COMPONENTS thread)
+
 
 add_library(ImageInterface)
 
@@ -31,7 +30,6 @@ target_include_directories(
     ImageInterface
         PRIVATE
             ${JPEG_INCLUDE_DIR}
-            ${Boost_INCLUDE_DIRS}
 )
 
 target_link_libraries(
@@ -39,6 +37,5 @@ target_link_libraries(
         PRIVATE
             glfw
             glad::glad
-            Boost::thread
             JPEG::JPEG
 )
