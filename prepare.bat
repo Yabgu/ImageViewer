@@ -3,6 +3,8 @@ setlocal
 
 set VCPKG_DEFAULT_TRIPLET=x64-windows
 md %~dp0third-party
+compact /c "%~dp0third-party" /i /Q
+
 rem This actually saves a lot of space and it usually is faster this way
 pushd %~dp0third-party
 
