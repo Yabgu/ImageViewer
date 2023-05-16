@@ -13,7 +13,7 @@ struct my_error_mgr
 	jmp_buf setjmp_buffer;
 };
 
-METHODDEF(void)
+EXTERN(void)
 my_error_exit(j_common_ptr cinfo)
 {
 	/* cinfo->err really points to a my_error_mgr struct, so coerce pointer */
