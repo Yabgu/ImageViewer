@@ -140,7 +140,7 @@ public:
 	{
 		if (width < 0 || height < 0)
 		{
-			[[unlikely]] throw std::runtime_error("");
+			[[unlikely]] throw std::runtime_error("argument error, width and height cannot be negative");
 		}
 
 		Image* res = new Image(width, height, componentsPerPixel);

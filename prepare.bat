@@ -1,12 +1,17 @@
 @echo off
 setlocal
 
+pushd %~dp0..
+set BUILD_ROOT_DIR=%CD%
+popd
+
 set VCPKG_DEFAULT_TRIPLET=x64-windows
-md %~dp0third-party
-compact /c "%~dp0third-party" /i /Q
+
+md %BUILD_ROOT_DIR%\third-party
+compact /c "%BUILD_ROOT_DIR%\third-party" /i /Q
 
 rem This actually saves a lot of space and it usually is faster this way
-pushd %~dp0third-party
+pushd %BUILD_ROOT_DIR%\third-party
 
 set VCPKG_DISABLE_METRICS=1
 
@@ -17,17 +22,16 @@ if not exist vcpkg\vcpkg.exe (
     cmd /C vcpkg\bootstrap-vcpkg.bat
 )
 
-vcpkg\vcpkg install glad
-vcpkg\vcpkg install glfw3
-vcpkg\vcpkg install libjpeg-turbo
+for %%i in (glad glfw3 libjpeg-turbo nanogui) do vcpkg\vcpkg install %%i
+
 popd
 
-set CMAKE_TOOLCHAIN_FILE=%~dp0third-party\vcpkg\scripts\buildsystems\vcpkg.cmake
+set CMAKE_TOOLCHAIN_FILE=%BUILD_ROOT_DIR%\third-party\vcpkg\scripts\buildsystems\vcpkg.cmake
 
-md %~dp0build
-compact /c "%~dp0build" /i /Q
-pushd build
-call :CALL_CMAKE .. -DCMAKE_TOOLCHAIN_FILE="%CMAKE_TOOLCHAIN_FILE%" && call :CALL_CMAKE --build .
+md "%BUILD_ROOT_DIR%\image-viewer-build"
+compact /c "%BUILD_ROOT_DIR%\image-viewer-build" /i /Q
+pushd "%BUILD_ROOT_DIR%\image-viewer-build"
+call :CALL_CMAKE %~dp0 -DCMAKE_TOOLCHAIN_FILE="%CMAKE_TOOLCHAIN_FILE%" && call :CALL_CMAKE --build .
 popd
 goto :EOF
 
