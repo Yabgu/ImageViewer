@@ -4,6 +4,7 @@
 #include <setjmp.h>
 #include <cstdio>
 #include <filesystem>
+#include <regex>
 
 export module Image;
 
@@ -75,19 +76,25 @@ public:
 		delete[] data;
 	}
 
-	static Image* FromFile(const std::filesystem::path& filePath)
+	static FILE* OpenFile(const std::filesystem::path& filePath)
 	{
 #ifdef WIN32
-		FILE* infile = nullptr;
-		auto err = _wfopen_s(&infile, filePath.native().c_str(), L"rb");
+		FILE* file = nullptr;
+		auto err = _wfopen_s(&file, filePath.native().c_str(), L"rb");
 #else
-		FILE* infile = ::fopen((const char*)filePath.u8string().c_str(), "rb");
+		FILE* file = ::fopen((const char*)filePath.u8string().c_str(), "rb");
 #endif
-		if (infile == nullptr)
+		if (file == nullptr)
 		{
-			fprintf(stderr, "can't open %s\n", filePath.u8string().c_str());
-			[[unlikely]] throw std::runtime_error("Cannot open file");
+			[[unlikely]] throw std::runtime_error(
+				std::format("can't open file: {}", filePath.string()));
 		}
+		return file;
+	}
+
+	static Image FromFileJpeg(const std::filesystem::path& filePath)
+	{
+		std::shared_ptr<FILE> infile(OpenFile(filePath), ::fclose);
 
 		struct my_error_mgr jerr = {
 			.pub = {
@@ -99,12 +106,11 @@ public:
 		if (setjmp(jerr.setjmp_buffer))
 		{
 			jpeg_destroy_decompress(&cinfo);
-			fclose(infile);
 			throw std::runtime_error("Jpeg decode failed");
 		}
 
 		jpeg_create_decompress(&cinfo);
-		jpeg_stdio_src(&cinfo, infile);
+		jpeg_stdio_src(&cinfo, infile.get());
 
 		jpeg_read_header(&cinfo, TRUE);
 
@@ -115,7 +121,7 @@ public:
 
 		JSAMPARRAY buffer = (*cinfo.mem->alloc_sarray)((j_common_ptr)&cinfo, JPOOL_IMAGE, row_stride, MaxLinesToRead);
 
-		Image* res = new Image(cinfo.output_width, cinfo.output_height, cinfo.output_components);
+		Image res(cinfo.output_width, cinfo.output_height, cinfo.output_components);
 
 		while (cinfo.output_scanline < cinfo.output_height)
 		{
@@ -127,13 +133,34 @@ public:
 				// TODO: Handle the error!
 				break;
 			}
-			::memcpy(&res->data[current_scanline * row_stride], buffer[0], row_stride * readlines);
+			::memcpy(&res.data[current_scanline * row_stride], buffer[0], row_stride * readlines);
 		}
 
 		(void)jpeg_finish_decompress(&cinfo);
 		jpeg_destroy_decompress(&cinfo);
-		fclose(infile);
 		return res;
+	}
+
+	static Image FromFilePng(const std::filesystem::path& filePath)
+	{
+		return Image(0, 0, 0);
+	}
+
+	Image FromFile(const std::filesystem::path& path)
+	{
+		auto extension = path.extension().string();
+		if (std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex::icase)))
+		{
+			return FromFileJpeg(path);
+		}
+		else if (std::regex_match(extension, std::regex("\\.png", std::regex::icase)))
+		{
+			return FromFilePng(path);
+		}
+		else
+		{
+			[[unlikely]] throw std::runtime_error("Unknown file extension");
+		}
 	}
 
 	Image* Subsection(const int x, const int y, const int width, const int height) const
