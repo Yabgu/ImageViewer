@@ -14,39 +14,47 @@ endif()
 find_package(JPEG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
-set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost REQUIRED COMPONENTS thread)
 
 # Main executable
 if(WIN32)
-    add_executable(ImageViewer WIN32)
+    add_executable(iview WIN32)
 else()
-    add_executable(ImageViewer)
+    add_executable(iview)
 endif()
 
-target_sources(
-    ImageViewer
-        PRIVATE
-            main.cpp
-            Window.ixx
-            TexturePool.ixx
-            Image.ixx
+
+add_library(imageviewer)
+
+target_sources(imageviewer PUBLIC
+    FILE_SET imageviewer TYPE CXX_MODULES
+    FILES
+        Window.ixx
+        TexturePool.ixx
+        Image.ixx
 )
 
-set_property(TARGET ImageViewer PROPERTY CXX_STANDARD 20)
 
-target_include_directories(
-    ImageViewer
-        PRIVATE
-            ${JPEG_INCLUDE_DIR}
-            ${Boost_INCLUDE_DIRS}
+target_sources(iview PRIVATE
+    main.cpp
 )
 
-target_link_libraries(
-    ImageViewer
-        PRIVATE
-            glfw
-            glad::glad
-            Boost::thread
-            JPEG::JPEG
+
+set_property(TARGET imageviewer PROPERTY CXX_STANDARD 23)
+set_property(TARGET iview PROPERTY CXX_STANDARD 23)
+
+target_include_directories(imageviewer PRIVATE
+    ${JPEG_INCLUDE_DIR}
+)
+
+target_link_libraries(imageviewer PRIVATE
+    glfw
+    glad::glad
+    JPEG::JPEG
+)
+
+target_link_libraries(iview PRIVATE
+    glfw
+    glad::glad
+    JPEG::JPEG
+    imageviewer
 )
