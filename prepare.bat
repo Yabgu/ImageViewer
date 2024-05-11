@@ -23,8 +23,6 @@ if not exist vcpkg\vcpkg.exe (
 )
 popd
 
-third-party\vcpkg\vcpkg install
-
 set CMAKE_TOOLCHAIN_FILE=%BUILD_ROOT_DIR%\third-party\vcpkg\scripts\buildsystems\vcpkg.cmake
 
 md "%BUILD_ROOT_DIR%\build"
