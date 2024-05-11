@@ -1,5 +1,6 @@
 module;
 
+#include <cstdio>
 #include <stdexcept>
 #include <cstring>
 #include <cstdint>
@@ -8,7 +9,6 @@ module;
 #include <cstdio>
 #include <filesystem>
 #include <regex>
-#include <utility>
 
 struct my_error_mgr
 {
@@ -90,11 +90,11 @@ public:
 
 	static FILE* OpenFile(const std::filesystem::path& filePath)
 	{
-#ifdef WIN32
 		FILE* file = nullptr;
+#ifdef _WIN32
 		auto err = _wfopen_s(&file, filePath.native().c_str(), L"rb");
 #else
-		FILE* file = ::fopen((const char*)filePath.u8string().c_str(), "rb");
+		auto err = ::fopen_s(&file, (const char*)filePath.u8string().c_str(), "rb");
 #endif
 		if (file == nullptr)
 		{

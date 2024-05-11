@@ -30,7 +30,7 @@ Image ProcessInput(int argc, T* argv[])
 	return Image::FromFile(path);
 }
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #include <Windows.h>
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
 {
@@ -48,7 +48,7 @@ int main(int argc, char* argv[])
 #pragma omp task
 			try
 			{
-#if defined(_WIN32)
+#ifdef _WIN32
 				LPWSTR* argv;
 				int argc;
 
