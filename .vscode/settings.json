@@ -1,6 +1,11 @@
 {
     "cmake.configureOnOpen": true,
+    "cmake.configureSettings": {
+        "CMAKE_TOOLCHAIN_FILE": "../third-party/vcpkg/scripts/buildsystems/vcpkg.cmake"
+    },
     "files.associations": {
-        "*.ixx": "cpp"
-    }
+        "*.ixx": "cpp",
+        "iostream": "cpp",
+        "stdexcept": "cpp"
+    },
 }

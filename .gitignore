@@ -1,3 +1,6 @@
-install/**
-third-party/vcpkg/**
-build/**
+/install
+/third-party
+/build
+/out
+/vcpkg_installed
+compile_commands.json

@@ -1,32 +1,34 @@
 @echo off
 setlocal
 
+pushd %~dp0
+set BUILD_ROOT_DIR=%CD%
+popd
+
 set VCPKG_DEFAULT_TRIPLET=x64-windows
-md %~dp0third-party
+
+md %BUILD_ROOT_DIR%\third-party
 rem This actually saves a lot of space and it usually is faster this way
-pushd %~dp0third-party
+compact /c "%BUILD_ROOT_DIR%\third-party" /i /Q
+
+pushd %BUILD_ROOT_DIR%\third-party
 
 set VCPKG_DISABLE_METRICS=1
 
 if not exist vcpkg\vcpkg.exe (
     mkdir vcpkg
     compact /c vcpkg /i /Q
-    git clone https://github.com/microsoft/vcpkg
+    git clone https://github.com/microsoft/vcpkg --depth 1
     cmd /C vcpkg\bootstrap-vcpkg.bat
 )
-
-vcpkg\vcpkg install glad
-vcpkg\vcpkg install glfw3
-vcpkg\vcpkg install boost
-vcpkg\vcpkg install libjpeg-turbo
 popd
 
-set CMAKE_TOOLCHAIN_FILE=%~dp0third-party\vcpkg\scripts\buildsystems\vcpkg.cmake
+set CMAKE_TOOLCHAIN_FILE=%BUILD_ROOT_DIR%\third-party\vcpkg\scripts\buildsystems\vcpkg.cmake
 
-md %~dp0build
-compact /c "%~dp0build" /i /Q
-pushd build
-call :CALL_CMAKE .. -DCMAKE_TOOLCHAIN_FILE="%CMAKE_TOOLCHAIN_FILE%" && cmake --build .
+md "%BUILD_ROOT_DIR%\build"
+compact /c "%BUILD_ROOT_DIR%\build" /i /Q
+pushd "%BUILD_ROOT_DIR%\build"
+call :CALL_CMAKE %~dp0 -DCMAKE_TOOLCHAIN_FILE="%CMAKE_TOOLCHAIN_FILE%" && call :CALL_CMAKE --build .
 popd
 goto :EOF
 

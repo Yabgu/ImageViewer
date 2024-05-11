@@ -1,12 +1,12 @@
+module;
+
 #include <stdexcept>
 #include <thread>
 #include <vector>
-#include <boost/lockfree/spsc_queue.hpp>
 #include <glad/glad.h>
 
 import Image;
 export module TexturePool;
-
 export struct TextureCollection
 {
 public:

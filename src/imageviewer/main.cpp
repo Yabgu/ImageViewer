@@ -18,7 +18,7 @@ import Image;
 import UserInterface;
 
 template <class T>
-Image* ProcessInput(int argc, T* argv[])
+Image ProcessInput(int argc, T* argv[])
 {
 	if (argc <= 0)
 	{
@@ -26,11 +26,6 @@ Image* ProcessInput(int argc, T* argv[])
 	}
 
 	std::filesystem::path path(argv[argc - 1]);
-	auto extension = path.extension().string();
-	if (!std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex::icase)))
-	{
-		[[unlikely]] throw std::runtime_error("Only jpeg format is supported now");
-	}
 
 	return Image::FromFile(path);
 }
@@ -64,11 +59,8 @@ int main(int argc, char* argv[])
 				}
 #endif
 
-				Image* imageLocal = ProcessInput(argc, argv);
-				if (imageLocal != nullptr)
-				{
-					image.reset(imageLocal);
-				}
+				Image imageLocal = ProcessInput(argc, argv);
+				image.reset(new Image(imageLocal));
 			}
 			catch (std::exception& ex)
 			{

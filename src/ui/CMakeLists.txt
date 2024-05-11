@@ -14,31 +14,25 @@ endif()
 find_package(JPEG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
-set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost REQUIRED COMPONENTS thread)
+
 
 add_library(ImageInterface)
 
 target_sources(
-    ImageInterface
-        PRIVATE
-            View.ixx
+    ImageInterface PRIVATE
+    FILE_SET imageviewer TYPE CXX_MODULES
+    FILES
+        View.ixx
 )
 
 set_property(TARGET ImageInterface PROPERTY CXX_STANDARD 20)
 
-target_include_directories(
-    ImageInterface
-        PRIVATE
-            ${JPEG_INCLUDE_DIR}
-            ${Boost_INCLUDE_DIRS}
+target_include_directories(ImageInterface PRIVATE
+    ${JPEG_INCLUDE_DIR}
 )
 
-target_link_libraries(
-    ImageInterface
-        PRIVATE
-            glfw
-            glad::glad
-            Boost::thread
-            JPEG::JPEG
+target_link_libraries(ImageInterface PRIVATE
+    glfw
+    glad::glad
+    JPEG::JPEG
 )
