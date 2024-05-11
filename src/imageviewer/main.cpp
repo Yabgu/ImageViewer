@@ -59,11 +59,8 @@ int main(int argc, char* argv[])
 				}
 #endif
 
-				Image* imageLocal = ProcessInput(argc, argv);
-				if (imageLocal != nullptr)
-				{
-					image.reset(imageLocal);
-				}
+				Image imageLocal = ProcessInput(argc, argv);
+				image.reset(new Image(imageLocal));
 			}
 			catch (std::exception& ex)
 			{

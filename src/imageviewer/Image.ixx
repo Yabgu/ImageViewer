@@ -1,12 +1,14 @@
+module;
+
 #include <stdexcept>
+#include <cstring>
 #include <cstdint>
 #include <jpeglib.h>
 #include <setjmp.h>
 #include <cstdio>
 #include <filesystem>
 #include <regex>
-
-export module Image;
+#include <utility>
 
 struct my_error_mgr
 {
@@ -28,6 +30,7 @@ my_error_exit(j_common_ptr cinfo)
 	longjmp(myerr->setjmp_buffer, 1);
 }
 
+export module Image;
 export class Image
 {
 private:
@@ -48,7 +51,16 @@ public:
 	const size_t size;
 	uint8_t* const data;
 
-	Image(Image&&) = default;
+	Image(Image&& o)
+		: width(o.width),
+		height(o.height),
+		componentsPerPixel(o.componentsPerPixel),
+		stride(o.stride),
+		size(o.size),
+		data{o.data}
+	{
+		const_cast<uint8_t*&>(o.data) = nullptr;
+	}
 
 	Image(const Image& o)
 		: width(o.width),
@@ -133,7 +145,7 @@ public:
 				// TODO: Handle the error!
 				break;
 			}
-			::memcpy(&res.data[current_scanline * row_stride], buffer[0], row_stride * readlines);
+			std::memcpy(&res.data[current_scanline * row_stride], buffer[0], row_stride * readlines);
 		}
 
 		(void)jpeg_finish_decompress(&cinfo);
@@ -146,7 +158,7 @@ public:
 		return Image(0, 0, 0);
 	}
 
-	Image FromFile(const std::filesystem::path& path)
+	static Image FromFile(const std::filesystem::path& path)
 	{
 		auto extension = path.extension().string();
 		if (std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex::icase)))
@@ -186,7 +198,10 @@ public:
 
 		for (int py = 0; py < destHeight; ++py)
 		{
-			memcpy(&res->data[py * res->stride], &this->data[x * componentsPerPixel + (y + py) * this->stride], destStride);
+			std::memcpy(
+				(void*)&res->data[py * res->stride],
+				(void*)&this->data[x * componentsPerPixel + (y + py) * this->stride],
+				destStride);
 		}
 
 		return res;

@@ -19,23 +19,20 @@ find_package(glad CONFIG REQUIRED)
 add_library(ImageInterface)
 
 target_sources(
-    ImageInterface
-        PRIVATE
-            View.ixx
+    ImageInterface PRIVATE
+    FILE_SET imageviewer TYPE CXX_MODULES
+    FILES
+        View.ixx
 )
 
 set_property(TARGET ImageInterface PROPERTY CXX_STANDARD 20)
 
-target_include_directories(
-    ImageInterface
-        PRIVATE
-            ${JPEG_INCLUDE_DIR}
+target_include_directories(ImageInterface PRIVATE
+    ${JPEG_INCLUDE_DIR}
 )
 
-target_link_libraries(
-    ImageInterface
-        PRIVATE
-            glfw
-            glad::glad
-            JPEG::JPEG
+target_link_libraries(ImageInterface PRIVATE
+    glfw
+    glad::glad
+    JPEG::JPEG
 )

@@ -1,3 +1,5 @@
+module;
+
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -5,7 +7,6 @@
 
 import Image;
 export module TexturePool;
-
 export struct TextureCollection
 {
 public:
