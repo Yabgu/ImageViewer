@@ -94,7 +94,7 @@ public:
 #ifdef _WIN32
 		auto err = _wfopen_s(&file, filePath.native().c_str(), L"rb");
 #else
-		auto err = ::fopen_s(&file, (const char*)filePath.u8string().c_str(), "rb");
+		file = std::fopen((const char *)filePath.u8string().c_str(), "rb");
 #endif
 		if (file == nullptr)
 		{
