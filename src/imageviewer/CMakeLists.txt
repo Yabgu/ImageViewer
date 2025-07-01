@@ -46,10 +46,18 @@ target_include_directories(imageviewer PRIVATE
     ${JPEG_INCLUDE_DIR}
 )
 
+find_package(PNG REQUIRED)
+
+target_include_directories(imageviewer PRIVATE
+    ${JPEG_INCLUDE_DIR}
+    ${PNG_INCLUDE_DIRS}
+)
+
 target_link_libraries(imageviewer PRIVATE
     glfw
     glad::glad
     JPEG::JPEG
+    PNG::PNG
 )
 
 target_link_libraries(iview PRIVATE
