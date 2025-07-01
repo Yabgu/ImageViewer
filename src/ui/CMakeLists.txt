@@ -25,7 +25,7 @@ target_sources(
         View.ixx
 )
 
-set_property(TARGET ImageInterface PROPERTY CXX_STANDARD 20)
+set_property(TARGET ImageInterface PROPERTY CXX_STANDARD 23)
 
 target_include_directories(ImageInterface PRIVATE
     ${JPEG_INCLUDE_DIR}

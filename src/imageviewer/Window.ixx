@@ -54,15 +54,20 @@ private:
 	int width;
 	int height;
 	int scroll;
-	std::unique_ptr<TextureCollection> textureCollection;
+	std::shared_ptr<TextureCollection> textureCollection;
 
 	static GLFWwindow* InitializeWindow(int width, int height, Window* containerWindow)
 	{
 		// Check that the window was successfully created
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+		
+		if (glfwPlatformSupported(GLFW_PLATFORM_WAYLAND))
+		{
+			glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
+		}
 
-		GLFWwindow* glfwWindow = glfwCreateWindow(width, height, "ImageViewer", NULL, NULL);
+		GLFWwindow* const glfwWindow = glfwCreateWindow(width, height, "ImageViewer", NULL, NULL);
 
 		glfwSetWindowUserPointer(glfwWindow, (void*)containerWindow);
 
@@ -85,7 +90,7 @@ private:
 	}
 
 public:
-	static void Initialize()
+	inline static void Initialize()
 	{
 		if (!glfwInit())
 		{
@@ -114,7 +119,7 @@ public:
 		this->scroll = 100.0 / zoom - 100;
 	}
 
-	void Draw()
+	void Draw() const
 	{
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
@@ -134,8 +139,9 @@ public:
 		glfwMakeContextCurrent(this->glfwWindow);
 		while (!glfwWindowShouldClose(this->glfwWindow))
 		{
-			[[likely]] glfwWaitEventsTimeout(1.0 / 60);
+			[[likely]]
 			Draw();
+			glfwWaitEventsTimeout(1.0 / 60);
 		}
 	}
 };
