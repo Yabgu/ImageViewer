@@ -46,7 +46,20 @@ protected:
 	static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 	{
 		Window* win = (Window*)glfwGetWindowUserPointer(window);
-		win->scroll = std::min(std::max(win->scroll - (int)(yoffset * 16), -75), 400);
+		constexpr int MIN_ZOOM_PERCENT = -75;
+		constexpr int MAX_ZOOM_PERCENT = 400;
+		constexpr double SCROLL_SENSITIVITY = 16;
+
+		yoffset *= -1;
+
+		if (yoffset > 0)
+		{
+			win->scroll = std::min((int)(win->scroll + yoffset * SCROLL_SENSITIVITY), MAX_ZOOM_PERCENT);
+		}
+		else if (yoffset < 0)
+		{
+			win->scroll = std::max((int)(win->scroll + yoffset * SCROLL_SENSITIVITY), MIN_ZOOM_PERCENT);
+		}
 	}
 
 private:
