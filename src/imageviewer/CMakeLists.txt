@@ -33,7 +33,6 @@ target_sources(imageviewer PUBLIC
         TexturePool.ixx
         Image.ixx
 )
-        target_compile_options(imageviewer PRIVATE /openmp:llvm)
 
 target_sources(iview PRIVATE
     main.cpp
