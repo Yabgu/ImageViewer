@@ -38,6 +38,20 @@ private:
 		return column + row * numberOfVerticalSlices;
 	}
 
+	static void MakeSubImages(const Image& image, std::vector<Image*>& subsection, TextureCollection& tc)
+	{
+		const auto end = tc.numberOfVerticalSlices * tc.numberOfHorizontalSlices;
+		for (auto y = 0; y < tc.numberOfHorizontalSlices; ++y)
+		{
+			for (auto x = 0; x < tc.numberOfVerticalSlices; ++x)
+			{
+				auto i = tc.GetTextureIndex(x, y);
+				auto section = image.Subsection(x * (tc.segmentWidth - tc.redundantBorderSize), y * (tc.segmentHeight - tc.redundantBorderSize), tc.segmentWidth, tc.segmentHeight);
+				subsection[i] = section;
+			}
+		}
+	}
+
 public:
 	TextureCollection(
 		const Image& image,
@@ -59,44 +73,31 @@ public:
 		std::vector<Image*> subsection(capacity);
 		auto toBeProcessed = capacity;
 
-		#pragma omp parallel shared(subsection, image) num_threads(4)
+		auto start_time = std::chrono::high_resolution_clock::now();
+#pragma omp parallel num_threads(2)
 		{
-			#pragma omp sections nowait
+#pragma omp master
 			{
-				#pragma omp section
+#pragma omp task
 				{
-					const auto end = numberOfVerticalSlices * numberOfHorizontalSlices;
-					#pragma omp parallel for
-					for (auto y = 0; y < end; ++y)
-					{
-						auto xi = y % numberOfVerticalSlices;
-						auto yi = y / numberOfVerticalSlices;
-						//for (auto x = 0; x < numberOfVerticalSlices; ++x)
-						{
-							auto i = GetTextureIndex(xi, yi);
-							subsection[i] = image.Subsection(xi * (segmentWidth - redundantBorderSize), yi * (segmentHeight - redundantBorderSize), segmentWidth, segmentHeight);
-						}
-					}
+					MakeSubImages(image, subsection, *this);
 				}
-			}
 
-			// Consume while subsections are created
-			while (toBeProcessed)
-			{
-				for (auto i=0; i < capacity; ++i)
+				while (toBeProcessed)
 				{
-					if (subsection[i] != nullptr)
+					for (auto i=0; i < capacity; ++i)
 					{
-						#pragma omp master
+						auto csubsection = subsection[i];
+						subsection[i] = nullptr;
+						if (csubsection != nullptr)
 						{
 							-- toBeProcessed;
-							UpdateTexture(i, *subsection[i]);
-							delete subsection[i];
-							subsection[i] = nullptr;
+							UpdateTexture(i, *csubsection);
+							delete csubsection;
 						}
 					}
+					std::this_thread::yield();
 				}
-				std::this_thread::yield();
 			}
 		}
 	}
