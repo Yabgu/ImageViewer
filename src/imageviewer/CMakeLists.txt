@@ -5,7 +5,8 @@ if (OPENMP_FOUND)
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -openmp:llvm -openmp:experimental")
+        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /openmp:llvm /openmp:experimental")
+        set (OpenMP_RUNTIME_MSVC llvm CACHE STRING "Specify the OpenMP Runtime for MSVC")
     endif()
 
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
@@ -32,7 +33,7 @@ target_sources(imageviewer PUBLIC
         TexturePool.ixx
         Image.ixx
 )
-
+        target_compile_options(imageviewer PRIVATE /openmp:llvm)
 
 target_sources(iview PRIVATE
     main.cpp

@@ -57,33 +57,46 @@ public:
 		glGenTextures(capacity, textures);
 
 		std::vector<Image*> subsection(capacity);
+		auto toBeProcessed = capacity;
 
-#pragma omp parallel shared(subsection, image)
+		#pragma omp parallel shared(subsection, image) num_threads(4)
 		{
-#pragma omp master
+			#pragma omp sections nowait
 			{
-#pragma omp task
+				#pragma omp section
 				{
-#pragma omp parallel for ordered collapse(2)
-					for (auto y = 0; y < numberOfHorizontalSlices; ++y)
+					const auto end = numberOfVerticalSlices * numberOfHorizontalSlices;
+					#pragma omp parallel for
+					for (auto y = 0; y < end; ++y)
 					{
-						for (auto x = 0; x < numberOfVerticalSlices; ++x)
+						auto xi = y % numberOfVerticalSlices;
+						auto yi = y / numberOfVerticalSlices;
+						//for (auto x = 0; x < numberOfVerticalSlices; ++x)
 						{
-							auto i = GetTextureIndex(x, y);
-							subsection[i] = image.Subsection(x * (segmentWidth - redundantBorderSize), y * (segmentHeight - redundantBorderSize), segmentWidth, segmentHeight);
+							auto i = GetTextureIndex(xi, yi);
+							subsection[i] = image.Subsection(xi * (segmentWidth - redundantBorderSize), yi * (segmentHeight - redundantBorderSize), segmentWidth, segmentHeight);
 						}
 					}
 				}
-				for (auto i = 0; i < capacity; ++i)
-				{
-					while (subsection[i] == nullptr)
-					{
-						std::this_thread::yield();
-					}
+			}
 
-					UpdateTexture(i, *subsection[i]);
-					delete subsection[i];
+			// Consume while subsections are created
+			while (toBeProcessed)
+			{
+				for (auto i=0; i < capacity; ++i)
+				{
+					if (subsection[i] != nullptr)
+					{
+						#pragma omp master
+						{
+							-- toBeProcessed;
+							UpdateTexture(i, *subsection[i]);
+							delete subsection[i];
+							subsection[i] = nullptr;
+						}
+					}
 				}
+				std::this_thread::yield();
 			}
 		}
 	}
@@ -119,6 +132,7 @@ public:
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
 		switch (image.componentsPerPixel)
 		{
