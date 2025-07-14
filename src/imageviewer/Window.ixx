@@ -35,7 +35,6 @@ protected:
 	static void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 	{
 		window_size_callback(window, width, height);
-		//draw(window);
 	}
 
 	static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
@@ -167,7 +166,7 @@ private:
 		return LinkProgram(vertexShader, fragmentShader);
 	}
 
-		// Helper function to create and compile a shader
+	// Helper function to create and compile a shader
 	static GLuint CompileShader(GLenum type, const char* source)
 	{
 		GLuint shader = glCreateShader(type);
@@ -234,6 +233,16 @@ public:
 		if (shaderProgram) glDeleteProgram(shaderProgram);
 	}
 
+	void CenterImage()
+	{
+		this->panX = 0.0;
+		this->panY = 0.0;
+		if (textureCollection) {
+			double minRatio = std::min<double>((double)width / textureCollection->width, (double)height / textureCollection->height);
+			this->scroll = static_cast<int>(minRatio * 100.0 - 100);
+		}
+	}
+
 	void LoadTextures(
 		const Image& image,
 		const int segmentWidth,
@@ -241,8 +250,7 @@ public:
 		const int redundantBorderSize)
 	{
 		this->textureCollection.reset(new TextureCollection(image, segmentWidth, segmentHeight, redundantBorderSize));
-		double minRatio = std::min<double>((double)width / textureCollection->width, (double)height / textureCollection->height);
-		this->scroll = static_cast<int>(minRatio * 100.0 - 100);
+		CenterImage();
 	}
 
 	void Draw() const
