@@ -30,11 +30,6 @@ protected:
 		}
 
 		glViewport(0, 0, width, height);
-		glMatrixMode(GL_PROJECTION);
-		glLoadIdentity();
-		glOrtho(0, width, height, 0, -1, 1);
-
-		glMatrixMode(GL_MODELVIEW);
 	}
 
 	static void framebuffer_size_callback(GLFWwindow* window, int width, int height)
@@ -46,20 +41,11 @@ protected:
 	static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 	{
 		Window* win = (Window*)glfwGetWindowUserPointer(window);
-		constexpr int MIN_ZOOM_PERCENT = -75;
+		constexpr int MIN_ZOOM_PERCENT = -95;
 		constexpr int MAX_ZOOM_PERCENT = 400;
-		constexpr double SCROLL_SENSITIVITY = 16;
+		constexpr double SCROLL_SENSITIVITY = 64;
 
-		yoffset *= -1;
-
-		if (yoffset > 0)
-		{
-			win->scroll = std::min((int)(win->scroll + yoffset * SCROLL_SENSITIVITY), MAX_ZOOM_PERCENT);
-		}
-		else if (yoffset < 0)
-		{
-			win->scroll = std::max((int)(win->scroll + yoffset * SCROLL_SENSITIVITY), MIN_ZOOM_PERCENT);
-		}
+		win->scroll = std::max(std::min((int)(win->scroll + yoffset * SCROLL_SENSITIVITY), MAX_ZOOM_PERCENT), MIN_ZOOM_PERCENT);
 	}
 
 private:
@@ -69,6 +55,36 @@ private:
 	int scroll;
 	std::shared_ptr<TextureCollection> textureCollection;
 	GLuint shaderProgram;
+	double panX = 0.0;
+	double panY = 0.0;
+	bool isPanning = false;
+	double lastMouseX = 0.0, lastMouseY = 0.0;
+
+	static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+		Window* win = (Window*)glfwGetWindowUserPointer(window);
+		if (button == GLFW_MOUSE_BUTTON_LEFT) {
+			if (action == GLFW_PRESS) {
+				double x, y;
+				glfwGetCursorPos(window, &x, &y);
+				win->isPanning = true;
+				win->lastMouseX = x;
+				win->lastMouseY = y;
+			} else if (action == GLFW_RELEASE) {
+				win->isPanning = false;
+			}
+		}
+	}
+	static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos) {
+		Window* win = (Window*)glfwGetWindowUserPointer(window);
+		if (win->isPanning) {
+			double dx = xpos - win->lastMouseX;
+			double dy = ypos - win->lastMouseY;
+			win->panX += dx;
+			win->panY += dy;
+			win->lastMouseX = xpos;
+			win->lastMouseY = ypos;
+		}
+	}
 
 	static GLFWwindow* InitializeWindow(int width, int height, Window* containerWindow)
 	{
@@ -96,6 +112,8 @@ private:
 		glfwSetWindowSizeCallback(glfwWindow, window_size_callback);
 		glfwSetFramebufferSizeCallback(glfwWindow, framebuffer_size_callback);
 		glfwSetScrollCallback(glfwWindow, scroll_callback);
+		glfwSetMouseButtonCallback(glfwWindow, mouse_button_callback);
+		glfwSetCursorPosCallback(glfwWindow, cursor_position_callback);
 
 		if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
 		{
@@ -223,8 +241,8 @@ public:
 		const int redundantBorderSize)
 	{
 		this->textureCollection.reset(new TextureCollection(image, segmentWidth, segmentHeight, redundantBorderSize));
-		double zoom = std::min<double>((double)width / textureCollection->width, (double)height / textureCollection->height);
-		this->scroll = 100.0 / zoom - 100;
+		double minRatio = std::min<double>((double)width / textureCollection->width, (double)height / textureCollection->height);
+		this->scroll = static_cast<int>(minRatio * 100.0 - 100);
 	}
 
 	void Draw() const
@@ -244,16 +262,15 @@ public:
 
 		if (textureCollection != nullptr)
 		{
-			double zoom = 100.0 / (100 + this->scroll);
-			// Center the image when zoomed
+			double zoom = (this->scroll + 100.0) / 100.0;
 			float imgW = textureCollection->width * zoom;
 			float imgH = textureCollection->height * zoom;
 			float cx = (width - imgW) * 0.5f;
 			float cy = (height - imgH) * 0.5f;
-			float left = -cx / zoom;
-			float right = (width - cx) / zoom;
-			float top = -cy / zoom;
-			float bottom = (height - cy) / zoom;
+			float left = (-cx - panX) / zoom;
+			float right = (width - cx - panX) / zoom;
+			float top = (-cy - panY) / zoom;
+			float bottom = (height - cy - panY) / zoom;
 			float nearVal = -1.0f;
 			float farVal = 1.0f;
 			float ortho[16] = {
