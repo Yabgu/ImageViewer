@@ -68,6 +68,7 @@ private:
 	int height;
 	int scroll;
 	std::shared_ptr<TextureCollection> textureCollection;
+	GLuint shaderProgram;
 
 	static GLFWwindow* InitializeWindow(int width, int height, Window* containerWindow)
 	{
@@ -75,7 +76,7 @@ private:
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
 		glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_ANY_PROFILE);
+		glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_ANY_PROFILE);
 
 		
 		if (glfwPlatformSupported(GLFW_PLATFORM_WAYLAND))
@@ -109,6 +110,85 @@ private:
 		return glfwWindow;
 	}
 
+	static GLuint initializeDefaultShaderProgram() {
+		// --- Shader and VAO/VBO setup (new for OpenGL 4.x) ---
+		// Basic shaders for rendering a textured quad.
+		// In a real application, these would be loaded from files.
+		const char* vertexShaderSource = R"(
+			#version 400 core
+			layout (location = 0) in vec2 aPos;
+			layout (location = 1) in vec2 aTexCoord;
+
+			out vec2 TexCoord;
+
+			uniform mat4 projection; // Orthographic projection matrix
+			uniform mat4 model;	  // Model matrix for position
+
+			void main()
+			{
+				gl_Position = projection * model * vec4(aPos.x, aPos.y, 0.0, 1.0);
+				TexCoord = aTexCoord;
+			}
+		)";
+
+		const char* fragmentShaderSource = R"(
+			#version 400 core
+			out vec4 FragColor;
+
+			in vec2 TexCoord;
+
+			uniform sampler2D ourTexture;
+
+			void main()
+			{
+				FragColor = texture(ourTexture, TexCoord);
+			}
+		)";
+
+		GLuint vertexShader = CompileShader(GL_VERTEX_SHADER, vertexShaderSource);
+		GLuint fragmentShader = CompileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
+		return LinkProgram(vertexShader, fragmentShader);
+	}
+
+		// Helper function to create and compile a shader
+	static GLuint CompileShader(GLenum type, const char* source)
+	{
+		GLuint shader = glCreateShader(type);
+		glShaderSource(shader, 1, &source, NULL);
+		glCompileShader(shader);
+
+		int success;
+		char infoLog[512];
+		glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+		if (!success)
+		{
+			glGetShaderInfoLog(shader, 512, NULL, infoLog);
+			throw std::runtime_error(std::string("Shader compilation failed: ") + infoLog);
+		}
+		return shader;
+	}
+
+	// Helper function to link a shader program
+	static GLuint LinkProgram(GLuint vertexShader, GLuint fragmentShader)
+	{
+		GLuint program = glCreateProgram();
+		glAttachShader(program, vertexShader);
+		glAttachShader(program, fragmentShader);
+		glLinkProgram(program);
+
+		int success;
+		char infoLog[512];
+		glGetProgramiv(program, GL_LINK_STATUS, &success);
+		if (!success)
+		{
+			glGetProgramInfoLog(program, 512, NULL, infoLog);
+			throw std::runtime_error(std::string("Shader linking failed: ") + infoLog);
+		}
+		glDeleteShader(vertexShader);
+		glDeleteShader(fragmentShader);
+		return program;
+	}
+
 public:
 	inline static void Initialize()
 	{
@@ -124,8 +204,17 @@ public:
 	}
 
 	Window(int width, int height)
-		: glfwWindow(InitializeWindow(width, height, this)), width(width), height(height), scroll(0)
+		: glfwWindow(InitializeWindow(width, height, this)),
+			width(width),
+			height(height),
+			scroll(0),
+			shaderProgram(initializeDefaultShaderProgram())
 	{
+	}
+
+	~Window()
+	{
+		if (shaderProgram) glDeleteProgram(shaderProgram);
 	}
 
 	void LoadTextures(
@@ -144,12 +233,38 @@ public:
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glLoadIdentity();
+		glUseProgram(shaderProgram);
+
+		// Get uniform locations
+		GLint projectionLoc = glGetUniformLocation(shaderProgram, "projection");
+		GLint modelLoc = glGetUniformLocation(shaderProgram, "model");
+		GLint textureSamplerLoc = glGetUniformLocation(shaderProgram, "ourTexture");
+
+		// Set the texture unit for the sampler
+		glUniform1i(textureSamplerLoc, 0); // Corresponds to GL_TEXTURE0
+
 		if (textureCollection != nullptr)
 		{
 			double zoom = 100.0 / (100 + this->scroll);
-			glTranslated((width - textureCollection->width * zoom) * 0.5, (height - textureCollection->height * zoom) * 0.5, 0);
-			glScaled(zoom, zoom, 0);
-			textureCollection->Draw();
+			// Center the image when zoomed
+			float imgW = textureCollection->width * zoom;
+			float imgH = textureCollection->height * zoom;
+			float cx = (width - imgW) * 0.5f;
+			float cy = (height - imgH) * 0.5f;
+			float left = -cx / zoom;
+			float right = (width - cx) / zoom;
+			float top = -cy / zoom;
+			float bottom = (height - cy) / zoom;
+			float nearVal = -1.0f;
+			float farVal = 1.0f;
+			float ortho[16] = {
+				2.0f / (right - left), 0.0f, 0.0f, 0.0f,
+				0.0f, 2.0f / (top - bottom), 0.0f, 0.0f,
+				0.0f, 0.0f, -2.0f / (farVal - nearVal), 0.0f,
+				-(right + left) / (right - left), -(top + bottom) / (top - bottom), -(farVal + nearVal) / (farVal - nearVal), 1.0f
+			};
+			glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, ortho);
+			textureCollection->Draw(modelLoc);
 		}
 		glfwSwapBuffers(glfwWindow);
 	}

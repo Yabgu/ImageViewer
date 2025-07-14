@@ -64,7 +64,11 @@ int main(int argc, char* argv[])
 			}
 			catch (std::exception& ex)
 			{
+#ifdef _WIN32
+				MessageBoxA(NULL, ex.what(), "Error", MB_OK|MB_ICONERROR);
+#else
 				std::cerr << "Failed to process the request : " << ex.what() << std::endl;
+#endif
 			}
 
 			Window::Initialize();
