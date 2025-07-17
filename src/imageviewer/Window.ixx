@@ -39,14 +39,53 @@ protected:
 
 	static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 	{
-		Window* win = (Window*)glfwGetWindowUserPointer(window);
+		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
+		if (win != nullptr)
+		{
+			win->scroll_callback(xoffset, yoffset);
+		}
+	}
+
+	void scroll_callback(double xoffset, double yoffset)
+	{
 		constexpr int MIN_ZOOM_PERCENT = -90;
 		constexpr int MAX_ZOOM_PERCENT = 400;
 		constexpr double SCROLL_SENSITIVITY = 10;
 
-		win->scroll = std::max(std::min((int)(
-			win->scroll + yoffset * SCROLL_SENSITIVITY
+		const double oldScroll = scroll;
+
+		scroll = std::max(std::min((int)(
+			scroll + yoffset * SCROLL_SENSITIVITY
 		), MAX_ZOOM_PERCENT), MIN_ZOOM_PERCENT);
+
+		// Get mouse position relative to window
+		double mouseX, mouseY;
+		glfwGetCursorPos(glfwWindow, &mouseX, &mouseY);
+
+		// Calculate normalized mouse position (0..1)
+		double normX = mouseX / width;
+		double normY = mouseY / height;
+
+		// Calculate image position before zoom
+		double zoomBefore = (oldScroll + 100.0) / 100.0;
+		double imgWBefore = textureCollection ? textureCollection->width * zoomBefore : width;
+		double imgHBefore = textureCollection ? textureCollection->height * zoomBefore : height;
+		double imgXBefore = (width - imgWBefore) * 0.5 + panX;
+		double imgYBefore = (height - imgHBefore) * 0.5 + panY;
+		double mouseImgXBefore = (mouseX - imgXBefore) / zoomBefore;
+		double mouseImgYBefore = (mouseY - imgYBefore) / zoomBefore;
+
+		// Calculate image position after zoom
+		double zoomAfter = (scroll + 100.0) / 100.0;
+		double imgWAfter = textureCollection ? textureCollection->width * zoomAfter : width;
+		double imgHAfter = textureCollection ? textureCollection->height * zoomAfter : height;
+		double imgXAfter = (width - imgWAfter) * 0.5 + panX;
+		double imgYAfter = (height - imgHAfter) * 0.5 + panY;
+		double mouseScreenXAfter = imgXAfter + mouseImgXBefore * zoomAfter;
+		double mouseScreenYAfter = imgYAfter + mouseImgYBefore * zoomAfter;
+
+		// Adjust pan so that mouse stays at same image location
+		setPanning(panX + mouseX - mouseScreenXAfter, panY + mouseY - mouseScreenYAfter);
 	}
 
 private:
@@ -60,6 +99,23 @@ private:
 	double panY = 0.0;
 	bool isPanning = false;
 	double lastMouseX = 0.0, lastMouseY = 0.0;
+
+	void setPanning(double x, double y) {
+		if (textureCollection) {
+			double zoom = (scroll + 100.0) / 100.0;
+			double imgW = textureCollection->width * zoom;
+			double imgH = textureCollection->height * zoom;
+			double minPanX = -(imgW - width) * 0.5;
+			double maxPanX = (imgW - width) * 0.5;
+			double minPanY = -(imgH - height) * 0.5;
+			double maxPanY = (imgH - height) * 0.5;
+			panX = std::max(minPanX, std::min(x, maxPanX));
+			panY = std::max(minPanY, std::min(y, maxPanY));
+		} else {
+			panX = x;
+			panY = y;
+		}
+	}
 
 	static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
 		Window* win = (Window*)glfwGetWindowUserPointer(window);
@@ -80,8 +136,7 @@ private:
 		if (win->isPanning) {
 			double dx = xpos - win->lastMouseX;
 			double dy = ypos - win->lastMouseY;
-			win->panX += dx;
-			win->panY += dy;
+			win->setPanning(win->panX + dx, win->panY + dy);
 			win->lastMouseX = xpos;
 			win->lastMouseY = ypos;
 		}
@@ -237,8 +292,7 @@ public:
 
 	void CenterImage()
 	{
-		this->panX = 0.0;
-		this->panY = 0.0;
+		setPanning(0.0, 0.0);
 		if (textureCollection) {
 			double minRatio = std::min<double>((double)width / textureCollection->width, (double)height / textureCollection->height);
 			this->scroll = static_cast<int>(minRatio * 100.0 - 100);
