@@ -15,6 +15,7 @@ module;
 
 import TexturePool;
 import Image;
+import HotkeysHandler;
 export module UserInterface;
 
 export class Window
@@ -186,6 +187,7 @@ private:
 		glfwSetScrollCallback(glfwWindow, scroll_callback);
 		glfwSetMouseButtonCallback(glfwWindow, mouse_button_callback);
 		glfwSetCursorPosCallback(glfwWindow, cursor_position_callback);
+		glfwSetKeyCallback(glfwWindow, key_callback);
 
 		if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
 		{
@@ -292,13 +294,21 @@ public:
 		glfwTerminate();
 	}
 
+private:
+	HotkeysHandler hotkeysHandler;
+
+public:
 	Window(int width, int height)
 		: glfwWindow(InitializeWindow(width, height, this)),
 			width(width),
 			height(height),
 			scroll(0),
-			shaderProgram(initializeDefaultShaderProgram())
-	{
+			shaderProgram(initializeDefaultShaderProgram()),
+			hotkeysHandler() {
+		hotkeysHandler.setZoomCallback([this](int zoomDelta) { adjustZoom(zoomDelta); });
+		hotkeysHandler.setPanCallback([this](int dx, int dy) { adjustPan(dx, dy); });
+		hotkeysHandler.setSetZoomCallback([this](double zoomLevel) { setZoom(zoomLevel); });
+		hotkeysHandler.setFitToWindowCallback([this]() { fitToWindow(); });
 	}
 
 	~Window()
@@ -373,6 +383,76 @@ public:
 			[[likely]]
 			Draw();
 			glfwWaitEventsTimeout(1.0 / 60);
+		}
+	}
+
+public:
+	void setZoom(double zoomLevel) {
+		const double currentZoom = getZoom();
+		const double newScroll = (zoomLevel * 100.0) - 100.0;
+		scroll = std::clamp(static_cast<int>(newScroll), -90, 400);
+
+		if (textureCollection) {
+			const double imgW = textureCollection->width * currentZoom;
+			const double imgH = textureCollection->height * currentZoom;
+			const double imgX = (width - imgW) * 0.5 + panX;
+			const double imgY = (height - imgH) * 0.5 + panY;
+
+			const double newZoom = getZoom();
+			const double newImgW = textureCollection->width * newZoom;
+			const double newImgH = textureCollection->height * newZoom;
+			const double newImgX = (width - newImgW) * 0.5 + panX;
+			const double newImgY = (height - newImgH) * 0.5 + panY;
+
+			setPanning(panX + (imgX - newImgX), panY + (imgY - newImgY));
+		}
+	}
+
+	void adjustZoom(int zoomDelta) {
+        const double currentZoom = getZoom();
+        scroll = std::clamp(scroll + zoomDelta, -90, 400);
+
+        if (textureCollection) {
+            const double imgW = textureCollection->width * currentZoom;
+            const double imgH = textureCollection->height * currentZoom;
+            const double imgX = (width - imgW) * 0.5 + panX;
+            const double imgY = (height - imgH) * 0.5 + panY;
+
+            // Calculate the center of the current panning
+            const double centerX = width * 0.5;
+            const double centerY = height * 0.5;
+            const double mouseImgXBefore = (centerX - imgX) / currentZoom;
+            const double mouseImgYBefore = (centerY - imgY) / currentZoom;
+
+            const double newZoom = getZoom();
+            const double newImgW = textureCollection->width * newZoom;
+            const double newImgH = textureCollection->height * newZoom;
+            const double newImgX = (width - newImgW) * 0.5 + panX;
+            const double newImgY = (height - newImgH) * 0.5 + panY;
+            const double mouseScreenXAfter = newImgX + mouseImgXBefore * newZoom;
+            const double mouseScreenYAfter = newImgY + mouseImgYBefore * newZoom;
+
+            setPanning(panX + centerX - mouseScreenXAfter, panY + centerY - mouseScreenYAfter);
+        }
+    }
+
+	void adjustPan(int dx, int dy) {
+		setPanning(panX + dx, panY + dy);
+	}
+
+	void fitToWindow() {
+		setPanning(0.0, 0.0);
+		if (textureCollection) {
+			const double minRatio = std::min(static_cast<double>(width) / textureCollection->width,
+											 static_cast<double>(height) / textureCollection->height);
+			scroll = static_cast<int>(minRatio * 100.0 - 100);
+		}
+	}
+
+	static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+		Window* containerWindow = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
+		if (containerWindow) {
+			containerWindow->hotkeysHandler.key_callback(window, key, scancode, action, mods);
 		}
 	}
 };

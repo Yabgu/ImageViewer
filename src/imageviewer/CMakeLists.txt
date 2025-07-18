@@ -1,4 +1,3 @@
-
 find_package(OpenMP)
 if (OPENMP_FOUND)
     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
@@ -32,6 +31,7 @@ target_sources(imageviewer PUBLIC
         Window.ixx
         TexturePool.ixx
         Image.ixx
+        HotkeysHandler.ixx
 )
 
 target_sources(iview PRIVATE
