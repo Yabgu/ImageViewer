@@ -52,12 +52,6 @@ protected:
 		constexpr int MAX_ZOOM_PERCENT = 400;
 		constexpr double SCROLL_SENSITIVITY = 10;
 
-		const double oldScroll = scroll;
-
-		scroll = std::max(std::min((int)(
-			scroll + yoffset * SCROLL_SENSITIVITY
-		), MAX_ZOOM_PERCENT), MIN_ZOOM_PERCENT);
-
 		// Get mouse position relative to window
 		double mouseX, mouseY;
 		glfwGetCursorPos(glfwWindow, &mouseX, &mouseY);
@@ -65,6 +59,8 @@ protected:
 		// Calculate normalized mouse position (0..1)
 		double normX = mouseX / width;
 		double normY = mouseY / height;
+		const double oldScroll = scroll;
+
 
 		// Calculate image position before zoom
 		double zoomBefore = getZoom();
@@ -74,6 +70,11 @@ protected:
 		double imgYBefore = (height - imgHBefore) * 0.5 + panY;
 		double mouseImgXBefore = (mouseX - imgXBefore) / zoomBefore;
 		double mouseImgYBefore = (mouseY - imgYBefore) / zoomBefore;
+
+		// Update scroll value based on scroll input
+		scroll = std::max(std::min((int)(
+			scroll + yoffset * SCROLL_SENSITIVITY
+		), MAX_ZOOM_PERCENT), MIN_ZOOM_PERCENT);
 
 		// Calculate image position after zoom
 		double zoomAfter = getZoom();
@@ -113,7 +114,8 @@ private:
 			double maxPanX = (imgW - width) * 0.5;
 			double minPanY = -(imgH - height) * 0.5;
 			double maxPanY = (imgH - height) * 0.5;
-			// Center the image if it is smaller than the window
+
+			// Center the image if it is smaller than the window and centering is requested
 			if (imgW < width) {
 				panX = 0.0;
 			} else {
