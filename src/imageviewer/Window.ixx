@@ -67,7 +67,7 @@ protected:
 		double normY = mouseY / height;
 
 		// Calculate image position before zoom
-		double zoomBefore = (oldScroll + 100.0) / 100.0;
+		double zoomBefore = getZoom();
 		double imgWBefore = textureCollection ? textureCollection->width * zoomBefore : width;
 		double imgHBefore = textureCollection ? textureCollection->height * zoomBefore : height;
 		double imgXBefore = (width - imgWBefore) * 0.5 + panX;
@@ -76,7 +76,7 @@ protected:
 		double mouseImgYBefore = (mouseY - imgYBefore) / zoomBefore;
 
 		// Calculate image position after zoom
-		double zoomAfter = (scroll + 100.0) / 100.0;
+		double zoomAfter = getZoom();
 		double imgWAfter = textureCollection ? textureCollection->width * zoomAfter : width;
 		double imgHAfter = textureCollection ? textureCollection->height * zoomAfter : height;
 		double imgXAfter = (width - imgWAfter) * 0.5 + panX;
@@ -100,17 +100,31 @@ private:
 	bool isPanning = false;
 	double lastMouseX = 0.0, lastMouseY = 0.0;
 
+	double getZoom() const {
+		return (scroll + 100.0) / 100.0;
+	}
+
 	void setPanning(double x, double y) {
 		if (textureCollection) {
-			double zoom = (scroll + 100.0) / 100.0;
+			double zoom = getZoom();
 			double imgW = textureCollection->width * zoom;
 			double imgH = textureCollection->height * zoom;
 			double minPanX = -(imgW - width) * 0.5;
 			double maxPanX = (imgW - width) * 0.5;
 			double minPanY = -(imgH - height) * 0.5;
 			double maxPanY = (imgH - height) * 0.5;
-			panX = std::max(minPanX, std::min(x, maxPanX));
-			panY = std::max(minPanY, std::min(y, maxPanY));
+			// Center the image if it is smaller than the window
+			if (imgW < width) {
+				panX = 0.0;
+			} else {
+				panX = std::max(minPanX, std::min(x, maxPanX));
+			}
+
+			if (imgH < height) {
+				panY = 0.0;
+			} else {
+				panY = std::max(minPanY, std::min(y, maxPanY));
+			}
 		} else {
 			panX = x;
 			panY = y;
@@ -326,7 +340,7 @@ public:
 
 		if (textureCollection != nullptr)
 		{
-			double zoom = (this->scroll + 100.0) / 100.0;
+			double zoom = getZoom();
 			float imgW = textureCollection->width * zoom;
 			float imgH = textureCollection->height * zoom;
 			float cx = (width - imgW) * 0.5f;
