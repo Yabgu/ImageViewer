@@ -57,37 +57,12 @@ protected:
 		double mouseX, mouseY;
 		glfwGetCursorPos(glfwWindow, &mouseX, &mouseY);
 
-		// Calculate normalized mouse position (0..1)
-		double normX = mouseX / width;
-		double normY = mouseY / height;
-		const double oldScroll = scroll;
-
-
-		// Calculate image position before zoom
-		double zoomBefore = getZoom();
-		double imgWBefore = textureCollection ? textureCollection->width * zoomBefore : width;
-		double imgHBefore = textureCollection ? textureCollection->height * zoomBefore : height;
-		double imgXBefore = (width - imgWBefore) * 0.5 + panX;
-		double imgYBefore = (height - imgHBefore) * 0.5 + panY;
-		double mouseImgXBefore = (mouseX - imgXBefore) / zoomBefore;
-		double mouseImgYBefore = (mouseY - imgYBefore) / zoomBefore;
-
 		// Update scroll value based on scroll input
-		scroll = std::max(std::min((int)(
-			scroll + yoffset * SCROLL_SENSITIVITY
-		), MAX_ZOOM_PERCENT), MIN_ZOOM_PERCENT);
+		double newZoomLevel = (scroll + yoffset * SCROLL_SENSITIVITY + 100.0) / 100.0;
+		newZoomLevel = std::clamp(newZoomLevel, (MIN_ZOOM_PERCENT + 100.0) / 100.0, (MAX_ZOOM_PERCENT + 100.0) / 100.0);
 
-		// Calculate image position after zoom
-		double zoomAfter = getZoom();
-		double imgWAfter = textureCollection ? textureCollection->width * zoomAfter : width;
-		double imgHAfter = textureCollection ? textureCollection->height * zoomAfter : height;
-		double imgXAfter = (width - imgWAfter) * 0.5 + panX;
-		double imgYAfter = (height - imgHAfter) * 0.5 + panY;
-		double mouseScreenXAfter = imgXAfter + mouseImgXBefore * zoomAfter;
-		double mouseScreenYAfter = imgYAfter + mouseImgYBefore * zoomAfter;
-
-		// Adjust pan so that mouse stays at same image location
-		setPanning(panX + mouseX - mouseScreenXAfter, panY + mouseY - mouseScreenYAfter);
+		// Use setZoom to handle zooming with cursor position
+		setZoom(newZoomLevel, mouseX, mouseY);
 	}
 
 private:
@@ -388,25 +363,36 @@ public:
 
 public:
 	void setZoom(double zoomLevel) {
-		const double currentZoom = getZoom();
-		const double newScroll = (zoomLevel * 100.0) - 100.0;
-		scroll = std::clamp(static_cast<int>(newScroll), -90, 400);
-
-		if (textureCollection) {
-			const double imgW = textureCollection->width * currentZoom;
-			const double imgH = textureCollection->height * currentZoom;
-			const double imgX = (width - imgW) * 0.5 + panX;
-			const double imgY = (height - imgH) * 0.5 + panY;
-
-			const double newZoom = getZoom();
-			const double newImgW = textureCollection->width * newZoom;
-			const double newImgH = textureCollection->height * newZoom;
-			const double newImgX = (width - newImgW) * 0.5 + panX;
-			const double newImgY = (height - newImgH) * 0.5 + panY;
-
-			setPanning(panX + (imgX - newImgX), panY + (imgY - newImgY));
-		}
+		// Use the center of the window as the default cursor position
+		setZoom(zoomLevel, width * 0.5, height * 0.5);
 	}
+
+	void setZoom(double zoomLevel, double cursorX, double cursorY) {
+        const double currentZoom = getZoom();
+        const double newScroll = (zoomLevel * 100.0) - 100.0;
+        scroll = std::clamp(static_cast<int>(newScroll), -90, 400);
+
+        if (textureCollection) {
+            const double imgW = textureCollection->width * currentZoom;
+            const double imgH = textureCollection->height * currentZoom;
+            const double imgX = (width - imgW) * 0.5 + panX;
+            const double imgY = (height - imgH) * 0.5 + panY;
+
+            // Calculate the image position relative to the cursor
+            const double mouseImgXBefore = (cursorX - imgX) / currentZoom;
+            const double mouseImgYBefore = (cursorY - imgY) / currentZoom;
+
+            const double newZoom = getZoom();
+            const double newImgW = textureCollection->width * newZoom;
+            const double newImgH = textureCollection->height * newZoom;
+            const double newImgX = (width - newImgW) * 0.5 + panX;
+            const double newImgY = (height - newImgH) * 0.5 + panY;
+            const double mouseScreenXAfter = newImgX + mouseImgXBefore * newZoom;
+            const double mouseScreenYAfter = newImgY + mouseImgYBefore * newZoom;
+
+            setPanning(panX + cursorX - mouseScreenXAfter, panY + cursorY - mouseScreenYAfter);
+        }
+    }
 
 	void adjustZoom(int zoomDelta) {
         const double currentZoom = getZoom();
