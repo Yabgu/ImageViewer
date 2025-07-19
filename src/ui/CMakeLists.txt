@@ -1,4 +1,3 @@
-
 find_package(OpenMP)
 if (OPENMP_FOUND)
     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
@@ -15,24 +14,14 @@ find_package(JPEG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 
-
-add_library(ImageInterface)
+add_library(ui)
 
 target_sources(
-    ImageInterface PRIVATE
-    FILE_SET imageviewer TYPE CXX_MODULES
-    FILES
+    ui PRIVATE
+    FILE_SET ui_modules TYPE CXX_MODULES FILES
         View.ixx
 )
 
-set_property(TARGET ImageInterface PROPERTY CXX_STANDARD 23)
-
-target_include_directories(ImageInterface PRIVATE
-    ${JPEG_INCLUDE_DIR}
-)
-
-target_link_libraries(ImageInterface PRIVATE
-    glfw
-    glad::glad
-    JPEG::JPEG
-)
+target_link_libraries(ui PUBLIC media)
+target_include_directories(ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(ui PUBLIC cxx_std_23)

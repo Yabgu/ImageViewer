@@ -1,115 +1,105 @@
-#include <vector>
-#include <cstddef>
-#include <map>
+export module ui.View;
+
+import media.Buffer;
+import media.View;
+import media.Processor;
+import media.Scene;
+import media.Correspondence;
+import media.ViewCorrespondence;
+import media.CorrespondenceInterpreter;
+import media.Dispatcher;
+
+#include <unordered_map>
+#include <unordered_set>
+#include <memory>
 #include <string>
 
-export module media;
-
-namespace media
-{
-    // Represents a generic event or message in the system (base for all data types)
-    export class Correspondence {
+namespace ui {
+    // OpenGL-specific buffer wrapper
+    export class OpenGLBuffer {
     public:
-        virtual ~Correspondence() = default;
-        // Event type identifier for dispatching
-        virtual int type() const = 0;
-        // Optional metadata (e.g., timestamp, user data)
-        virtual const std::map<std::string, std::string>& metadata() const { static std::map<std::string, std::string> dummy; return dummy; }
-    };
-
-    // Represents a buffer holding N-dimensional data (image, audio, prompt, etc.)
-    export class Buffer : public Correspondence {
-    public:
-        virtual ~Buffer() = default;
-        virtual std::vector<int> shape() const = 0;
-        virtual int dim(size_t axis) const { return shape().at(axis); }
-        // Add more methods as needed (e.g., element access)
-    };
-
-    // Represents something that can display or output a buffer (window, file, etc.)
-    export class View {
-    public:
-        virtual ~View() = default;
-        virtual void display(const Buffer&) = 0;
-    };
-
-    // Represents a processing operation (filter, transformation, etc.)
-    export class Processor {
-    public:
-        virtual ~Processor() = default;
-        virtual void process(Buffer&) = 0;
-    };
-
-    // Scene ties together a view and a processor (could be extended for more complex pipelines)
-    export template <class TView, class TProcessor>
-    class Scene {
-        TView view;
-        TProcessor processor;
-    public:
-        Scene(const TView& v, const TProcessor& p) : view(v), processor(p) {}
-        void run(Buffer& buffer) {
-            processor.process(buffer);
-            view.display(buffer);
+        OpenGLBuffer(const media::Buffer& buffer)
+            : m_buffer(buffer) {
+            // Initialize OpenGL resources (e.g., generate texture/VBO)
         }
-    };
-
-    // Represents a specific event/message for viewing (e.g., viewing a buffer)
-    export class ViewCorrespondence : public Correspondence {
-    public:
-        Buffer* buffer;
-        ViewCorrespondence(Buffer* buf) : buffer(buf) {}
-        int type() const override { return 1; } // Example type ID for view events
-        virtual ~ViewCorrespondence() = default;
-    };
-
-    // Represents something that can interpret or handle a correspondence/event
-    export class CorrespondenceInterpreter {
-    public:
-        virtual ~CorrespondenceInterpreter() = default;
-        virtual void interpret(Correspondence&) = 0;
-    };
-
-    // Dispatcher for routing events to handlers
-    export class Dispatcher {
-        std::map<int, std::vector<CorrespondenceInterpreter*>> handlers;
-    public:
-        void registerHandler(int type, CorrespondenceInterpreter* handler) {
-            handlers[type].push_back(handler);
+        ~OpenGLBuffer() {
+            // Cleanup OpenGL resources
         }
-        void dispatch(Correspondence& c) {
-            int t = c.type();
-            if (handlers.count(t)) {
-                for (auto* h : handlers[t]) {
-                    h->interpret(c);
-                }
-            }
-        }
+        // Access underlying media buffer
+        const media::Buffer& getMediaBuffer() const { return m_buffer; }
+        // OpenGL resource handles (e.g., GLuint textureId)
+        // unsigned int textureId;
+    private:
+        media::Buffer m_buffer;
+        // Add OpenGL-specific members here
     };
 
-    // Example workflow (not compiled, for illustration):
-    /*
-    // 1. Create a buffer
-    class MyBuffer : public Buffer { ... };
-    MyBuffer buffer;
-
-    // 2. Wrap it in a view correspondence (event/message)
-    ViewCorrespondence viewEvent{&buffer};
-
-    // 3. Pass the event to a dispatcher/interpreter
-    class MyInterpreter : public CorrespondenceInterpreter {
+    // Simple Camera class for view/projection matrices
+    export class Camera {
     public:
-        void interpret(Correspondence& c) override {
-            if (auto* v = dynamic_cast<ViewCorrespondence*>(&c)) {
-                MyView view;
-                MyProcessor processor;
-                Scene<MyView, MyProcessor> scene{view, processor};
-                scene.run(*v->buffer);
-            }
+        Camera() {
+            // Initialize view and projection matrices (identity/default)
         }
+        void setViewMatrix(const std::array<float, 16>& matrix) {
+            m_viewMatrix = matrix;
+        }
+        void setProjectionMatrix(const std::array<float, 16>& matrix) {
+            m_projMatrix = matrix;
+        }
+        const std::array<float, 16>& getViewMatrix() const { return m_viewMatrix; }
+        const std::array<float, 16>& getProjectionMatrix() const { return m_projMatrix; }
+    private:
+        std::array<float, 16> m_viewMatrix;
+        std::array<float, 16> m_projMatrix;
     };
-    MyInterpreter interpreter;
-    Dispatcher dispatcher;
-    dispatcher.registerHandler(1, &interpreter); // 1 = view event type
-    dispatcher.dispatch(viewEvent);
-    */
+
+    // Example concrete Scene implementation for UI
+    export class OpenGLScene : public media::Scene {
+    public:
+        OpenGLScene() : m_camera() {}
+        void update(const media::Buffer&) override {
+            // Update internal state or buffer reference
+        }
+        // Resource management
+        void addResource(const std::string& name, std::unique_ptr<OpenGLBuffer> buffer) {
+            m_resources[name] = std::move(buffer);
+        }
+        void removeResource(const std::string& name) {
+            m_resources.erase(name);
+        }
+        OpenGLBuffer* getResource(const std::string& name) {
+            auto it = m_resources.find(name);
+            return it != m_resources.end() ? it->second.get() : nullptr;
+        }
+        // Basic render interface
+        virtual void render() {
+            // Render scene using resources and camera
+        }
+    private:
+        std::unordered_map<std::string, std::unique_ptr<OpenGLBuffer>> m_resources;
+    };
+
+    // Actor: SceneCorresponder responsible for building and rendering scenes
+    export class SceneCorresponder {
+    public:
+        SceneCorresponder(OpenGLScene& scene, media::Scene& mediaScene)
+            : m_scene(scene), m_mediaScene(mediaScene) {}
+
+        // Build scene from script/template
+        void buildFromScript(const std::string& script) {
+            // Parse script/template and add/remove resources via m_scene
+        }
+
+        void render() {
+            // Implement rendering logic here, using m_scene and m_mediaScene
+        }
+    private:
+        // Camera management
+        Camera& getCamera() { return m_camera; }
+        const Camera& getCamera() const { return m_camera; }
+        void setCamera(const Camera& camera) { m_camera = camera; }
+
+        OpenGLScene& m_scene;
+        Camera m_camera;
+    };
 }
