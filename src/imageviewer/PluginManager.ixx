@@ -48,7 +48,13 @@ public:
         plugins[pluginPath.string()] = { hModule, loadFunc };
 #else
         void* handle = dlopen(pluginPath.c_str(), RTLD_LAZY);
-        if (!handle) return nullptr;
+        if (!handle) {
+            // Try loading from the current executable's directory
+            auto exeDir = std::filesystem::canonical("/proc/self/exe").parent_path();
+            auto altPath = exeDir / pluginPath.filename();
+            handle = dlopen(altPath.c_str(), RTLD_LAZY);
+            if (!handle) return nullptr;
+        }
         auto loadFunc = (LoadImageFromFileFunc)dlsym(handle, "LoadImageFromFile");
         if (!loadFunc) {
             dlclose(handle);
