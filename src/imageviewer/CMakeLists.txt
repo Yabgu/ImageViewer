@@ -32,6 +32,7 @@ target_sources(imageviewer PUBLIC
         TexturePool.ixx
         Image.ixx
         HotkeysHandler.ixx
+        PluginManager.ixx
 )
 
 target_sources(iview PRIVATE

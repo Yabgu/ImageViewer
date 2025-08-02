@@ -15,6 +15,8 @@ module;
 #include <dlfcn.h>
 #endif
 
+import PluginManager;
+
 export module Image;
 
 // Plugin interface structure
@@ -43,43 +45,13 @@ private:
 		return width * height * componentsPerPixel;
 	}
 
-	static ImagePluginResult LoadImageViaPlugin(const std::filesystem::path& pluginPath, const std::filesystem::path& imagePath)
+	static ImagePluginResult LoadImageViaPlugin(PluginManager& manager, const std::filesystem::path& pluginPath, const std::filesystem::path& imagePath)
 	{
-#ifdef _WIN32
-		HMODULE hModule = LoadLibraryW(pluginPath.c_str());
-		if (!hModule)
-		{
-			throw std::runtime_error("Failed to load plugin: " + pluginPath.string());
+		auto* entry = manager.getPlugin(pluginPath);
+		if (!entry || !entry->loadFunc) {
+			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string());
 		}
-
-		LoadImageFromFileFunc loadFunc = (LoadImageFromFileFunc)GetProcAddress(hModule, "LoadImageFromFile");
-		if (!loadFunc)
-		{
-			FreeLibrary(hModule);
-			throw std::runtime_error("Failed to find LoadImageFromFile function in plugin");
-		}
-
-		ImagePluginResult result = loadFunc(imagePath.c_str());
-		FreeLibrary(hModule);
-		return result;
-#else
-		void* handle = dlopen(pluginPath.c_str(), RTLD_LAZY);
-		if (!handle)
-		{
-			throw std::runtime_error("Failed to load plugin: " + std::string(dlerror()));
-		}
-
-		LoadImageFromFileFunc loadFunc = (LoadImageFromFileFunc)dlsym(handle, "LoadImageFromFile");
-		if (!loadFunc)
-		{
-			dlclose(handle);
-			throw std::runtime_error("Failed to find LoadImageFromFile function in plugin");
-		}
-
-		ImagePluginResult result = loadFunc(imagePath.c_str());
-		dlclose(handle);
-		return result;
-#endif
+		return entry->loadFunc(imagePath.c_str());
 	}
 
 public:
@@ -129,6 +101,7 @@ public:
 
 	static Image FromFile(const std::filesystem::path& path)
 	{
+		static PluginManager pluginManager;
 		auto extension = path.extension().string();
 		std::filesystem::path pluginPath;
 		if (std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex::icase)))
@@ -152,10 +125,11 @@ public:
 			[[unlikely]] throw std::runtime_error("Unknown file extension");
 		}
 
-		ImagePluginResult pluginResult = LoadImageViaPlugin(pluginPath, path);
+		ImagePluginResult pluginResult = LoadImageViaPlugin(pluginManager, pluginPath, path);
 		if (pluginResult.code != IMAGE_PLUGIN_OK || !pluginResult.data)
 		{
-			throw std::runtime_error("Failed to load image via plugin");
+			std::string errMsg = "Failed to load image via plugin. Error code: " + std::to_string(pluginResult.code);
+			throw std::runtime_error(errMsg);
 		}
 
 		Image result(pluginResult.data->width, pluginResult.data->height, pluginResult.data->componentsPerPixel);
