@@ -13,7 +13,7 @@ export module ImageLoaderPng;
 
 static thread_local char lastError[256] = "";
 
-export extern "C" __declspec(dllexport) ImagePluginResult LoadImageFromFile(const wchar_t* filePath)
+export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const ImagePluginPath filePath)
 {
     ImagePluginResult result = { IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
     lastError[0] = '\0';
@@ -108,7 +108,7 @@ export extern "C" __declspec(dllexport) ImagePluginResult LoadImageFromFile(cons
     return result;
 }
 
-export extern "C" __declspec(dllexport) void FreeImageData(ImagePluginData* imageData)
+export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)
 {
     if (imageData)
     {
@@ -117,7 +117,7 @@ export extern "C" __declspec(dllexport) void FreeImageData(ImagePluginData* imag
     }
 }
 
-export extern "C" __declspec(dllexport) const char* GetLastError()
+export extern "C" IMAGEPLUGIN_API const char* GetLastError()
 {
     return lastError;
 }

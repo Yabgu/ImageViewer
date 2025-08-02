@@ -6,6 +6,15 @@
 extern "C" {
 #endif
 
+// Export macro for cross-platform symbol visibility
+#ifndef IMAGEPLUGIN_API
+#ifdef _WIN32
+#define IMAGEPLUGIN_API __declspec(dllexport)
+#else
+#define IMAGEPLUGIN_API __attribute__((visibility("default")))
+#endif
+#endif
+
 typedef enum ImagePluginResultCode {
     IMAGE_PLUGIN_OK = 0,
     IMAGE_PLUGIN_FILE_ERROR = 1,
@@ -28,7 +37,13 @@ struct ImagePluginResult {
     ImagePluginData* data;
 };
 
-typedef ImagePluginResult (*LoadImageFromFileFunc)(const wchar_t*);
+#ifdef _WIN32
+#define ImagePluginPath wchar_t*
+#else
+#define ImagePluginPath char*
+#endif
+
+typedef ImagePluginResult (*LoadImageFromFileFunc)(const ImagePluginPath);
 typedef void (*FreeImageDataFunc)(ImagePluginData*);
 
 typedef const char* (*GetLastErrorFunc)();
