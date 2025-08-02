@@ -50,7 +50,27 @@ public:
         void* handle = dlopen(pluginPath.c_str(), RTLD_LAZY);
         if (!handle) {
             // Try loading from the current executable's directory
-            auto exeDir = std::filesystem::canonical("/proc/self/exe").parent_path();
+            std::filesystem::path exeDir;
+#if defined(__linux__)
+            exeDir = std::filesystem::canonical("/proc/self/exe").parent_path();
+#elif defined(__APPLE__)
+            {
+                char exePath[PATH_MAX];
+                uint32_t size = sizeof(exePath);
+                if (_NSGetExecutablePath(exePath, &size) == 0) {
+                    exeDir = std::filesystem::canonical(exePath).parent_path();
+                }
+            }
+#elif defined(__FreeBSD__)
+            {
+                char exePath[PATH_MAX];
+                size_t size = sizeof(exePath);
+                int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+                if (sysctl(mib, 4, exePath, &size, NULL, 0) == 0) {
+                    exeDir = std::filesystem::canonical(exePath).parent_path();
+                }
+            }
+#endif
             auto altPath = exeDir / pluginPath.filename();
             handle = dlopen(altPath.c_str(), RTLD_LAZY);
             if (!handle) return nullptr;
