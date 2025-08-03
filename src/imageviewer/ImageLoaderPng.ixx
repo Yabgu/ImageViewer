@@ -1,12 +1,9 @@
 module;
 
 #include <cstdio>
-#include <stdexcept>
 #include <cstring>
 #include <cstdint>
 #include <png.h>
-#include <filesystem>
-#include <format>
 #include "ImagePluginDef.h"
 
 export module ImageLoaderPng;

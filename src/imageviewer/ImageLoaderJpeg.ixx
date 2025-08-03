@@ -1,13 +1,10 @@
 module;
 
 #include <cstdio>
-#include <stdexcept>
 #include <cstring>
 #include <cstdint>
 #include <jpeglib.h>
 #include <setjmp.h>
-#include <filesystem>
-#include <format>
 #include "ImagePluginDef.h"
 
 struct my_error_mgr

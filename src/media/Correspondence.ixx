@@ -1,4 +1,5 @@
-#pragma once
+module;
+
 #include <map>
 #include <string>
 

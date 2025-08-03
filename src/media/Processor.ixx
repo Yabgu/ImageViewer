@@ -1,7 +1,8 @@
-#pragma once
-#include "Buffer.ixx"
+module;
 
 export module media.Processor;
+
+import media.Buffer;
 
 namespace media {
     // Represents a processing operation (filter, transformation, etc.)

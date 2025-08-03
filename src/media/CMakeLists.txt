@@ -1,7 +1,7 @@
 add_library(media)
 
 target_sources(
-    media PRIVATE
+    media PUBLIC
     FILE_SET media_modules TYPE CXX_MODULES FILES
         Correspondence.ixx
         Buffer.ixx

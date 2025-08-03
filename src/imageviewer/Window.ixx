@@ -1,13 +1,6 @@
 module;
 
-#include <memory>
-#include <vector>
-#include <iostream>
-#include <cstdint>
 #include <cassert>
-#include <format>
-#include <thread>
-#include <filesystem>
 
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>

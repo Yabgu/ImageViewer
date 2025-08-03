@@ -1,10 +1,12 @@
-#pragma once
+module;
+
 #include <map>
 #include <vector>
-#include "Correspondence.ixx"
-#include "CorrespondenceInterpreter.ixx"
+
 
 export module media.Dispatcher;
+import media.Correspondence;
+import media.CorrespondenceInterpreter;
 
 namespace media {
     // Dispatcher for routing events to handlers

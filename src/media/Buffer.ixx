@@ -1,9 +1,11 @@
-#pragma once
+module;
+
 #include <vector>
 #include <cstddef>
-#include "Correspondence.ixx"
 
 export module media.Buffer;
+
+import media.Correspondence;
 
 namespace media {
     // Represents a buffer holding N-dimensional data (image, audio, prompt, etc.)

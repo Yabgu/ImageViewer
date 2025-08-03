@@ -1,14 +1,4 @@
-#include <algorithm>
-#include <format>
-#include <memory>
-#include <vector>
-#include <iostream>
-#include <cstdint>
-#include <format>
-#include <thread>
-#include <filesystem>
 #include <cstdio>
-#include <regex>
 
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>

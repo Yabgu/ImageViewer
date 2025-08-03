@@ -1,7 +1,8 @@
-#pragma once
-#include "Buffer.ixx"
+module;
 
 export module media.View;
+
+import media.Buffer;
 
 namespace media {
     // Represents something that can display or output a buffer (window, file, etc.)

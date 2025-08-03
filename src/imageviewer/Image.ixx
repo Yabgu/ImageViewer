@@ -5,8 +5,6 @@ module;
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
-#include <regex>
-#include <format>
 #include "ImagePluginDef.h"
 
 #ifdef _WIN32

@@ -1,8 +1,8 @@
-#pragma once
-#include "Buffer.ixx"
-#include "Correspondence.ixx"
+module;
 
 export module media.ViewCorrespondence;
+import meida.Buffer;
+import media.Correspondence;
 
 namespace media {
     // Represents a specific event/message for viewing (e.g., viewing a buffer)

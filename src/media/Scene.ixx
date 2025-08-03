@@ -1,8 +1,9 @@
-#pragma once
-#include "View.ixx"
-#include "Processor.ixx"
+module;
 
 export module media.Scene;
+import media.View;
+import media.Processor;
+
 
 namespace media {
     // Scene ties together a view and a processor (could be extended for more complex pipelines)
