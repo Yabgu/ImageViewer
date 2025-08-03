@@ -32,6 +32,7 @@ target_sources(imageviewer PUBLIC
         TexturePool.ixx
         Image.ixx
         HotkeysHandler.ixx
+        PluginManager.ixx
 )
 
 target_sources(iview PRIVATE
@@ -49,20 +50,45 @@ target_include_directories(imageviewer PRIVATE
 find_package(PNG REQUIRED)
 
 target_include_directories(imageviewer PRIVATE
-    ${JPEG_INCLUDE_DIR}
-    ${PNG_INCLUDE_DIRS}
 )
 
 target_link_libraries(imageviewer PRIVATE
     glfw
     glad::glad
-    JPEG::JPEG
-    PNG::PNG
 )
 
 target_link_libraries(iview PRIVATE
     glfw
     glad::glad
-    JPEG::JPEG
     imageviewer
+)
+
+# JPEG Plugin DLL
+add_library(ImageLoaderJpeg SHARED)
+target_sources(ImageLoaderJpeg PUBLIC
+    FILE_SET jpegloader TYPE CXX_MODULES
+    FILES
+        ImageLoaderJpeg.ixx
+)
+set_property(TARGET ImageLoaderJpeg PROPERTY CXX_STANDARD 23)
+target_include_directories(ImageLoaderJpeg PRIVATE
+    ${JPEG_INCLUDE_DIR}
+)
+target_link_libraries(ImageLoaderJpeg PRIVATE
+    JPEG::JPEG
+)
+
+# PNG Plugin DLL
+add_library(ImageLoaderPng SHARED)
+target_sources(ImageLoaderPng PUBLIC
+    FILE_SET pngloader TYPE CXX_MODULES
+    FILES
+        ImageLoaderPng.ixx
+)
+set_property(TARGET ImageLoaderPng PROPERTY CXX_STANDARD 23)
+target_include_directories(ImageLoaderPng PRIVATE
+    ${PNG_INCLUDE_DIRS}
+)
+target_link_libraries(ImageLoaderPng PRIVATE
+    PNG::PNG
 )

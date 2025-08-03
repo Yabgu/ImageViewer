@@ -1,4 +1,7 @@
-export module ui.View;
+
+module;
+
+#include <string>
 
 import media.Buffer;
 import media.View;
@@ -8,11 +11,7 @@ import media.Correspondence;
 import media.ViewCorrespondence;
 import media.CorrespondenceInterpreter;
 import media.Dispatcher;
-
-#include <unordered_map>
-#include <unordered_set>
-#include <memory>
-#include <string>
+export module ui.View;
 
 namespace ui {
     // OpenGL-specific buffer wrapper
