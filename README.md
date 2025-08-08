@@ -1,7 +1,11 @@
 # ImageViewer
 
 ## Brief
-ImageViewer is a C++ and OpenGL-powered image viewer pushing the boundaries of display technology. It aims to deliver virtual 9-bit (and higher) color perception on standard 8-bit monitors through rapid frame-sequential display, with exceptionally fast image loading and rendering (targeting <0.5s for large files like 10MB JPEGs). Currently in early alpha, it supports basic JPEG and PNG rendering. High-fidelity viewing and plugin support are in development to unlock unparalleled fidelity and extensibility on everyday hardware.
+Step into a world where your everyday monitor transcends its limits. ImageViewer is a cutting-edge C++ and OpenGL-powered image viewer, designed to unlock the hidden depths of color and clarity. By harnessing the power of rapid frame-sequential display, it breathes life into virtual 9-bit (and beyond) color perception on standard 8-bit screens.
+
+With lightning-fast image loading—targeting under half a second for even large files, ImageViewer is your gateway to a seamless, high-fidelity visual experience. Currently in its early alpha stage, it supports JPEG and PNG formats, with a bold roadmap to redefine image viewing through unparalleled precision, speed, and extensibility.
+
+The future of image viewing is here—crafted for professionals, enthusiasts, and anyone who dares to see beyond the ordinary.
 
 ## Mission
 Our mission is to provide an image viewing experience that transcends the limitations of conventional 8-bit displays and slow loading times. We aim to deliver perceptually higher bit-depth imagery and unparalleled speed to professionals and enthusiasts, making high-fidelity image review accessible on everyday hardware.
