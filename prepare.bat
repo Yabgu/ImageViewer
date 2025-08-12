@@ -18,7 +18,7 @@ set VCPKG_DISABLE_METRICS=1
 if not exist vcpkg\vcpkg.exe (
     mkdir vcpkg
     compact /c vcpkg /i /Q
-    git clone https://github.com/microsoft/vcpkg --depth 1
+    git clone https://github.com/microsoft/vcpkg
     cmd /C vcpkg\bootstrap-vcpkg.bat
 )
 popd

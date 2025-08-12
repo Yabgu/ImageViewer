@@ -1,10 +1,22 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "imageviewer",
+  "version": "1.0.0",
+  "description": "A simple image viewer application",
+  "homepage": "https://github.com/Yabgu/ImageViewer",
+  "builtin-baseline": "4fea4b5ff05c28111e6c5eda0996b7feb7241317",
   "dependencies": [
     "glad",
     "glfw3",
     "libjpeg-turbo",
     "libpng",
-    "nanogui"
+    "nanogui",
+    {
+      "name": "wasmedge",
+      "version>=" : "0.13.5",
+      "features": [
+        "aot"
+      ]
+    }
   ]
 }
