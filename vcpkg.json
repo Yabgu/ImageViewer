@@ -10,13 +10,6 @@
     "glfw3",
     "libjpeg-turbo",
     "libpng",
-    "nanogui",
-    {
-      "name": "wasmedge",
-      "version>=" : "0.13.5",
-      "features": [
-        "aot"
-      ]
-    }
+    "nanogui"
   ]
 }

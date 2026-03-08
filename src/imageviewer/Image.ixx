@@ -5,6 +5,7 @@ module;
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
+#include <regex>
 #include "ImagePluginDef.h"
 
 #ifdef _WIN32
@@ -102,7 +103,7 @@ public:
 		static PluginManager pluginManager;
 		auto extension = path.extension().string();
 		std::filesystem::path pluginPath;
-		if (std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex::icase)))
+		if (std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex_constants::icase)))
 		{
 #ifdef _WIN32
 			pluginPath = "ImageLoaderJpeg.dll";
@@ -110,7 +111,7 @@ public:
 			pluginPath = "libImageLoaderJpeg.so";
 #endif
 		}
-		else if (std::regex_match(extension, std::regex("\\.png", std::regex::icase)))
+		else if (std::regex_match(extension, std::regex("\\.png", std::regex_constants::icase)))
 		{
 #ifdef _WIN32
 			pluginPath = "ImageLoaderPng.dll";

@@ -75,6 +75,13 @@ After running the prepare script, navigate into the newly created build director
 cd build
 ```
 
+### External dependencies
+
+Some optional or alternative dependencies may not be available via your local vcpkg installation. If you need to use Wasmtime directly (instead of WasmEdge), see the upstream project here:
+
+- Wasmtime (GitHub): https://github.com/bytecodealliance/wasmtime
+
+
 Then, compile the project using CMake:
 
 ```sh

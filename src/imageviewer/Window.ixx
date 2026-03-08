@@ -5,6 +5,8 @@ module;
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include <bits/shared_ptr.h>
+#include <bits/stl_algo.h>
 
 import TexturePool;
 import Image;
