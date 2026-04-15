@@ -38,12 +38,12 @@ struct ImagePluginResult {
 };
 
 #ifdef _WIN32
-#define ImagePluginPath wchar_t*
+typedef const wchar_t* ImagePluginPath;
 #else
-#define ImagePluginPath char*
+typedef const char* ImagePluginPath;
 #endif
 
-typedef ImagePluginResult (*LoadImageFromFileFunc)(const ImagePluginPath);
+typedef ImagePluginResult (*LoadImageFromFileFunc)(ImagePluginPath);
 typedef void (*FreeImageDataFunc)(ImagePluginData*);
 
 typedef const char* (*ImagePluginGetLastErrorFunc)();
