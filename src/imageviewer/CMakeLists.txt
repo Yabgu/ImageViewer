@@ -14,6 +14,9 @@ endif()
 find_package(JPEG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
+find_package(WebP CONFIG REQUIRED)
+find_package(TIFF REQUIRED)
+find_package(unofficial-stb CONFIG REQUIRED)
 
 # Main executable
 if(WIN32)
@@ -91,4 +94,41 @@ target_include_directories(ImageLoaderPng PRIVATE
 )
 target_link_libraries(ImageLoaderPng PRIVATE
     PNG::PNG
+)
+
+# WebP Plugin DLL
+add_library(ImageLoaderWebp SHARED)
+target_sources(ImageLoaderWebp PUBLIC
+    FILE_SET webploader TYPE CXX_MODULES
+    FILES
+        ImageLoaderWebp.ixx
+)
+set_property(TARGET ImageLoaderWebp PROPERTY CXX_STANDARD 23)
+target_link_libraries(ImageLoaderWebp PRIVATE
+    WebP::webp
+    WebP::webpdecoder
+)
+
+# TIFF Plugin DLL
+add_library(ImageLoaderTiff SHARED)
+target_sources(ImageLoaderTiff PUBLIC
+    FILE_SET tiffloader TYPE CXX_MODULES
+    FILES
+        ImageLoaderTiff.ixx
+)
+set_property(TARGET ImageLoaderTiff PROPERTY CXX_STANDARD 23)
+target_link_libraries(ImageLoaderTiff PRIVATE
+    TIFF::TIFF
+)
+
+# Stb Plugin DLL (BMP, TGA, GIF, HDR, PIC, PPM, PGM)
+add_library(ImageLoaderStb SHARED)
+target_sources(ImageLoaderStb PUBLIC
+    FILE_SET stbloader TYPE CXX_MODULES
+    FILES
+        ImageLoaderStb.ixx
+)
+set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
+target_link_libraries(ImageLoaderStb PRIVATE
+    unofficial::stb::stb
 )

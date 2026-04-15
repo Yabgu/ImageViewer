@@ -120,6 +120,30 @@ public:
 			pluginPath = "libImageLoaderPng.so";
 #endif
 		}
+		else if (std::regex_match(extension, std::regex("\\.webp", std::regex::icase)))
+		{
+#ifdef _WIN32
+			pluginPath = "ImageLoaderWebp.dll";
+#else
+			pluginPath = "libImageLoaderWebp.so";
+#endif
+		}
+		else if (std::regex_match(extension, std::regex("\\.tiff|\\.tif", std::regex::icase)))
+		{
+#ifdef _WIN32
+			pluginPath = "ImageLoaderTiff.dll";
+#else
+			pluginPath = "libImageLoaderTiff.so";
+#endif
+		}
+		else if (std::regex_match(extension, std::regex("\\.bmp|\\.tga|\\.gif|\\.hdr|\\.pic|\\.ppm|\\.pgm", std::regex::icase)))
+		{
+#ifdef _WIN32
+			pluginPath = "ImageLoaderStb.dll";
+#else
+			pluginPath = "libImageLoaderStb.so";
+#endif
+		}
 		else
 		{
 			[[unlikely]] throw std::runtime_error("Unknown file extension");
