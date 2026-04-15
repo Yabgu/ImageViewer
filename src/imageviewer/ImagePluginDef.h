@@ -46,7 +46,7 @@ struct ImagePluginResult {
 typedef ImagePluginResult (*LoadImageFromFileFunc)(const ImagePluginPath);
 typedef void (*FreeImageDataFunc)(ImagePluginData*);
 
-typedef const char* (*GetLastErrorFunc)();
+typedef const char* (*ImagePluginGetLastErrorFunc)();
 
 #ifdef __cplusplus
 }

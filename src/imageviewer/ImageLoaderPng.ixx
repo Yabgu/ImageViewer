@@ -117,7 +117,7 @@ export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)
     }
 }
 
-export extern "C" IMAGEPLUGIN_API const char* GetLastError()
+export extern "C" IMAGEPLUGIN_API const char* ImagePluginGetLastError()
 {
     return lastError;
 }
