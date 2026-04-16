@@ -128,6 +128,3 @@ target_sources(ImageLoaderStb PUBLIC
         ImageLoaderStb.ixx
 )
 set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
-target_include_directories(ImageLoaderStb PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
