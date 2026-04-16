@@ -47,27 +47,25 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         }
 
         size_t dataSize = static_cast<size_t>(width) * height * componentsPerPixel;
-        void* block = std::malloc(sizeof(ImagePluginData) + dataSize);
+        auto block = (ImagePluginData*)std::malloc(sizeof(ImagePluginData) + dataSize);
         if (!block)
         {
             stbi_image_free(pixels);
             throw std::runtime_error("Failed to allocate image buffer");
         }
 
-        ImagePluginData* data = ::new (block) ImagePluginData{
-            .width = width,
-            .height = height,
-            .componentsPerPixel = componentsPerPixel,
-            .stride = width * componentsPerPixel,
-            .size = dataSize,
-            .data = static_cast<uint8_t*>(block) + sizeof(ImagePluginData)
-        };
+        block->width = width;
+        block->height = height;
+        block->componentsPerPixel = componentsPerPixel;
+        block->stride = width * componentsPerPixel;
+        block->size = dataSize;
+        block->data = static_cast<uint8_t*>((void*)block) + sizeof(ImagePluginData);
 
-        std::memcpy(data->data, pixels, dataSize);
+        std::memcpy(block->data, pixels, dataSize);
         stbi_image_free(pixels);
 
         result.code = IMAGE_PLUGIN_OK;
-        result.data = data;
+        result.data = block;
     }
     catch (const std::runtime_error& e)
     {

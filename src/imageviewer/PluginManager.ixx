@@ -21,6 +21,7 @@ public:
     struct PluginEntry {
         PluginHandle handle;
         LoadImageFromFileFunc loadFunc;
+        FreeImageDataFunc freeFunc;
     };
 
     PluginManager() = default;
@@ -37,15 +38,21 @@ public:
     PluginEntry* getPlugin(const std::filesystem::path& pluginPath) {
         auto it = plugins.find(pluginPath.string());
         if (it != plugins.end()) return &it->second;
+
+        PluginHandle handle = findAndLoadModule(pluginPath);
+        if (!handle) return nullptr;
+
+        if (!getLoadAndFreeProc(handle, pluginPath.string()))
+            return nullptr;
+
+        return &plugins[pluginPath.string()];
+    }
+
+private:
+    PluginHandle findAndLoadModule(const std::filesystem::path& pluginPath) {
 #ifdef _WIN32
         HMODULE hModule = LoadLibraryW(pluginPath.c_str());
-        if (!hModule) return nullptr;
-        auto loadFunc = (LoadImageFromFileFunc)GetProcAddress(hModule, "LoadImageFromFile");
-        if (!loadFunc) {
-            FreeLibrary(hModule);
-            return nullptr;
-        }
-        plugins[pluginPath.string()] = { hModule, loadFunc };
+        return hModule;
 #else
         void* handle = dlopen(pluginPath.c_str(), RTLD_LAZY);
         if (!handle) {
@@ -73,16 +80,38 @@ public:
 #endif
             auto altPath = exeDir / pluginPath.filename();
             handle = dlopen(altPath.c_str(), RTLD_LAZY);
-            if (!handle) return nullptr;
         }
+        return handle;
+#endif
+    }
+
+    bool getLoadAndFreeProc(PluginHandle handle, const std::string& key) {
+#ifdef _WIN32
+        auto loadFunc = (LoadImageFromFileFunc)GetProcAddress(handle, "LoadImageFromFile");
+        if (!loadFunc) {
+            FreeLibrary(handle);
+            return false;
+        }
+        auto freeFunc = (FreeImageDataFunc)GetProcAddress(handle, "FreeImageData");
+        if (!freeFunc) {
+            FreeLibrary(handle);
+            return false;
+        }
+        plugins[key] = { handle, loadFunc, freeFunc };
+#else
         auto loadFunc = (LoadImageFromFileFunc)dlsym(handle, "LoadImageFromFile");
         if (!loadFunc) {
             dlclose(handle);
-            return nullptr;
+            return false;
         }
-        plugins[pluginPath.string()] = { handle, loadFunc };
+        auto freeFunc = (FreeImageDataFunc)dlsym(handle, "FreeImageData");
+        if (!freeFunc) {
+            dlclose(handle);
+            return false;
+        }
+        plugins[key] = { handle, loadFunc, freeFunc };
 #endif
-        return &plugins[pluginPath.string()];
+        return true;
     }
 private:
     std::map<std::string, PluginEntry> plugins;

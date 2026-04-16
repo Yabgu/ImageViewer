@@ -54,6 +54,16 @@ private:
 		return entry->loadFunc(imagePath.c_str());
 	}
 
+	static void FreeImageResultViaPlugin(PluginManager& manager, const std::filesystem::path& pluginPath, ImagePluginResult& result)
+	{
+		auto* entry = manager.getPlugin(pluginPath);
+		if (!entry || !entry->freeFunc) {
+			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string());
+		}
+		entry->freeFunc(result.data);
+		result.data = nullptr;
+	}
+
 public:
 	const int width;
 	const int height;
@@ -159,8 +169,7 @@ public:
 		Image result(pluginResult.data->width, pluginResult.data->height, pluginResult.data->componentsPerPixel);
 		std::memcpy(result.data, pluginResult.data->data, pluginResult.data->size);
 
-		delete[] pluginResult.data->data;
-		delete pluginResult.data;
+		FreeImageResultViaPlugin(pluginManager, pluginPath, pluginResult);
 
 		return result;
 	}
