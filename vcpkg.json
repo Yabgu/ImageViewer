@@ -7,7 +7,6 @@
     "libpng",
     "libwebp",
     "nanogui",
-    "stb",
     "tiff"
   ]
 }

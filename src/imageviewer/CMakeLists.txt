@@ -16,7 +16,6 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 find_package(TIFF REQUIRED)
-find_package(unofficial-stb CONFIG REQUIRED)
 
 # Main executable
 if(WIN32)
@@ -129,6 +128,6 @@ target_sources(ImageLoaderStb PUBLIC
         ImageLoaderStb.ixx
 )
 set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
-target_link_libraries(ImageLoaderStb PRIVATE
-    unofficial::stb::stb
+target_include_directories(ImageLoaderStb PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )

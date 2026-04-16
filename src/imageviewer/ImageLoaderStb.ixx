@@ -9,7 +9,7 @@ module;
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_JPEG
 #define STBI_NO_PNG
-#include <stb_image.h>
+#include "stb_image.h"
 
 export module ImageLoaderStb;
 
