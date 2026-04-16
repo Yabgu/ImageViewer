@@ -1,8 +1,10 @@
 module;
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include "ImagePluginDef.h"
@@ -45,13 +47,20 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         }
 
         size_t dataSize = static_cast<size_t>(width) * height * componentsPerPixel;
-        ImagePluginData* data = new ImagePluginData{
+        void* block = std::malloc(sizeof(ImagePluginData) + dataSize);
+        if (!block)
+        {
+            stbi_image_free(pixels);
+            throw std::runtime_error("Failed to allocate image buffer");
+        }
+
+        ImagePluginData* data = ::new (block) ImagePluginData{
             .width = width,
             .height = height,
             .componentsPerPixel = componentsPerPixel,
             .stride = width * componentsPerPixel,
             .size = dataSize,
-            .data = new uint8_t[dataSize]
+            .data = static_cast<uint8_t*>(block) + sizeof(ImagePluginData)
         };
 
         std::memcpy(data->data, pixels, dataSize);
@@ -71,10 +80,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)
 {
     if (imageData)
-    {
-        delete[] imageData->data;
-        delete imageData;
-    }
+        std::free(imageData);
 }
 
 export extern "C" IMAGEPLUGIN_API const char* ImagePluginGetLastError()
