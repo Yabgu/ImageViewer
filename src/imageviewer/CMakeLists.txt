@@ -16,6 +16,7 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 find_package(TIFF REQUIRED)
+find_package(Stb REQUIRED)
 
 # Main executable
 if(WIN32)
@@ -128,3 +129,4 @@ target_sources(ImageLoaderStb PUBLIC
         ImageLoaderStb.ixx
 )
 set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
+target_include_directories(ImageLoaderStb PRIVATE ${Stb_INCLUDE_DIR})
