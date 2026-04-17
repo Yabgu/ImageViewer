@@ -14,6 +14,10 @@ module;
 #include <dlfcn.h>
 #endif
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 

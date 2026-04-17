@@ -159,7 +159,7 @@ private:
 	const int numberOfVerticalSlices;
 	const int numberOfHorizontalSlices;
 	const size_t capacity;
-	GLuint* const textures;
+	GLuint* textures;
 
 	GLuint vao;
 	GLuint vbo_positions;
@@ -242,6 +242,7 @@ public:
 		glGenBuffers(1, &vbo_texcoords);
 		glBindVertexArray(vao);
 
+		// Unit quad in object space: two triangles covering (0,0)–(1,1)
 		float positions[] = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f };
 		glBindBuffer(GL_ARRAY_BUFFER, vbo_positions);
 		glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
@@ -308,7 +309,8 @@ public:
 		  vbo_positions(other.vbo_positions),
 		  vbo_texcoords(other.vbo_texcoords)
 	{
-		const_cast<GLuint*&>(other.textures) = nullptr;
+		// Nullify other's pointer to prevent double-free after move
+		other.textures     = nullptr;
 		other.vao = 0;
 		other.vbo_positions = 0;
 		other.vbo_texcoords = 0;
@@ -331,14 +333,14 @@ public:
 	{
 		glBindVertexArray(vao);
 		for (int y = 0; y < numberOfHorizontalSlices; ++y) {
-			int hBorderTop    = redundantBorderSize / 2 * (y != 0);
-			int hBorderBottom = redundantBorderSize / 2 * (y != numberOfHorizontalSlices - 1);
+			int hBorderTop    = (y != 0)                         ? redundantBorderSize / 2 : 0;
+			int hBorderBottom = (y != numberOfHorizontalSlices - 1) ? redundantBorderSize / 2 : 0;
 			int top_px    = y * (segmentHeight - redundantBorderSize) + hBorderTop;
 			int bottom_px = y * (segmentHeight - redundantBorderSize) + segmentHeight - hBorderBottom;
 
 			for (int x = 0; x < numberOfVerticalSlices; ++x) {
-				int vBorderLeft  = redundantBorderSize / 2 * (x != 0);
-				int vBorderRight = redundantBorderSize / 2 * (x != numberOfVerticalSlices - 1);
+				int vBorderLeft  = (x != 0)                        ? redundantBorderSize / 2 : 0;
+				int vBorderRight = (x != numberOfVerticalSlices - 1) ? redundantBorderSize / 2 : 0;
 				int left_px  = x * (segmentWidth - redundantBorderSize) + vBorderLeft;
 				int right_px = x * (segmentWidth - redundantBorderSize) + segmentWidth - vBorderRight;
 
