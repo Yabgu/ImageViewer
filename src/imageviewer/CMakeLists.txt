@@ -32,7 +32,6 @@ target_sources(imageviewer PUBLIC
     FILE_SET imageviewer TYPE CXX_MODULES
     FILES
         Window.ixx
-        TexturePool.ixx
         Image.ixx
         HotkeysHandler.ixx
         PluginManager.ixx
@@ -57,12 +56,10 @@ target_include_directories(imageviewer PRIVATE
 
 target_link_libraries(imageviewer PRIVATE
     glfw
-    glad::glad
 )
 
 target_link_libraries(iview PRIVATE
     glfw
-    glad::glad
     imageviewer
 )
 
@@ -130,3 +127,16 @@ target_sources(ImageLoaderStb PUBLIC
 )
 set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
 target_include_directories(ImageLoaderStb PRIVATE ${Stb_INCLUDE_DIR})
+
+# OpenGL Renderer Plugin DLL
+add_library(RendererOpenGL SHARED)
+target_sources(RendererOpenGL PUBLIC
+    FILE_SET rendererOpenGL TYPE CXX_MODULES
+    FILES
+        RendererOpenGL.ixx
+)
+set_property(TARGET RendererOpenGL PROPERTY CXX_STANDARD 23)
+target_link_libraries(RendererOpenGL PRIVATE
+    glfw
+    glad::glad
+)
