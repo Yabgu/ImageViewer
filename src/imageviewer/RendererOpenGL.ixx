@@ -309,7 +309,7 @@ public:
 		  vbo_positions(other.vbo_positions),
 		  vbo_texcoords(other.vbo_texcoords)
 	{
-		// Nullify other's pointer to prevent double-free after move
+		// Nullify other's resources to prevent double-free after move
 		other.textures     = nullptr;
 		other.vao = 0;
 		other.vbo_positions = 0;

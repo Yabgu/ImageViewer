@@ -349,7 +349,7 @@ public:
 		CenterImage();
 	}
 
-	void Draw()
+	void Draw() const
 	{
 		rendererPlugin.draw(rendererHandle, textureHandle,
 			width, height, getZoom(), panX, panY);
