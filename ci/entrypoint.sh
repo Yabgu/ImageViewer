@@ -46,6 +46,8 @@ cleanup() {
     echo "[entrypoint] Caught shutdown signal - deregistering runner..."
     if [ -n "${RUNNER_TOKEN:-}" ]; then
         ./config.sh remove --token "${RUNNER_TOKEN}" || true
+    else
+        echo "[entrypoint] WARNING: RUNNER_TOKEN not set - skipping deregistration. Runner may need manual cleanup on GitHub."
     fi
     echo "[entrypoint] Runner deregistered. Goodbye."
     exit 0

@@ -51,7 +51,8 @@ case "${CMD}" in
 
     _volume_mountpoint="$(podman volume inspect -f '{{.Mountpoint}}' "${VOLUME_NAME}")"
     _runner_already_configured="false"
-    if [[ -n "${_volume_mountpoint}" ]] && find "${_volume_mountpoint}" -maxdepth 3 \( -name '.runner' -o -name '.credentials' \) -print -quit | grep -q .; then
+    if [[ -n "${_volume_mountpoint}" ]] && \
+       [[ -f "${_volume_mountpoint}/actions-runner/.runner" || -f "${_volume_mountpoint}/actions-runner/.credentials" ]]; then
       _runner_already_configured="true"
     fi
 
