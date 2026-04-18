@@ -1,0 +1,61 @@
+
+FROM debian:trixie
+
+# -- Build-time args ------------------------------------------------------------
+ARG RUNNER_VERSION=2.332.1
+ARG RUNNER_ARCH=x64
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUNNER_VERSION=${RUNNER_VERSION} \
+    RUNNER_ARCH=${RUNNER_ARCH} \
+    RUNNER_HOME=/home/runner/actions-runner
+
+# Tooling needed for C++ builds, vcpkg bootstrap, and Windows cross-compilation.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    curl \
+    git \
+    mingw-w64 \
+    ninja-build \
+    pkg-config \
+    python3 \
+    tar \
+    unzip \
+    zip \
+ && rm -rf /var/lib/apt/lists/*
+
+# -- Non-root user --------------------------------------------------------------
+RUN useradd -m -s /bin/bash runner \
+    && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+USER runner
+
+WORKDIR /home/runner
+
+# vcpkg uses this directory for binary caches by default when available.
+RUN mkdir -p /home/runner/vcpkg-cache
+ENV VCPKG_DEFAULT_BINARY_CACHE=/home/runner/vcpkg-cache
+
+# -- GitHub Actions runner binary (x64) ---------------------------------------
+RUN mkdir -p ${RUNNER_HOME} && cd ${RUNNER_HOME} \
+    && curl -fsSL -o runner.tar.gz \
+        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
+    && tar xzf runner.tar.gz \
+    && rm runner.tar.gz
+
+
+USER root
+RUN cd ${RUNNER_HOME} \
+    && ./bin/installdependencies.sh \
+    && rm -rf /var/lib/apt/lists/*
+
+USER runner
+
+# -- Entrypoint -----------------------------------------------------------------
+COPY --chown=runner:runner entrypoint.sh /home/runner/entrypoint.sh
+RUN chmod +x /home/runner/entrypoint.sh
+
+ENTRYPOINT ["/home/runner/entrypoint.sh"]
+
