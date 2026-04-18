@@ -45,16 +45,22 @@ case "${CMD}" in
     ;;
 
   run)
-    if [[ -z "${RUNNER_TOKEN}" ]]; then
-      echo "ERROR: RUNNER_TOKEN is not set. Edit build-and-run.sh before registering." >&2
+    # Create persistent volume if missing
+    podman volume inspect "${VOLUME_NAME}" >/dev/null 2>&1 \
+      || podman volume create "${VOLUME_NAME}"
+
+    _volume_mountpoint="$(podman volume inspect -f '{{.Mountpoint}}' "${VOLUME_NAME}")"
+    _runner_already_configured="false"
+    if [[ -n "${_volume_mountpoint}" ]] && find "${_volume_mountpoint}" -maxdepth 3 \( -name '.runner' -o -name '.credentials' \) -print -quit | grep -q .; then
+      _runner_already_configured="true"
+    fi
+
+    if [[ -z "${RUNNER_TOKEN}" && "${_runner_already_configured}" != "true" ]]; then
+      echo "ERROR: RUNNER_TOKEN is not set. Edit build-and-run.sh before first registration." >&2
       exit 1
     fi
 
     echo "Starting container: ${CONTAINER_NAME} ..."
-
-    # Create persistent volume if missing
-    podman volume inspect "${VOLUME_NAME}" >/dev/null 2>&1 \
-      || podman volume create "${VOLUME_NAME}"
 
     podman run -d \
       --name "${CONTAINER_NAME}" \

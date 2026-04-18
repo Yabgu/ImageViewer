@@ -31,7 +31,6 @@ jobs:
             ./bootstrap-vcpkg.sh --disableMetrics
             popd
             popd
-            third-party/vcpkg/bootstrap-vcpkg.sh --disableMetrics
           fi
 
       - name: Configure

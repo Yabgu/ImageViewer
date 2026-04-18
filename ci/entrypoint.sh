@@ -9,7 +9,6 @@ cd "${RUNNER_HOME}"
 
 # -- Validate required env vars -------------------------------------------------
 : "${GITHUB_URL:?  ERROR: GITHUB_URL must be set}"
-: "${RUNNER_TOKEN:?ERROR: RUNNER_TOKEN must be set}"
 
 RUNNER_NAME="${RUNNER_NAME:-$(hostname)}"
 # RUNNER_ARCH is baked in at image build time; fall back to x64 if unset.
@@ -26,6 +25,7 @@ echo "+==================================================+"
 
 # -- Register runner (only if not already configured) --------------------------
 if [ ! -f ".runner" ]; then
+    : "${RUNNER_TOKEN:?ERROR: RUNNER_TOKEN must be set for first-time registration}"
     echo "[entrypoint] Registering runner..."
     ./config.sh \
         --url        "${GITHUB_URL}" \
@@ -44,7 +44,9 @@ fi
 cleanup() {
     echo ""
     echo "[entrypoint] Caught shutdown signal - deregistering runner..."
-    ./config.sh remove --token "${RUNNER_TOKEN}" || true
+    if [ -n "${RUNNER_TOKEN:-}" ]; then
+        ./config.sh remove --token "${RUNNER_TOKEN}" || true
+    fi
     echo "[entrypoint] Runner deregistered. Goodbye."
     exit 0
 }
