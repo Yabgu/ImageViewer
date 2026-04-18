@@ -2,7 +2,7 @@
 FROM debian:trixie
 
 # -- Build-time args ------------------------------------------------------------
-ARG RUNNER_VERSION=2.332.1
+ARG RUNNER_VERSION=2.333.1
 ARG RUNNER_ARCH=x64
 ARG POWERSHELL_VERSION=7.5.4
 
@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tar \
     unzip \
     zip \
+    icu-devtools \
  && rm -rf /var/lib/apt/lists/*
 
 # Install PowerShell Core so vcpkg app-local dependency steps use pwsh on Linux.
