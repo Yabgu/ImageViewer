@@ -27,8 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # -- Non-root user --------------------------------------------------------------
-RUN useradd -m -s /bin/bash runner \
-    && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+RUN useradd -m -s /bin/bash runner
 
 USER runner
 
