@@ -66,13 +66,7 @@ target_sources(iview PRIVATE
 set_property(TARGET imageviewer PROPERTY CXX_STANDARD 23)
 set_property(TARGET iview PROPERTY CXX_STANDARD 23)
 
-target_include_directories(imageviewer PRIVATE
-)
-
 find_package(PNG REQUIRED)
-
-target_include_directories(imageviewer PRIVATE
-)
 
 target_link_libraries(imageviewer PRIVATE
     glfw
