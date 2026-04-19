@@ -1,11 +1,7 @@
 module;
 
 #include <stdexcept>
-#include <thread>
 #include <glad/glad.h>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
 
 export module TexturePool;
 
@@ -98,45 +94,15 @@ public:
 		glEnableVertexAttribArray(1);
 		glBindVertexArray(0);
 
-		// Thread-safe queue for producer-consumer
-		struct QueueItem {
-			int index;
-			Image* img;
-		};
-		std::queue<QueueItem> queue;
-		std::mutex mtx;
-		std::condition_variable cv;
-		std::atomic<size_t> produced{0};
-		std::atomic<size_t> consumed{0};
-
-		// Producer: create subsections in parallel
-		std::thread producer([&]() {
-			for (int y = 0; y < numberOfHorizontalSlices; ++y) {
-				for (int x = 0; x < numberOfVerticalSlices; ++x) {
-					int idx = GetTextureIndex(x, y);
-					Image* sub = image.Subsection(x * (segmentWidth - redundantBorderSize), y * (segmentHeight - redundantBorderSize), segmentWidth, segmentHeight);
-					{
-						std::lock_guard<std::mutex> lock(mtx);
-						queue.push({idx, sub});
-					}
-					cv.notify_one();
-					++produced;
-				}
+		// Sequentially create subsections and upload to GPU
+		for (int y = 0; y < numberOfHorizontalSlices; ++y) {
+			for (int x = 0; x < numberOfVerticalSlices; ++x) {
+				int idx = GetTextureIndex(x, y);
+				Image* sub = image.Subsection(x * (segmentWidth - redundantBorderSize), y * (segmentHeight - redundantBorderSize), segmentWidth, segmentHeight);
+				UpdateTexture(idx, *sub);
+				delete sub;
 			}
-		});
-
-		// Consumer: main thread uploads to GPU
-		while (consumed < capacity) {
-			std::unique_lock<std::mutex> lock(mtx);
-			cv.wait(lock, [&] { return !queue.empty(); });
-			auto item = queue.front();
-			queue.pop();
-			lock.unlock();
-			UpdateTexture(item.index, *item.img);
-			delete item.img;
-			++consumed;
 		}
-		producer.join();
 	}
 
 	TextureCollection(TextureCollection&& other) noexcept

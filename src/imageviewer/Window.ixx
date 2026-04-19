@@ -6,7 +6,6 @@ module;
 #include <cstdint>
 #include <cassert>
 #include <format>
-#include <thread>
 #include <filesystem>
 
 #define GLFW_INCLUDE_NONE
