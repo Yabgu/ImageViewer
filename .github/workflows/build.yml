@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-linux:
-    name: Build (Linux)
+  build-windows-mingw32:
+    name: Build (Windows/MinGW32)
     runs-on: [mingw32, linux, x64]
     env:
       VCPKG_DISABLE_METRICS: "1"
