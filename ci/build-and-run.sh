@@ -23,6 +23,9 @@ esac
 IMAGE_NAME="gh-actions-runner-mingw32"
 CONTAINER_NAME="gh-runner-mingw32"
 VOLUME_NAME="gh-runner-data-mingw32"
+WORKSPACE_ROOT="$(realpath ..)"
+WORKSPACE_BASENAME="$(basename "${WORKSPACE_ROOT}")"
+DEV_MOUNT_PATH="/home/runner/work/${WORKSPACE_BASENAME}"
 # -- EDIT THESE ----------------------------------------------------------------
 GITHUB_URL="https://github.com/Yabgu/ImageViewer"
 RUNNER_TOKEN=""   # Only used ONCE during first registration
@@ -67,6 +70,7 @@ case "${CMD}" in
       --name "${CONTAINER_NAME}" \
       --restart unless-stopped \
       -v "${VOLUME_NAME}:/home/runner" \
+      -e RUN_MODE="run" \
       -e GITHUB_URL="${GITHUB_URL}" \
       -e RUNNER_TOKEN="${RUNNER_TOKEN}" \
       -e RUNNER_NAME="${RUNNER_NAME}" \
@@ -74,6 +78,20 @@ case "${CMD}" in
       "${IMAGE_NAME}"
 
     echo "Runner started. Use './build-and-run.sh logs' to follow output."
+    ;;
+
+  dev)
+    echo "Starting interactive dev container with workspace mounted at ${DEV_MOUNT_PATH} ..."
+
+    podman run --rm -it \
+      --name "${CONTAINER_NAME}-dev" \
+      --userns=keep-id \
+      --user "$(id -u):$(id -g)" \
+      -e RUN_MODE="dev" \
+      -e GITHUB_WORKSPACE="${DEV_MOUNT_PATH}" \
+      -v "${WORKSPACE_ROOT}:${DEV_MOUNT_PATH}:rw" \
+      -w "${DEV_MOUNT_PATH}" \
+      "${IMAGE_NAME}"
     ;;
 
   stop)
@@ -93,6 +111,6 @@ case "${CMD}" in
     ;;
 
   help|*)
-    echo "Usage: $0 {build|run|stop|logs|restart}"
+    echo "Usage: $0 {build|run|dev|stop|logs|restart}"
     ;;
 esac

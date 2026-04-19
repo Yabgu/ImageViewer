@@ -4,6 +4,13 @@
 # ------------------------------------------------------------------------------
 set -euo pipefail
 
+RUN_MODE="${RUN_MODE:-run}"
+
+if [[ "${RUN_MODE}" == "dev" ]]; then
+    echo "[entrypoint] RUN_MODE=dev detected - launching interactive bash shell."
+    exec /bin/bash
+fi
+
 RUNNER_HOME="${RUNNER_HOME:-/home/runner/actions-runner}"
 cd "${RUNNER_HOME}"
 
