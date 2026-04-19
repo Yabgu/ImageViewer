@@ -68,7 +68,9 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         else
             pixelFormat = IMAGE_PIXEL_FORMAT_U8;
 
-        // Determine colour space (heuristic: float/16-bit files are usually linear)
+        // Determine colour space (heuristic: float/16-bit TIFF files are
+        // typically stored as linear light). A future filter layer can refine
+        // this using the optional TIFFTAG_TRANSFERFUNCTION or ICC profile.
         ImageColorSpace colorSpace;
         if (pixelFormat == IMAGE_PIXEL_FORMAT_F32 || pixelFormat == IMAGE_PIXEL_FORMAT_U16)
             colorSpace = IMAGE_COLOR_SPACE_LINEAR;

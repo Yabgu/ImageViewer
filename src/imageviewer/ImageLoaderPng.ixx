@@ -93,12 +93,16 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     // --- Colour space: prefer explicit PNG metadata over heuristics ---
     ImageColorSpace colorSpace;
     {
+        // Gamma value for linear light (1.0) expressed in the same scale as
+        // the value returned by png_get_gAMA (which already gives a double).
+        constexpr double LINEAR_GAMMA_LOWER = 0.99;
+        constexpr double LINEAR_GAMMA_UPPER = 1.01;
         int srgb_intent = -1;
         double gamma_val = 0.0;
         if (png_get_sRGB(png_ptr, info_ptr, &srgb_intent) == PNG_INFO_sRGB) {
             colorSpace = IMAGE_COLOR_SPACE_SRGB;
         } else if (png_get_gAMA(png_ptr, info_ptr, &gamma_val) == PNG_INFO_gAMA
-                   && gamma_val > 0.99 && gamma_val < 1.01) {
+                   && gamma_val > LINEAR_GAMMA_LOWER && gamma_val < LINEAR_GAMMA_UPPER) {
             colorSpace = IMAGE_COLOR_SPACE_LINEAR;
         } else {
             // Convention: 16-bit PNG is most commonly linear-light encoded
