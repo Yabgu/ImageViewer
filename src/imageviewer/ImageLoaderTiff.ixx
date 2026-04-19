@@ -39,46 +39,138 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             throw std::runtime_error("Invalid TIFF dimensions");
         }
 
-        size_t pixelCount = static_cast<size_t>(width) * height;
-        uint32_t* raster = static_cast<uint32_t*>(_TIFFmalloc(pixelCount * sizeof(uint32_t)));
-        if (!raster)
+        // Read image metadata
+        uint16_t bitsPerSample  = 8;
+        uint16_t samplesPerPixel = 3;
+        uint16_t sampleFormat   = SAMPLEFORMAT_UINT;
+        uint16_t photometric    = PHOTOMETRIC_RGB;
+        uint16_t planarConfig   = PLANARCONFIG_CONTIG;
+        TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE,   &bitsPerSample);
+        TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &samplesPerPixel);
+        TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT,    &sampleFormat);
+        TIFFGetFieldDefaulted(tif, TIFFTAG_PHOTOMETRIC,     &photometric);
+        TIFFGetFieldDefaulted(tif, TIFFTAG_PLANARCONFIG,    &planarConfig);
+
+        // Check for an alpha (extra) sample
+        uint16_t  extraSamples     = 0;
+        uint16_t* extraSampleTypes = nullptr;
+        TIFFGetField(tif, TIFFTAG_EXTRASAMPLES, &extraSamples, &extraSampleTypes);
+        bool hasAlpha = (extraSamples > 0 && extraSampleTypes &&
+                         (extraSampleTypes[0] == EXTRASAMPLE_ASSOCALPHA ||
+                          extraSampleTypes[0] == EXTRASAMPLE_UNASSALPHA));
+
+        // Determine pixel format from TIFF metadata
+        ImagePixelFormat pixelFormat;
+        if (bitsPerSample == 32 && sampleFormat == SAMPLEFORMAT_IEEEFP)
+            pixelFormat = IMAGE_PIXEL_FORMAT_F32;
+        else if (bitsPerSample == 16)
+            pixelFormat = IMAGE_PIXEL_FORMAT_U16;
+        else
+            pixelFormat = IMAGE_PIXEL_FORMAT_U8;
+
+        // Determine colour space (heuristic: float/16-bit files are usually linear)
+        ImageColorSpace colorSpace;
+        if (pixelFormat == IMAGE_PIXEL_FORMAT_F32 || pixelFormat == IMAGE_PIXEL_FORMAT_U16)
+            colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+        else
+            colorSpace = IMAGE_COLOR_SPACE_SRGB;
+
+        // Determine channel order
+        ImageChannelOrder channelOrder;
+        if (photometric == PHOTOMETRIC_MINISBLACK || photometric == PHOTOMETRIC_MINISWHITE)
+            channelOrder = hasAlpha ? IMAGE_CHANNEL_ORDER_GRAY_ALPHA : IMAGE_CHANNEL_ORDER_GRAY;
+        else
+            channelOrder = hasAlpha ? IMAGE_CHANNEL_ORDER_RGBA : IMAGE_CHANNEL_ORDER_RGB;
+
+        // Tiled TIFFs: fall back to the 8-bit RGBA convenience reader
+        if (TIFFIsTiled(tif))
         {
+            size_t pixelCount = static_cast<size_t>(width) * height;
+            uint32_t* raster = static_cast<uint32_t*>(_TIFFmalloc(pixelCount * sizeof(uint32_t)));
+            if (!raster)
+            {
+                TIFFClose(tif);
+                throw std::runtime_error("Failed to allocate raster buffer for tiled TIFF");
+            }
+            if (!TIFFReadRGBAImageOriented(tif, width, height, raster, ORIENTATION_TOPLEFT, 0))
+            {
+                _TIFFfree(raster);
+                TIFFClose(tif);
+                throw std::runtime_error("Tiled TIFF decode failed");
+            }
             TIFFClose(tif);
-            throw std::runtime_error("Failed to allocate raster buffer");
+
+            constexpr int components = 4;
+            size_t dataSize = pixelCount * components;
+            uint8_t* pixelData = new uint8_t[dataSize];
+            std::memcpy(pixelData, raster, dataSize);
+            _TIFFfree(raster);
+
+            ImagePluginData* data = new ImagePluginData{
+                .width              = static_cast<int>(width),
+                .height             = static_cast<int>(height),
+                .componentsPerPixel = components,
+                .stride             = static_cast<int>(width) * components,
+                .size               = dataSize,
+                .data               = pixelData,
+                .pixelFormat        = IMAGE_PIXEL_FORMAT_U8,
+                .colorSpace         = IMAGE_COLOR_SPACE_SRGB,
+                .channelOrder       = IMAGE_CHANNEL_ORDER_RGBA
+            };
+            result.code = IMAGE_PLUGIN_OK;
+            result.data = data;
+            return result;
         }
 
-        if (!TIFFReadRGBAImageOriented(tif, width, height, raster, ORIENTATION_TOPLEFT, 0))
+        // Strip-based TIFF: read scanlines at native bit depth
+        int bpc = ImagePixelFormatBytesPerChannel(pixelFormat);
+        tmsize_t tiffRowBytes = TIFFScanlineSize(tif);
+        size_t   packRowBytes = static_cast<size_t>(width) * samplesPerPixel * bpc;
+        size_t   dataSize     = packRowBytes * height;
+        uint8_t* pixelData    = new uint8_t[dataSize];
+
+        // Temporary row buffer only needed when libtiff pads the scanline
+        uint8_t* rowBuf = (tiffRowBytes > static_cast<tmsize_t>(packRowBytes))
+                          ? new uint8_t[tiffRowBytes] : nullptr;
+
+        for (uint32_t row = 0; row < height; ++row)
         {
-            _TIFFfree(raster);
-            TIFFClose(tif);
-            throw std::runtime_error("TIFF decode failed");
+            uint8_t* dst = pixelData + row * packRowBytes;
+            if (rowBuf)
+            {
+                if (TIFFReadScanline(tif, rowBuf, row, 0) < 0)
+                {
+                    delete[] rowBuf;
+                    delete[] pixelData;
+                    TIFFClose(tif);
+                    throw std::runtime_error("TIFF scanline read failed");
+                }
+                std::memcpy(dst, rowBuf, packRowBytes);
+            }
+            else
+            {
+                if (TIFFReadScanline(tif, dst, row, 0) < 0)
+                {
+                    delete[] pixelData;
+                    TIFFClose(tif);
+                    throw std::runtime_error("TIFF scanline read failed");
+                }
+            }
         }
+        delete[] rowBuf;
         TIFFClose(tif);
 
-        constexpr int components = 4;
-        size_t dataSize = pixelCount * components;
-        void* block = std::malloc(sizeof(ImagePluginData) + dataSize);
-        if (!block)
-        {
-            _TIFFfree(raster);
-            throw std::runtime_error("Failed to allocate image buffer");
-        }
-
-        ImagePluginData* data = ::new (block) ImagePluginData{
-            .width = static_cast<int>(width),
-            .height = static_cast<int>(height),
-            .componentsPerPixel = components,
-            .stride = static_cast<int>(width) * components,
-            .size = dataSize,
-            .data = static_cast<uint8_t*>(block) + sizeof(ImagePluginData)
+        ImagePluginData* data = new ImagePluginData{
+            .width              = static_cast<int>(width),
+            .height             = static_cast<int>(height),
+            .componentsPerPixel = static_cast<int>(samplesPerPixel),
+            .stride             = static_cast<int>(packRowBytes),
+            .size               = dataSize,
+            .data               = pixelData,
+            .pixelFormat        = pixelFormat,
+            .colorSpace         = colorSpace,
+            .channelOrder       = channelOrder
         };
-
-        // TIFFReadRGBAImageOriented stores each pixel as a uint32_t with R in the low bits and
-        // A in the high bits (TIFFGetR masks bits 0-7, TIFFGetA masks bits 24-31). On
-        // little-endian systems the in-memory byte order is therefore R, G, B, A.
-        std::memcpy(data->data, raster, dataSize);
-        _TIFFfree(raster);
-
         result.code = IMAGE_PLUGIN_OK;
         result.data = data;
     }
@@ -93,7 +185,10 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)
 {
     if (imageData)
-        std::free(imageData);
+    {
+        delete[] imageData->data;
+        delete imageData;
+    }
 }
 
 export extern "C" IMAGEPLUGIN_API const char* ImagePluginGetLastError()

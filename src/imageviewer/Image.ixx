@@ -36,13 +36,14 @@ export module Image;
 export class Image
 {
 private:
-	static inline int CalculateSize(int width, int height, int componentsPerPixel)
+	static size_t CalculateSize(int width, int height, int componentsPerPixel, ImagePixelFormat pixelFormat)
 	{
 		if (width <= 0 || height <= 0 || componentsPerPixel <= 0)
 		{
 			[[unlikely]] throw std::runtime_error("Size cannot be zero or negative");
 		}
-		return width * height * componentsPerPixel;
+		return static_cast<size_t>(width) * height * componentsPerPixel
+		       * ImagePixelFormatBytesPerChannel(pixelFormat);
 	}
 
 	static ImagePluginResult LoadImageViaPlugin(PluginManager& manager, const std::filesystem::path& pluginPath, const std::filesystem::path& imagePath)
@@ -71,6 +72,14 @@ public:
 	const int stride;
 	const size_t size;
 	uint8_t* const data;
+	const ImagePixelFormat  pixelFormat;
+	const ImageColorSpace   colorSpace;
+	const ImageChannelOrder channelOrder;
+
+	int BytesPerChannel() const noexcept
+	{
+		return ImagePixelFormatBytesPerChannel(pixelFormat);
+	}
 
 	Image(Image&& o)
 		: width(o.width),
@@ -78,7 +87,10 @@ public:
 		componentsPerPixel(o.componentsPerPixel),
 		stride(o.stride),
 		size(o.size),
-		data{o.data}
+		data(o.data),
+		pixelFormat(o.pixelFormat),
+		colorSpace(o.colorSpace),
+		channelOrder(o.channelOrder)
 	{
 		const_cast<uint8_t*&>(o.data) = nullptr;
 	}
@@ -89,18 +101,27 @@ public:
 		componentsPerPixel(o.componentsPerPixel),
 		stride(o.stride),
 		size(o.size),
-		data(new uint8_t[o.size])
+		data(new uint8_t[o.size]),
+		pixelFormat(o.pixelFormat),
+		colorSpace(o.colorSpace),
+		channelOrder(o.channelOrder)
 	{
 		std::copy(o.data, o.data + o.size, data);
 	}
 
-	Image(const int width, const int height, const int componentsPerPixel)
+	Image(int width, int height, int componentsPerPixel,
+	      ImagePixelFormat  pixelFormat  = IMAGE_PIXEL_FORMAT_U8,
+	      ImageColorSpace   colorSpace   = IMAGE_COLOR_SPACE_SRGB,
+	      ImageChannelOrder channelOrder = IMAGE_CHANNEL_ORDER_RGB)
 		: width(width),
 		height(height),
 		componentsPerPixel(componentsPerPixel),
-		stride(width* componentsPerPixel),
-		size(CalculateSize(width, height, componentsPerPixel)),
-		data(new uint8_t[size])
+		stride(width * componentsPerPixel * ImagePixelFormatBytesPerChannel(pixelFormat)),
+		size(CalculateSize(width, height, componentsPerPixel, pixelFormat)),
+		data(new uint8_t[size]),
+		pixelFormat(pixelFormat),
+		colorSpace(colorSpace),
+		channelOrder(channelOrder)
 	{
 	}
 
@@ -166,7 +187,14 @@ public:
 			throw std::runtime_error(errMsg);
 		}
 
-		Image result(pluginResult.data->width, pluginResult.data->height, pluginResult.data->componentsPerPixel);
+		Image result(
+			pluginResult.data->width,
+			pluginResult.data->height,
+			pluginResult.data->componentsPerPixel,
+			pluginResult.data->pixelFormat,
+			pluginResult.data->colorSpace,
+			pluginResult.data->channelOrder
+		);
 		std::memcpy(result.data, pluginResult.data->data, pluginResult.data->size);
 
 		FreeImageResultViaPlugin(pluginManager, pluginPath, pluginResult);
@@ -181,7 +209,7 @@ public:
 			[[unlikely]] throw std::runtime_error("argument error, width and height cannot be negative");
 		}
 
-		Image* res = new Image(width, height, componentsPerPixel);
+		Image* res = new Image(width, height, componentsPerPixel, pixelFormat, colorSpace, channelOrder);
 		std::fill_n(res->data, res->size, 0u);
 
 		if (-x >= width || x >= this->width || -y >= height || y >= this->height)
@@ -189,17 +217,16 @@ public:
 			[[unlikely]] return res;
 		}
 
-		const int destX = std::max<int>(-x, 0);
-		const int destY = std::max<int>(-y, 0);
-		const int destWidth = std::min<int>(width, this->width - x);
-		const int destStride = destWidth * componentsPerPixel;
+		const int destWidth  = std::min<int>(width,  this->width  - x);
+		const int bpc        = BytesPerChannel();
+		const int destStride = destWidth * componentsPerPixel * bpc;
 		const int destHeight = std::min<int>(height, this->height - y);
 
 		for (int py = 0; py < destHeight; ++py)
 		{
 			std::memcpy(
 				(void*)&res->data[py * res->stride],
-				(void*)&this->data[x * componentsPerPixel + (y + py) * this->stride],
+				(void*)&this->data[x * componentsPerPixel * bpc + (y + py) * this->stride],
 				destStride);
 		}
 

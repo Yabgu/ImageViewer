@@ -34,10 +34,35 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         if (file == nullptr)
             throw std::runtime_error("Failed to open file");
 
+        // Detect whether the file carries HDR (32-bit float) data.
+        // stbi_is_hdr_from_file reads only the header, so rewind afterwards.
+        bool isHdr = (stbi_is_hdr_from_file(file) != 0);
+        std::fseek(file, 0, SEEK_SET);
+
         int width = 0;
         int height = 0;
         int componentsPerPixel = 0;
-        stbi_uc* pixels = stbi_load_from_file(file, &width, &height, &componentsPerPixel, 0);
+
+        ImagePixelFormat  pixelFormat;
+        ImageColorSpace   colorSpace;
+
+        void* pixels = nullptr;
+        size_t bytesPerChannel;
+
+        if (isHdr)
+        {
+            pixels          = stbi_loadf_from_file(file, &width, &height, &componentsPerPixel, 0);
+            pixelFormat     = IMAGE_PIXEL_FORMAT_F32;
+            colorSpace      = IMAGE_COLOR_SPACE_LINEAR;
+            bytesPerChannel = 4;
+        }
+        else
+        {
+            pixels          = stbi_load_from_file(file, &width, &height, &componentsPerPixel, 0);
+            pixelFormat     = IMAGE_PIXEL_FORMAT_U8;
+            colorSpace      = IMAGE_COLOR_SPACE_SRGB;
+            bytesPerChannel = 1;
+        }
         std::fclose(file);
 
         if (!pixels)
@@ -46,20 +71,31 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             throw std::runtime_error(std::string("stb_image decode failed: ") + (stbiErr ? stbiErr : "unknown"));
         }
 
-        size_t dataSize = static_cast<size_t>(width) * height * componentsPerPixel;
-        auto block = (ImagePluginData*)std::malloc(sizeof(ImagePluginData) + dataSize);
+        ImageChannelOrder channelOrder;
+        switch (componentsPerPixel) {
+        case 1:  channelOrder = IMAGE_CHANNEL_ORDER_GRAY;       break;
+        case 2:  channelOrder = IMAGE_CHANNEL_ORDER_GRAY_ALPHA; break;
+        case 4:  channelOrder = IMAGE_CHANNEL_ORDER_RGBA;       break;
+        default: channelOrder = IMAGE_CHANNEL_ORDER_RGB;        break;
+        }
+
+        size_t dataSize = static_cast<size_t>(width) * height * componentsPerPixel * bytesPerChannel;
+        auto block = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData) + dataSize));
         if (!block)
         {
             stbi_image_free(pixels);
             throw std::runtime_error("Failed to allocate image buffer");
         }
 
-        block->width = width;
-        block->height = height;
+        block->width              = width;
+        block->height             = height;
         block->componentsPerPixel = componentsPerPixel;
-        block->stride = width * componentsPerPixel;
-        block->size = dataSize;
-        block->data = static_cast<uint8_t*>((void*)block) + sizeof(ImagePluginData);
+        block->stride             = static_cast<int>(static_cast<size_t>(width) * componentsPerPixel * bytesPerChannel);
+        block->size               = dataSize;
+        block->data               = static_cast<uint8_t*>(static_cast<void*>(block)) + sizeof(ImagePluginData);
+        block->pixelFormat        = pixelFormat;
+        block->colorSpace         = colorSpace;
+        block->channelOrder       = channelOrder;
 
         std::memcpy(block->data, pixels, dataSize);
         stbi_image_free(pixels);

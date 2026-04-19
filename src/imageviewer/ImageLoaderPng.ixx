@@ -61,30 +61,81 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     png_init_io(png_ptr, file);
     png_read_info(png_ptr, info_ptr);
 
-    int width = png_get_image_width(png_ptr, info_ptr);
-    int height = png_get_image_height(png_ptr, info_ptr);
+    int width      = png_get_image_width(png_ptr, info_ptr);
+    int height     = png_get_image_height(png_ptr, info_ptr);
     int color_type = png_get_color_type(png_ptr, info_ptr);
-    int bit_depth = png_get_bit_depth(png_ptr, info_ptr);
+    int bit_depth  = png_get_bit_depth(png_ptr, info_ptr);
 
-    if (bit_depth == 16)
-        png_set_strip_16(png_ptr);
+    // Expand palette to RGB
     if (color_type == PNG_COLOR_TYPE_PALETTE)
         png_set_palette_to_rgb(png_ptr);
+    // Expand low-bit-depth gray to 8-bit
     if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
         png_set_expand_gray_1_2_4_to_8(png_ptr);
+    // Expand tRNS transparency chunk to a full alpha channel
     if (png_get_valid(png_ptr, info_ptr, PNG_INFO_tRNS))
         png_set_tRNS_to_alpha(png_ptr);
+    // For 16-bit data swap from big-endian (PNG native) to host byte order
+    if (bit_depth == 16)
+        png_set_swap(png_ptr);
 
     png_read_update_info(png_ptr, info_ptr);
+
+    // Re-read metadata after transforms
+    bit_depth  = png_get_bit_depth(png_ptr, info_ptr);
+    color_type = png_get_color_type(png_ptr, info_ptr);
     int componentsPerPixel = png_get_channels(png_ptr, info_ptr);
 
+    // --- Pixel format ---
+    ImagePixelFormat pixelFormat = (bit_depth == 16) ? IMAGE_PIXEL_FORMAT_U16 : IMAGE_PIXEL_FORMAT_U8;
+    int bpc = ImagePixelFormatBytesPerChannel(pixelFormat);
+
+    // --- Colour space: prefer explicit PNG metadata over heuristics ---
+    ImageColorSpace colorSpace;
+    {
+        int srgb_intent = -1;
+        double gamma_val = 0.0;
+        if (png_get_sRGB(png_ptr, info_ptr, &srgb_intent) == PNG_INFO_sRGB) {
+            colorSpace = IMAGE_COLOR_SPACE_SRGB;
+        } else if (png_get_gAMA(png_ptr, info_ptr, &gamma_val) == PNG_INFO_gAMA
+                   && gamma_val > 0.99 && gamma_val < 1.01) {
+            colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+        } else {
+            // Convention: 16-bit PNG is most commonly linear-light encoded
+            colorSpace = (bit_depth == 16) ? IMAGE_COLOR_SPACE_LINEAR : IMAGE_COLOR_SPACE_SRGB;
+        }
+    }
+
+    // --- Channel order ---
+    ImageChannelOrder channelOrder;
+    switch (color_type) {
+    case PNG_COLOR_TYPE_GRAY:
+        channelOrder = IMAGE_CHANNEL_ORDER_GRAY;
+        break;
+    case PNG_COLOR_TYPE_GRAY_ALPHA:
+        channelOrder = IMAGE_CHANNEL_ORDER_GRAY_ALPHA;
+        break;
+    case PNG_COLOR_TYPE_RGBA:
+        channelOrder = IMAGE_CHANNEL_ORDER_RGBA;
+        break;
+    default: /* PNG_COLOR_TYPE_RGB */
+        channelOrder = IMAGE_CHANNEL_ORDER_RGB;
+        break;
+    }
+
+    int    strideBytes = width * componentsPerPixel * bpc;
+    size_t dataSize    = static_cast<size_t>(height) * strideBytes;
+
     ImagePluginData* data = new ImagePluginData{
-        .width = width,
-        .height = height,
+        .width             = width,
+        .height            = height,
         .componentsPerPixel = componentsPerPixel,
-        .stride = width * componentsPerPixel,
-        .size = static_cast<size_t>(width * height * componentsPerPixel),
-        .data = new uint8_t[width * height * componentsPerPixel]
+        .stride            = strideBytes,
+        .size              = dataSize,
+        .data              = new uint8_t[dataSize],
+        .pixelFormat       = pixelFormat,
+        .colorSpace        = colorSpace,
+        .channelOrder      = channelOrder
     };
     if (!data->data) {
         png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
@@ -97,7 +148,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
     for (int y = 0; y < height; ++y)
     {
-        png_bytep row = data->data + y * data->stride;
+        png_bytep row = data->data + static_cast<size_t>(y) * strideBytes;
         png_read_rows(png_ptr, &row, nullptr, 1);
     }
 
