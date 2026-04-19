@@ -78,8 +78,11 @@ while true; do
     ./run.sh &
     RUNNER_PID=$!
     
-    wait "${RUNNER_PID}"
-    EXIT_CODE=$?
+    if wait "${RUNNER_PID}"; then
+        EXIT_CODE=0
+    else
+        EXIT_CODE=$?
+    fi
 
     echo "[entrypoint] Runner process exited with code ${EXIT_CODE}."
 
