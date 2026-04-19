@@ -31,7 +31,7 @@ Image ProcessInput(int argc, T* argv[])
 }
 
 #ifdef _WIN32
-#include <Windows.h>
+#include <windows.h>
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
 {
 #else

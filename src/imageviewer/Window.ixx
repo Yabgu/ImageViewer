@@ -6,17 +6,17 @@ module;
 #include <cstdint>
 #include <cassert>
 #include <format>
-#include <thread>
 #include <filesystem>
 
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+export module UserInterface;
+
 import TexturePool;
 import Image;
 import HotkeysHandler;
-export module UserInterface;
 
 export class Window
 {
