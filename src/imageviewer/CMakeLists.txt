@@ -106,6 +106,42 @@ target_link_libraries(iview PRIVATE
     imageviewer
 )
 
+# vcpkg's applocal handles dependency DLLs from vcpkg, but not compiler runtime
+# DLLs such as libc++.dll/libunwind.dll used by llvm-mingw toolchains.
+if(WIN32)
+    get_filename_component(_CXX_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    set(_MINGW_RUNTIME_DLL_CANDIDATES
+        "${_CXX_COMPILER_DIR}/libc++.dll"
+        "${_CXX_COMPILER_DIR}/libunwind.dll"
+        "${_CXX_COMPILER_DIR}/libwinpthread-1.dll"
+        "${_CXX_COMPILER_DIR}/libgcc_s_seh-1.dll"
+        "${_CXX_COMPILER_DIR}/libstdc++-6.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libc++.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libunwind.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libwinpthread-1.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libgcc_s_seh-1.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libstdc++-6.dll"
+    )
+
+    set(_MINGW_RUNTIME_DLLS "")
+    foreach(_dll IN LISTS _MINGW_RUNTIME_DLL_CANDIDATES)
+        if(EXISTS "${_dll}")
+            list(APPEND _MINGW_RUNTIME_DLLS "${_dll}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _MINGW_RUNTIME_DLLS)
+
+    if(_MINGW_RUNTIME_DLLS)
+        add_custom_command(TARGET iview POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_MINGW_RUNTIME_DLLS}
+                $<TARGET_FILE_DIR:iview>
+            COMMAND_EXPAND_LISTS
+            VERBATIM
+        )
+    endif()
+endif()
+
 # JPEG Plugin DLL
 add_library(ImageLoaderJpeg SHARED)
 target_sources(ImageLoaderJpeg PUBLIC

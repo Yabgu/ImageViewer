@@ -49,5 +49,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iview-mingw32
-          path: build-mingw32/src/imageviewer/iview.exe
+          path: build-mingw32/src/imageviewer/
           if-no-files-found: error
