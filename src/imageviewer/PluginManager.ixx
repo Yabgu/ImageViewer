@@ -4,7 +4,7 @@ module;
 #include <string>
 #include "ImagePluginDef.h"
 #ifdef _WIN32
-#include <windows.h>
+#include <libloaderapi.h>
 #else
 #include <dlfcn.h>
 #endif

@@ -1,49 +1,59 @@
-
-FROM debian:trixie
+FROM archlinux:latest
 
 # -- Build-time args ------------------------------------------------------------
 ARG RUNNER_VERSION=2.333.1
 ARG RUNNER_ARCH=x64
 ARG POWERSHELL_VERSION=7.5.4
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    RUNNER_VERSION=${RUNNER_VERSION} \
+ENV RUNNER_VERSION=${RUNNER_VERSION} \
     RUNNER_ARCH=${RUNNER_ARCH} \
     POWERSHELL_VERSION=${POWERSHELL_VERSION} \
     RUNNER_HOME=/home/runner/actions-runner
 
 # Tooling needed for C++ builds, vcpkg bootstrap, and Windows cross-compilation.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+RUN pacman-key --init \
+ && pacman-key --populate archlinux \
+ && pacman -Syu --noconfirm --ask 4
+
+RUN pacman -S --noconfirm --needed --ask 4  \
+    base-devel \
     ca-certificates \
     cmake \
     curl \
     git \
-    mingw-w64 \
-    ninja-build \
-    pkg-config \
-    python3 \
+    krb5 \
+    libunwind \
+    mingw-w64-gcc \
+    ninja \
+    openssl \
+    pkgconf \
+    python \
     tar \
+    zlib \
     unzip \
     zip \
-    icu-devtools \
- && rm -rf /var/lib/apt/lists/*
+    icu
+
+COPY llvm-mingw-*.pkg.tar.zst /tmp/
+RUN pacman -U --noconfirm /tmp/llvm-mingw-*.pkg.tar.zst \
+ && rm /tmp/llvm-mingw-*.pkg.tar.zst \
+ && rm -rf /var/cache/pacman/pkg/*
 
 # Install PowerShell Core so vcpkg app-local dependency steps use pwsh on Linux.
 RUN set -eux; \
-        case "${RUNNER_ARCH}" in \
-            x64) POWERSHELL_ARCH="x64" ;; \
-            arm64) POWERSHELL_ARCH="arm64" ;; \
-            *) echo "Unsupported RUNNER_ARCH for PowerShell: ${RUNNER_ARCH}" >&2; exit 1 ;; \
-        esac; \
-        curl -fsSL -o /tmp/powershell.tar.gz \
-            "https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/powershell-${POWERSHELL_VERSION}-linux-${POWERSHELL_ARCH}.tar.gz"; \
-        mkdir -p /opt/microsoft/powershell/7; \
-        tar -xzf /tmp/powershell.tar.gz -C /opt/microsoft/powershell/7; \
-        chmod +x /opt/microsoft/powershell/7/pwsh; \
-        ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh; \
-        rm -f /tmp/powershell.tar.gz; \
-        pwsh --version
+    case "${RUNNER_ARCH}" in \
+        x64) POWERSHELL_ARCH="x64" ;; \
+        arm64) POWERSHELL_ARCH="arm64" ;; \
+        *) echo "Unsupported RUNNER_ARCH for PowerShell: ${RUNNER_ARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/powershell.tar.gz \
+        "https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/powershell-${POWERSHELL_VERSION}-linux-${POWERSHELL_ARCH}.tar.gz"; \
+    mkdir -p /opt/microsoft/powershell/7; \
+    tar -xzf /tmp/powershell.tar.gz -C /opt/microsoft/powershell/7; \
+    chmod +x /opt/microsoft/powershell/7/pwsh; \
+    ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh; \
+    rm -f /tmp/powershell.tar.gz; \
+    pwsh --version
 
 # -- Non-root user --------------------------------------------------------------
 RUN useradd -m -s /bin/bash runner
@@ -63,17 +73,8 @@ RUN mkdir -p ${RUNNER_HOME} && cd ${RUNNER_HOME} \
     && tar xzf runner.tar.gz \
     && rm runner.tar.gz
 
-
-USER root
-RUN cd ${RUNNER_HOME} \
-    && ./bin/installdependencies.sh \
-    && rm -rf /var/lib/apt/lists/*
-
-USER runner
-
 # -- Entrypoint -----------------------------------------------------------------
 COPY --chown=runner:runner entrypoint.sh /home/runner/entrypoint.sh
 RUN chmod +x /home/runner/entrypoint.sh
 
 ENTRYPOINT ["/home/runner/entrypoint.sh"]
-

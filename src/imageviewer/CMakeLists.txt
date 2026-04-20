@@ -63,9 +63,31 @@ target_sources(imageviewer PUBLIC
         PluginManager.ixx
 )
 
-target_sources(iview PRIVATE
-    main.cpp
-)
+
+if(WIN32)
+    target_compile_definitions(iview PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+    target_compile_definitions(imageviewer PUBLIC
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_link_options(iview PRIVATE -municode)
+    endif()
+    target_sources(iview PRIVATE
+        main_windows.cpp
+    )
+else()
+    target_sources(iview PRIVATE
+        main_unix.cpp
+    )
+endif()
 
 
 set_property(TARGET imageviewer PROPERTY CXX_STANDARD 23)
