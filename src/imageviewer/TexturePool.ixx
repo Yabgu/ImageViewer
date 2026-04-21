@@ -7,8 +7,9 @@ module;
 #include <mutex>
 #include <condition_variable>
 
-import Image;
 export module TexturePool;
+
+import Image;
 export struct TextureCollection
 {
 public:

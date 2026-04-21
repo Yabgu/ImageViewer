@@ -13,10 +13,11 @@ module;
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+export module UserInterface;
+
 import TexturePool;
 import Image;
 import HotkeysHandler;
-export module UserInterface;
 
 export class Window
 {

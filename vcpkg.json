@@ -6,7 +6,6 @@
     "libjpeg-turbo",
     "libpng",
     "libwebp",
-    "nanogui",
     "stb",
     "tiff"
   ]
