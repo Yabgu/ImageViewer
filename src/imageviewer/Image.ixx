@@ -9,15 +9,9 @@ module;
 #include <format>
 #include "ImagePluginDef.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
+export module Image;
 
 import PluginManager;
-
-export module Image;
 
 // Plugin interface structure
 // struct ImageData

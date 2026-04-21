@@ -1,3 +1,4 @@
+if(NOT WIN32)
 find_package(OpenMP)
 if (OPENMP_FOUND)
     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
@@ -10,12 +11,36 @@ if (OPENMP_FOUND)
 
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif()
+endif()
 
 find_package(JPEG REQUIRED)
+set(IMAGEVIEWER_JPEG_TARGET JPEG::JPEG)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
-find_package(TIFF REQUIRED)
+if(CMAKE_CROSSCOMPILING)
+    if(DEFINED VCPKG_INSTALLED_DIR AND NOT "${VCPKG_INSTALLED_DIR}" STREQUAL "")
+        set(_VCPKG_INSTALLED_DIR "${VCPKG_INSTALLED_DIR}")
+    else()
+        set(_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed")
+    endif()
+    set(_TIFF_INCLUDE_DIR "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include")
+    find_library(_TIFF_LIBRARY
+        NAMES tiff libtiff
+        PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
+        NO_DEFAULT_PATH
+    )
+    if(NOT _TIFF_LIBRARY)
+        message(FATAL_ERROR "Could not locate TIFF library for triplet ${VCPKG_TARGET_TRIPLET}")
+    endif()
+    add_library(TIFF::TIFF UNKNOWN IMPORTED)
+    set_target_properties(TIFF::TIFF PROPERTIES
+        IMPORTED_LOCATION "${_TIFF_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${_TIFF_INCLUDE_DIR}"
+    )
+else()
+    find_package(TIFF REQUIRED)
+endif()
 find_package(Stb REQUIRED)
 
 # Main executable
@@ -38,22 +63,37 @@ target_sources(imageviewer PUBLIC
         PluginManager.ixx
 )
 
-target_sources(iview PRIVATE
-    main.cpp
-)
+
+if(WIN32)
+    target_compile_definitions(iview PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+    target_compile_definitions(imageviewer PUBLIC
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_link_options(iview PRIVATE -municode)
+    endif()
+    target_sources(iview PRIVATE
+        main_windows.cpp
+    )
+else()
+    target_sources(iview PRIVATE
+        main_unix.cpp
+    )
+endif()
 
 
 set_property(TARGET imageviewer PROPERTY CXX_STANDARD 23)
 set_property(TARGET iview PROPERTY CXX_STANDARD 23)
 
-target_include_directories(imageviewer PRIVATE
-    ${JPEG_INCLUDE_DIR}
-)
-
 find_package(PNG REQUIRED)
-
-target_include_directories(imageviewer PRIVATE
-)
 
 target_link_libraries(imageviewer PRIVATE
     glfw
@@ -66,6 +106,42 @@ target_link_libraries(iview PRIVATE
     imageviewer
 )
 
+# vcpkg's applocal handles dependency DLLs from vcpkg, but not compiler runtime
+# DLLs such as libc++.dll/libunwind.dll used by llvm-mingw toolchains.
+if(WIN32)
+    get_filename_component(_CXX_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    set(_MINGW_RUNTIME_DLL_CANDIDATES
+        "${_CXX_COMPILER_DIR}/libc++.dll"
+        "${_CXX_COMPILER_DIR}/libunwind.dll"
+        "${_CXX_COMPILER_DIR}/libwinpthread-1.dll"
+        "${_CXX_COMPILER_DIR}/libgcc_s_seh-1.dll"
+        "${_CXX_COMPILER_DIR}/libstdc++-6.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libc++.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libunwind.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libwinpthread-1.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libgcc_s_seh-1.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libstdc++-6.dll"
+    )
+
+    set(_MINGW_RUNTIME_DLLS "")
+    foreach(_dll IN LISTS _MINGW_RUNTIME_DLL_CANDIDATES)
+        if(EXISTS "${_dll}")
+            list(APPEND _MINGW_RUNTIME_DLLS "${_dll}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _MINGW_RUNTIME_DLLS)
+
+    if(_MINGW_RUNTIME_DLLS)
+        add_custom_command(TARGET iview POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_MINGW_RUNTIME_DLLS}
+                $<TARGET_FILE_DIR:iview>
+            COMMAND_EXPAND_LISTS
+            VERBATIM
+        )
+    endif()
+endif()
+
 # JPEG Plugin DLL
 add_library(ImageLoaderJpeg SHARED)
 target_sources(ImageLoaderJpeg PUBLIC
@@ -74,11 +150,8 @@ target_sources(ImageLoaderJpeg PUBLIC
         ImageLoaderJpeg.ixx
 )
 set_property(TARGET ImageLoaderJpeg PROPERTY CXX_STANDARD 23)
-target_include_directories(ImageLoaderJpeg PRIVATE
-    ${JPEG_INCLUDE_DIR}
-)
 target_link_libraries(ImageLoaderJpeg PRIVATE
-    JPEG::JPEG
+    ${IMAGEVIEWER_JPEG_TARGET}
 )
 
 # PNG Plugin DLL
