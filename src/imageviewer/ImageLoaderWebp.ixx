@@ -72,7 +72,10 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             .componentsPerPixel = components,
             .stride = width * components,
             .size = static_cast<size_t>(width * height * components),
-            .data = new uint8_t[width * height * components]
+            .data = new uint8_t[width * height * components],
+            .pixelFormat  = IMAGE_PIXEL_FORMAT_U8,
+            .colorSpace   = IMAGE_COLOR_SPACE_SRGB,
+            .channelOrder = IMAGE_CHANNEL_ORDER_RGBA
         };
         std::memcpy(data->data, decoded, data->size);
         WebPFree(decoded);
@@ -96,7 +99,10 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             .componentsPerPixel = components,
             .stride = width * components,
             .size = static_cast<size_t>(width * height * components),
-            .data = new uint8_t[width * height * components]
+            .data = new uint8_t[width * height * components],
+            .pixelFormat  = IMAGE_PIXEL_FORMAT_U8,
+            .colorSpace   = IMAGE_COLOR_SPACE_SRGB,
+            .channelOrder = IMAGE_CHANNEL_ORDER_RGB
         };
         std::memcpy(data->data, decoded, data->size);
         WebPFree(decoded);

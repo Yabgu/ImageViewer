@@ -77,7 +77,10 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         .componentsPerPixel = cinfo.output_components,
         .stride = static_cast<int>(cinfo.output_width * cinfo.output_components),
         .size = static_cast<size_t>(cinfo.output_width * cinfo.output_height * cinfo.output_components),
-        .data = new uint8_t[cinfo.output_width * cinfo.output_height * cinfo.output_components]
+        .data = new uint8_t[cinfo.output_width * cinfo.output_height * cinfo.output_components],
+        .pixelFormat  = IMAGE_PIXEL_FORMAT_U8,
+        .colorSpace   = IMAGE_COLOR_SPACE_SRGB,
+        .channelOrder = (cinfo.output_components == 1) ? IMAGE_CHANNEL_ORDER_GRAY : IMAGE_CHANNEL_ORDER_RGB
     };
     if (!data->data) {
         jpeg_destroy_decompress(&cinfo);

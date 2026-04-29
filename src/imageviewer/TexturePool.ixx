@@ -6,6 +6,7 @@ module;
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include "ImagePluginDef.h"
 
 export module TexturePool;
 
@@ -192,44 +193,75 @@ public:
 			[[unlikely]] throw std::runtime_error("Max capacity reached for texture pool");
 		}
 
-		// Bind the specific texture to configure it
-		glActiveTexture(GL_TEXTURE0); // Activate a texture unit first
+		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, textures[index]);
 
-		// Using GL_CLAMP_TO_EDGE instead of GL_CLAMP
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-		GLint internalFormat;
-		GLenum format;
-
-		switch (image.componentsPerPixel)
+		GLenum type;
+		switch (image.pixelFormat)
 		{
-		case 4:
-			internalFormat = GL_RGBA8; // Use sized internal format for modern OpenGL
-			format = GL_RGBA;
+		case IMAGE_PIXEL_FORMAT_U16:
+			type = GL_UNSIGNED_SHORT;
 			break;
-		case 3:
-			internalFormat = GL_RGB8; // Use sized internal format
-			format = GL_RGB;
+		case IMAGE_PIXEL_FORMAT_F32:
+			type = GL_FLOAT;
 			break;
-		case 1:
-			internalFormat = GL_R8; // Use sized internal format
-			format = GL_RED;
+		default: /* IMAGE_PIXEL_FORMAT_U8 */
+			type = GL_UNSIGNED_BYTE;
 			break;
-		default:
-			[[unlikely]] throw std::runtime_error("Unsupported image format");
 		}
 
-		// Use glTexImage2D for initial upload. For updates without changing format/size, glTexSubImage2D is an alternative.
-		glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, image.width, image.height, 0, format, GL_UNSIGNED_BYTE, image.data);
-		// Optionally generate mipmaps if you plan to use them.
-		// glGenerateMipmap(GL_TEXTURE_2D);
+		GLint  internalFormat;
+		GLenum format;
+		switch (image.channelOrder)
+		{
+		case IMAGE_CHANNEL_ORDER_RGBA:
+			format         = GL_RGBA;
+			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGBA32F
+			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGBA16
+			               : GL_RGBA8;
+			break;
+		case IMAGE_CHANNEL_ORDER_BGR:
+			format         = GL_BGR;
+			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGB32F
+			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGB16
+			               : GL_RGB8;
+			break;
+		case IMAGE_CHANNEL_ORDER_BGRA:
+			format         = GL_BGRA;
+			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGBA32F
+			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGBA16
+			               : GL_RGBA8;
+			break;
+		case IMAGE_CHANNEL_ORDER_GRAY:
+			format         = GL_RED;
+			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_R32F
+			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_R16
+			               : GL_R8;
+			break;
+		case IMAGE_CHANNEL_ORDER_GRAY_ALPHA:
+			format         = GL_RG;
+			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RG32F
+			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RG16
+			               : GL_RG8;
+			break;
+		default: /* IMAGE_CHANNEL_ORDER_RGB */
+			format         = GL_RGB;
+			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGB32F
+			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGB16
+			               : GL_RGB8;
+			break;
+		}
 
-		// Unbind the texture to prevent accidental modification (good practice)
+		glTexImage2D(GL_TEXTURE_2D, 0, internalFormat,
+		             image.width, image.height, 0,
+		             format, type, image.data);
+
 		glBindTexture(GL_TEXTURE_2D, 0);
 
 		return textures[index];
