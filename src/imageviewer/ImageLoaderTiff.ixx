@@ -77,15 +77,26 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         else
             colorSpace = IMAGE_COLOR_SPACE_SRGB;
 
-        // Determine channel order
+        // Only expose native scanline data for photometrics whose samples
+        // already match the viewer's gray/RGB channel-order expectations.
+        const bool isGrayPhotometric =
+            photometric == PHOTOMETRIC_MINISBLACK || photometric == PHOTOMETRIC_MINISWHITE;
+        const bool isRgbPhotometric  = photometric == PHOTOMETRIC_RGB;
+        // Native scanline reading only works for contiguous planar config.
+        const bool supportsNativeScanline =
+            (isGrayPhotometric || isRgbPhotometric) && (planarConfig == PLANARCONFIG_CONTIG);
+
+        // Determine channel order for native scanline decoding.
         ImageChannelOrder channelOrder;
-        if (photometric == PHOTOMETRIC_MINISBLACK || photometric == PHOTOMETRIC_MINISWHITE)
+        if (isGrayPhotometric)
             channelOrder = hasAlpha ? IMAGE_CHANNEL_ORDER_GRAY_ALPHA : IMAGE_CHANNEL_ORDER_GRAY;
         else
             channelOrder = hasAlpha ? IMAGE_CHANNEL_ORDER_RGBA : IMAGE_CHANNEL_ORDER_RGB;
 
-        // Tiled TIFFs: fall back to the 8-bit RGBA convenience reader
-        if (TIFFIsTiled(tif))
+        // Tiled TIFFs and unsupported photometrics/planar configs: fall back to
+        // the 8-bit RGBA convenience reader so libtiff performs any required
+        // conversion (YCbCr→RGB, palette expansion, plane interleaving, etc.).
+        if (TIFFIsTiled(tif) || !supportsNativeScanline)
         {
             size_t pixelCount = static_cast<size_t>(width) * height;
             uint32_t* raster = static_cast<uint32_t*>(_TIFFmalloc(pixelCount * sizeof(uint32_t)));
@@ -176,7 +187,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         result.code = IMAGE_PLUGIN_OK;
         result.data = data;
     }
-    catch (const std::runtime_error& e)
+    catch (const std::exception& e)
     {
         lastError = e.what();
     }

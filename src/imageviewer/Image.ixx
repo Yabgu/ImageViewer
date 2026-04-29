@@ -217,17 +217,21 @@ public:
 			[[unlikely]] return res;
 		}
 
-		const int destWidth  = std::min<int>(width,  this->width  - x);
+		const int srcX       = std::max<int>(x, 0);
+		const int srcY       = std::max<int>(y, 0);
+		const int destX      = std::max<int>(-x, 0);
+		const int destY      = std::max<int>(-y, 0);
 		const int bpc        = BytesPerChannel();
-		const int destStride = destWidth * componentsPerPixel * bpc;
-		const int destHeight = std::min<int>(height, this->height - y);
+		const int copyWidth  = std::min<int>(width - destX, this->width - srcX);
+		const int copyStride = copyWidth * componentsPerPixel * bpc;
+		const int copyHeight = std::min<int>(height - destY, this->height - srcY);
 
-		for (int py = 0; py < destHeight; ++py)
+		for (int py = 0; py < copyHeight; ++py)
 		{
 			std::memcpy(
-				(void*)&res->data[py * res->stride],
-				(void*)&this->data[x * componentsPerPixel * bpc + (y + py) * this->stride],
-				destStride);
+				(void*)&res->data[(destY + py) * res->stride + destX * componentsPerPixel * bpc],
+				(void*)&this->data[(srcY + py) * this->stride + srcX * componentsPerPixel * bpc],
+				copyStride);
 		}
 
 		return res;
