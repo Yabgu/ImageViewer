@@ -81,7 +81,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         // already match the viewer's gray/RGB channel-order expectations.
         const bool isGrayPhotometric =
             photometric == PHOTOMETRIC_MINISBLACK || photometric == PHOTOMETRIC_MINISWHITE;
-        const bool isRgbPhotometric  = photometric == PHOTOMETRIC_RGB;
+        const bool isRgbPhotometric = photometric == PHOTOMETRIC_RGB;
         // Native scanline reading only works for contiguous planar config.
         const bool supportsNativeScanline =
             (isGrayPhotometric || isRgbPhotometric) && (planarConfig == PLANARCONFIG_CONTIG);
