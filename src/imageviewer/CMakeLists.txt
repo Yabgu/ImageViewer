@@ -1,4 +1,3 @@
-if(NOT WIN32)
 find_package(OpenMP)
 if (OPENMP_FOUND)
     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
@@ -10,7 +9,6 @@ if (OPENMP_FOUND)
     endif()
 
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
-endif()
 endif()
 
 find_package(JPEG REQUIRED)
@@ -113,11 +111,14 @@ if(WIN32)
     set(_MINGW_RUNTIME_DLL_CANDIDATES
         "${_CXX_COMPILER_DIR}/libc++.dll"
         "${_CXX_COMPILER_DIR}/libunwind.dll"
+        "${_CXX_COMPILER_DIR}/libomp.dll"
         "${_CXX_COMPILER_DIR}/libwinpthread-1.dll"
         "${_CXX_COMPILER_DIR}/libgcc_s_seh-1.dll"
         "${_CXX_COMPILER_DIR}/libstdc++-6.dll"
         "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libc++.dll"
         "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libunwind.dll"
+        "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libomp.dll"
+        "/opt/llvm-mingw/x86_64-w64-mingw32/bin/libomp.dll"
         "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libwinpthread-1.dll"
         "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libgcc_s_seh-1.dll"
         "${_CXX_COMPILER_DIR}/../x86_64-w64-mingw32/bin/libstdc++-6.dll"

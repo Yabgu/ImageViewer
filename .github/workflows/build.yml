@@ -45,9 +45,21 @@ jobs:
           set -euo pipefail
           cmake --build build-mingw32 -j"$(nproc)"
 
+      - name: Package runtime artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f iview-mingw32.zip
+
+          # Zip only executable + runtime DLLs from the target output directory.
+          (
+            cd build-mingw32/src/imageviewer
+            find . -maxdepth 1 -type f \( -name 'iview.exe' -o -name '*.dll' \) -print | sort | zip -9 -@ "$GITHUB_WORKSPACE/iview-mingw32.zip"
+          )
+
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: iview-mingw32
-          path: build-mingw32/src/imageviewer/
+          path: iview-mingw32.zip
           if-no-files-found: error
