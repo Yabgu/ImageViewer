@@ -122,9 +122,15 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     case PNG_COLOR_TYPE_RGBA:
         channelOrder = IMAGE_CHANNEL_ORDER_RGBA;
         break;
-    default: /* PNG_COLOR_TYPE_RGB */
+    case PNG_COLOR_TYPE_RGB:
         channelOrder = IMAGE_CHANNEL_ORDER_RGB;
         break;
+    default:
+        png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+        fclose(file);
+        snprintf(lastError, sizeof(lastError), "Unsupported PNG color type: %d", color_type);
+        result.code = IMAGE_PLUGIN_UNKNOWN_ERROR;
+        return result;
     }
 
     int    strideBytes = width * componentsPerPixel * bpc;
