@@ -129,6 +129,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
                 std::free(pixelData);
                 throw std::runtime_error("Failed to allocate ImagePluginData for TIFF raster decode");
             }
+            std::memset(data, 0, sizeof(ImagePluginData));
             *data = ImagePluginData{
                 .width              = static_cast<int>(width),
                 .height             = static_cast<int>(height),
@@ -200,6 +201,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             std::free(pixelData);
             throw std::runtime_error("Failed to allocate ImagePluginData for TIFF scanline decode");
         }
+        std::memset(data, 0, sizeof(ImagePluginData));
         *data = ImagePluginData{
             .width              = static_cast<int>(width),
             .height             = static_cast<int>(height),
