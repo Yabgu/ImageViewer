@@ -82,6 +82,33 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             throw std::runtime_error("Unsupported number of channels: " + std::to_string(componentsPerPixel));
         }
 
+        /* Build the per-component format descriptor. */
+        IWImageFormat fmt{};
+        fmt.componentCount = (uint16_t)componentsPerPixel;
+        const uint16_t bitsPerComp = isHdr ? 32u : 8u;
+        fmt.bitsPerPixel   = (uint16_t)(componentsPerPixel * bitsPerComp);
+        const IWComponentClass cls = isHdr ? IW_COMPONENT_CLASS_FLOAT : IW_COMPONENT_CLASS_UNORM;
+        switch (channelOrder) {
+        case IMAGE_CHANNEL_ORDER_GRAY:
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, cls, 0, bitsPerComp };
+            break;
+        case IMAGE_CHANNEL_ORDER_GRAY_ALPHA:
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, cls,            0, bitsPerComp };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    cls, bitsPerComp, bitsPerComp };
+            break;
+        case IMAGE_CHANNEL_ORDER_RGB:
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, cls,                0, bitsPerComp };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls,   bitsPerComp, bitsPerComp };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, (uint16_t)(2*bitsPerComp), bitsPerComp };
+            break;
+        default: /* IMAGE_CHANNEL_ORDER_RGBA */
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, cls,                0, bitsPerComp };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls,   bitsPerComp, bitsPerComp };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, (uint16_t)(2*bitsPerComp), bitsPerComp };
+            fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, cls, (uint16_t)(3*bitsPerComp), bitsPerComp };
+            break;
+        }
+
         size_t dataSize = static_cast<size_t>(width) * height * componentsPerPixel * bytesPerChannel;
         auto block = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData) + dataSize));
         if (!block)
@@ -92,13 +119,11 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
         block->width              = width;
         block->height             = height;
-        block->componentsPerPixel = componentsPerPixel;
         block->stride             = static_cast<int>(static_cast<size_t>(width) * componentsPerPixel * bytesPerChannel);
         block->size               = dataSize;
         block->data               = static_cast<uint8_t*>(static_cast<void*>(block)) + sizeof(ImagePluginData);
-        block->pixelFormat        = pixelFormat;
         block->colorSpace         = colorSpace;
-        block->channelOrder       = channelOrder;
+        block->format             = fmt;
 
         std::memcpy(block->data, pixels, dataSize);
         stbi_image_free(pixels);

@@ -71,16 +71,27 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
     JSAMPARRAY buffer = (*cinfo.mem->alloc_sarray)((j_common_ptr)&cinfo, JPOOL_IMAGE, row_stride, MaxLinesToRead);
 
+    /* Build the per-component format descriptor. */
+    IWImageFormat fmt{};
+    fmt.componentCount = (uint16_t)cinfo.output_components;
+    fmt.bitsPerPixel   = (uint16_t)(cinfo.output_components * 8);
+    if (cinfo.output_components == 1) {
+        fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 8 };
+    } else {
+        fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
+        fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
+        fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
+    }
+
+    const size_t totalBytes = (size_t)cinfo.output_width * cinfo.output_height * cinfo.output_components;
     ImagePluginData* data = new ImagePluginData{
-        .width = static_cast<int>(cinfo.output_width),
-        .height = static_cast<int>(cinfo.output_height),
-        .componentsPerPixel = cinfo.output_components,
-        .stride = static_cast<int>(cinfo.output_width * cinfo.output_components),
-        .size = static_cast<size_t>(cinfo.output_width * cinfo.output_height * cinfo.output_components),
-        .data = new uint8_t[cinfo.output_width * cinfo.output_height * cinfo.output_components],
-        .pixelFormat  = IMAGE_PIXEL_FORMAT_U8,
-        .colorSpace   = IMAGE_COLOR_SPACE_SRGB,
-        .channelOrder = (cinfo.output_components == 1) ? IMAGE_CHANNEL_ORDER_GRAY : IMAGE_CHANNEL_ORDER_RGB
+        .width      = static_cast<int>(cinfo.output_width),
+        .height     = static_cast<int>(cinfo.output_height),
+        .stride     = static_cast<int>(cinfo.output_width * cinfo.output_components),
+        .size       = totalBytes,
+        .data       = new uint8_t[totalBytes],
+        .colorSpace = IMAGE_COLOR_SPACE_SRGB,
+        .format     = fmt
     };
     if (!data->data) {
         jpeg_destroy_decompress(&cinfo);

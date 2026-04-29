@@ -138,16 +138,42 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     int    strideBytes = width * componentsPerPixel * bpc;
     size_t dataSize    = static_cast<size_t>(height) * strideBytes;
 
+    /* Build the per-component format descriptor. */
+    IWImageFormat fmt{};
+    fmt.componentCount = (uint16_t)componentsPerPixel;
+    fmt.bitsPerPixel   = (uint16_t)(componentsPerPixel * bit_depth);
+    {
+        const IWComponentClass cls = IW_COMPONENT_CLASS_UNORM;
+        switch (channelOrder) {
+        case IMAGE_CHANNEL_ORDER_GRAY:
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, cls, 0, (uint16_t)bit_depth };
+            break;
+        case IMAGE_CHANNEL_ORDER_GRAY_ALPHA:
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, cls,                0,               (uint16_t)bit_depth };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    cls, (uint16_t)bit_depth, (uint16_t)bit_depth };
+            break;
+        case IMAGE_CHANNEL_ORDER_RGB:
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, cls,                    0, (uint16_t)bit_depth };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls,   (uint16_t)bit_depth, (uint16_t)bit_depth };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, (uint16_t)(2*bit_depth), (uint16_t)bit_depth };
+            break;
+        default: /* IMAGE_CHANNEL_ORDER_RGBA */
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, cls,                    0, (uint16_t)bit_depth };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls,   (uint16_t)bit_depth, (uint16_t)bit_depth };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, (uint16_t)(2*bit_depth), (uint16_t)bit_depth };
+            fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, cls, (uint16_t)(3*bit_depth), (uint16_t)bit_depth };
+            break;
+        }
+    }
+
     ImagePluginData* data = new ImagePluginData{
-        .width             = width,
-        .height            = height,
-        .componentsPerPixel = componentsPerPixel,
-        .stride            = strideBytes,
-        .size              = dataSize,
-        .data              = new uint8_t[dataSize],
-        .pixelFormat       = pixelFormat,
-        .colorSpace        = colorSpace,
-        .channelOrder      = channelOrder
+        .width              = width,
+        .height             = height,
+        .stride             = strideBytes,
+        .size               = dataSize,
+        .data               = new uint8_t[dataSize],
+        .colorSpace         = colorSpace,
+        .format             = fmt
     };
     if (!data->data) {
         png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);

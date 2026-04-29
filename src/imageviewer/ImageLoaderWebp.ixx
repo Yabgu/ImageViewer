@@ -66,16 +66,21 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             return result;
         }
         constexpr int components = 4;
+        IWImageFormat fmt{};
+        fmt.componentCount = 4u;
+        fmt.bitsPerPixel   = 32u;
+        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
+        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
+        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
+        fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 };
         ImagePluginData* data = new ImagePluginData{
-            .width = width,
-            .height = height,
-            .componentsPerPixel = components,
-            .stride = width * components,
-            .size = static_cast<size_t>(width * height * components),
-            .data = new uint8_t[width * height * components],
-            .pixelFormat  = IMAGE_PIXEL_FORMAT_U8,
-            .colorSpace   = IMAGE_COLOR_SPACE_SRGB,
-            .channelOrder = IMAGE_CHANNEL_ORDER_RGBA
+            .width      = width,
+            .height     = height,
+            .stride     = width * components,
+            .size       = static_cast<size_t>(width * height * components),
+            .data       = new uint8_t[width * height * components],
+            .colorSpace = IMAGE_COLOR_SPACE_SRGB,
+            .format     = fmt
         };
         std::memcpy(data->data, decoded, data->size);
         WebPFree(decoded);
@@ -93,16 +98,20 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             return result;
         }
         constexpr int components = 3;
+        IWImageFormat fmt{};
+        fmt.componentCount = 3u;
+        fmt.bitsPerPixel   = 24u;
+        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
+        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
+        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
         ImagePluginData* data = new ImagePluginData{
-            .width = width,
-            .height = height,
-            .componentsPerPixel = components,
-            .stride = width * components,
-            .size = static_cast<size_t>(width * height * components),
-            .data = new uint8_t[width * height * components],
-            .pixelFormat  = IMAGE_PIXEL_FORMAT_U8,
-            .colorSpace   = IMAGE_COLOR_SPACE_SRGB,
-            .channelOrder = IMAGE_CHANNEL_ORDER_RGB
+            .width      = width,
+            .height     = height,
+            .stride     = width * components,
+            .size       = static_cast<size_t>(width * height * components),
+            .data       = new uint8_t[width * height * components],
+            .colorSpace = IMAGE_COLOR_SPACE_SRGB,
+            .format     = fmt
         };
         std::memcpy(data->data, decoded, data->size);
         WebPFree(decoded);

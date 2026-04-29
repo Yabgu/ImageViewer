@@ -123,6 +123,15 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             std::memcpy(pixelData, raster, dataSize);
             _TIFFfree(raster);
 
+            /* RGBA8 format descriptor for the fallback raster path. */
+            IWImageFormat fallbackFmt{};
+            fallbackFmt.componentCount = 4u;
+            fallbackFmt.bitsPerPixel   = 32u;
+            fallbackFmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
+            fallbackFmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
+            fallbackFmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
+            fallbackFmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 };
+
             ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
             if (!data)
             {
@@ -131,15 +140,13 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             }
             std::memset(data, 0, sizeof(ImagePluginData));
             *data = ImagePluginData{
-                .width              = static_cast<int>(width),
-                .height             = static_cast<int>(height),
-                .componentsPerPixel = components,
-                .stride             = static_cast<int>(width) * components,
-                .size               = dataSize,
-                .data               = pixelData,
-                .pixelFormat        = IMAGE_PIXEL_FORMAT_U8,
-                .colorSpace         = IMAGE_COLOR_SPACE_SRGB,
-                .channelOrder       = IMAGE_CHANNEL_ORDER_RGBA
+                .width      = static_cast<int>(width),
+                .height     = static_cast<int>(height),
+                .stride     = static_cast<int>(width) * components,
+                .size       = dataSize,
+                .data       = pixelData,
+                .colorSpace = IMAGE_COLOR_SPACE_SRGB,
+                .format     = fallbackFmt
             };
             result.code = IMAGE_PLUGIN_OK;
             result.data = data;
@@ -195,6 +202,35 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         std::free(rowBuf);
         TIFFClose(tif);
 
+        /* Build the per-component format descriptor for the native scanline path. */
+        const uint16_t bitsPerComp = (uint16_t)(bpc * 8);
+        IWImageFormat nativeFmt{};
+        nativeFmt.componentCount = (uint16_t)samplesPerPixel;
+        nativeFmt.bitsPerPixel   = (uint16_t)(samplesPerPixel * bitsPerComp);
+        const IWComponentClass nativeCls =
+            (pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? IW_COMPONENT_CLASS_FLOAT
+                                                    : IW_COMPONENT_CLASS_UNORM;
+        switch (channelOrder) {
+        case IMAGE_CHANNEL_ORDER_GRAY:
+            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, nativeCls, 0, bitsPerComp };
+            break;
+        case IMAGE_CHANNEL_ORDER_GRAY_ALPHA:
+            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, nativeCls,             0, bitsPerComp };
+            nativeFmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    nativeCls, bitsPerComp, bitsPerComp };
+            break;
+        case IMAGE_CHANNEL_ORDER_RGBA:
+            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_R, nativeCls,                    0, bitsPerComp };
+            nativeFmt.components[1] = { IW_COMPONENT_SEMANTIC_G, nativeCls,   bitsPerComp, bitsPerComp };
+            nativeFmt.components[2] = { IW_COMPONENT_SEMANTIC_B, nativeCls, (uint16_t)(2*bitsPerComp), bitsPerComp };
+            nativeFmt.components[3] = { IW_COMPONENT_SEMANTIC_A, nativeCls, (uint16_t)(3*bitsPerComp), bitsPerComp };
+            break;
+        default: /* IMAGE_CHANNEL_ORDER_RGB */
+            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_R, nativeCls,                    0, bitsPerComp };
+            nativeFmt.components[1] = { IW_COMPONENT_SEMANTIC_G, nativeCls,   bitsPerComp, bitsPerComp };
+            nativeFmt.components[2] = { IW_COMPONENT_SEMANTIC_B, nativeCls, (uint16_t)(2*bitsPerComp), bitsPerComp };
+            break;
+        }
+
         ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
         if (!data)
         {
@@ -203,15 +239,13 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         }
         std::memset(data, 0, sizeof(ImagePluginData));
         *data = ImagePluginData{
-            .width              = static_cast<int>(width),
-            .height             = static_cast<int>(height),
-            .componentsPerPixel = static_cast<int>(samplesPerPixel),
-            .stride             = static_cast<int>(packRowBytes),
-            .size               = dataSize,
-            .data               = pixelData,
-            .pixelFormat        = pixelFormat,
-            .colorSpace         = colorSpace,
-            .channelOrder       = channelOrder
+            .width      = static_cast<int>(width),
+            .height     = static_cast<int>(height),
+            .stride     = static_cast<int>(packRowBytes),
+            .size       = dataSize,
+            .data       = pixelData,
+            .colorSpace = colorSpace,
+            .format     = nativeFmt
         };
         result.code = IMAGE_PLUGIN_OK;
         result.data = data;
