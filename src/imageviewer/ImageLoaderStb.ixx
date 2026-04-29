@@ -75,8 +75,11 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         switch (componentsPerPixel) {
         case 1:  channelOrder = IMAGE_CHANNEL_ORDER_GRAY;       break;
         case 2:  channelOrder = IMAGE_CHANNEL_ORDER_GRAY_ALPHA; break;
+        case 3:  channelOrder = IMAGE_CHANNEL_ORDER_RGB;        break;
         case 4:  channelOrder = IMAGE_CHANNEL_ORDER_RGBA;       break;
-        default: channelOrder = IMAGE_CHANNEL_ORDER_RGB;        break;
+        default:
+            stbi_image_free(pixels);
+            throw std::runtime_error("Unsupported number of channels: " + std::to_string(componentsPerPixel));
         }
 
         size_t dataSize = static_cast<size_t>(width) * height * componentsPerPixel * bytesPerChannel;

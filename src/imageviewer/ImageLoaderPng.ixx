@@ -1,5 +1,6 @@
 module;
 
+#include <cassert>
 #include <cstdio>
 #include <stdexcept>
 #include <cstring>
@@ -65,6 +66,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     int height     = png_get_image_height(png_ptr, info_ptr);
     int color_type = png_get_color_type(png_ptr, info_ptr);
     int bit_depth  = png_get_bit_depth(png_ptr, info_ptr);
+    assert(width > 0 && height > 0 && bit_depth > 0);
 
     // Expand palette to RGB
     if (color_type == PNG_COLOR_TYPE_PALETTE)
@@ -156,9 +158,9 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         return result;
     }
 
-    for (int y = 0; y < height; ++y)
+    for (size_t y = 0; y < static_cast<size_t>(height); ++y)
     {
-        png_bytep row = data->data + static_cast<size_t>(y) * strideBytes;
+        png_bytep row = data->data + y * static_cast<size_t>(strideBytes);
         png_read_rows(png_ptr, &row, nullptr, 1);
     }
 
