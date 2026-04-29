@@ -88,7 +88,10 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
                 fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls, static_cast<uint16_t>(1 * bw), bw };
                 fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, static_cast<uint16_t>(2 * bw), bw };
                 break;
-            default: /* 4 */
+            default:
+                stbi_image_free(pixels);
+                throw std::runtime_error("Unsupported number of channels: " + std::to_string(componentsPerPixel));
+            case 4:
                 fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, cls, static_cast<uint16_t>(0 * bw), bw };
                 fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls, static_cast<uint16_t>(1 * bw), bw };
                 fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, static_cast<uint16_t>(2 * bw), bw };

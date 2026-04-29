@@ -136,9 +136,7 @@ static float ExtractComponentAsFloat(const uint8_t* pixelBytes, const IWComponen
 static ImageChannelOrder InferChannelOrder(const IWComponentDef* comps, uint16_t n) noexcept
 {
     if (n == 1) {
-        return (comps[0].semantic == IW_COMPONENT_SEMANTIC_GRAY ||
-                comps[0].semantic == IW_COMPONENT_SEMANTIC_R)
-               ? IMAGE_CHANNEL_ORDER_GRAY : IMAGE_CHANNEL_ORDER_GRAY;
+        return IMAGE_CHANNEL_ORDER_GRAY;
     }
     if (n == 2) {
         if (comps[0].semantic == IW_COMPONENT_SEMANTIC_GRAY &&
