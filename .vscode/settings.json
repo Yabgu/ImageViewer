@@ -3,9 +3,6 @@
     "cmake.configureSettings": {
         "CMAKE_TOOLCHAIN_FILE": "../third-party/vcpkg/scripts/buildsystems/vcpkg.cmake"
     },
-    "cmake.additionalKits": [
-        ".vscode/cmake-kits.json"
-    ],
     "files.associations": {
         "*.ixx": "cpp",
         "iostream": "cpp",

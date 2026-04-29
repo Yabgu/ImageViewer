@@ -30,7 +30,7 @@ export AR="$LLVM_MINGW_BIN/llvm-ar"
 export RANLIB="$LLVM_MINGW_BIN/llvm-ranlib"
 export RC="$LLVM_MINGW_BIN/x86_64-w64-mingw32-windres"
 
-cmake -S . -B build-mingw32 -G Ninja \
+cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-mingw32" -G Ninja \
     -DCMAKE_SYSTEM_NAME=Windows \
     -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic \
     -DVCPKG_HOST_TRIPLET=x64-linux \

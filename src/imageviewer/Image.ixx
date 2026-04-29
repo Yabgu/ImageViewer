@@ -56,6 +56,8 @@ private:
 #else
 		return std::format("{}.dll", baseName);
 #endif
+#elif defined(__APPLE__)
+		return std::format("lib{}.dylib", baseName);
 #else
 		return std::format("lib{}.so", baseName);
 #endif
