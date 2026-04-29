@@ -3,7 +3,6 @@ module;
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
-#include <new>
 #include <stdexcept>
 #include <string>
 #include "ImagePluginDef.h"
@@ -115,11 +114,22 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
             constexpr int components = 4;
             size_t dataSize = pixelCount * components;
-            uint8_t* pixelData = new uint8_t[dataSize];
+            uint8_t* pixelData = static_cast<uint8_t*>(std::malloc(dataSize));
+            if (!pixelData)
+            {
+                _TIFFfree(raster);
+                throw std::runtime_error("Failed to allocate pixel buffer for TIFF raster decode");
+            }
             std::memcpy(pixelData, raster, dataSize);
             _TIFFfree(raster);
 
-            ImagePluginData* data = new ImagePluginData{
+            ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
+            if (!data)
+            {
+                std::free(pixelData);
+                throw std::runtime_error("Failed to allocate ImagePluginData for TIFF raster decode");
+            }
+            *data = ImagePluginData{
                 .width              = static_cast<int>(width),
                 .height             = static_cast<int>(height),
                 .componentsPerPixel = components,
@@ -140,11 +150,22 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         tmsize_t tiffRowBytes = TIFFScanlineSize(tif);
         size_t   packRowBytes = static_cast<size_t>(width) * samplesPerPixel * bpc;
         size_t   dataSize     = packRowBytes * height;
-        uint8_t* pixelData    = new uint8_t[dataSize];
+        uint8_t* pixelData    = static_cast<uint8_t*>(std::malloc(dataSize));
+        if (!pixelData)
+        {
+            TIFFClose(tif);
+            throw std::runtime_error("Failed to allocate pixel buffer for TIFF scanline decode");
+        }
 
         // Temporary row buffer only needed when libtiff pads the scanline
         uint8_t* rowBuf = (tiffRowBytes > static_cast<tmsize_t>(packRowBytes))
-                          ? new uint8_t[tiffRowBytes] : nullptr;
+                          ? static_cast<uint8_t*>(std::malloc(tiffRowBytes)) : nullptr;
+        if (tiffRowBytes > static_cast<tmsize_t>(packRowBytes) && !rowBuf)
+        {
+            std::free(pixelData);
+            TIFFClose(tif);
+            throw std::runtime_error("Failed to allocate row buffer for TIFF scanline decode");
+        }
 
         for (uint32_t row = 0; row < height; ++row)
         {
@@ -153,8 +174,8 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             {
                 if (TIFFReadScanline(tif, rowBuf, row, 0) < 0)
                 {
-                    delete[] rowBuf;
-                    delete[] pixelData;
+                    std::free(rowBuf);
+                    std::free(pixelData);
                     TIFFClose(tif);
                     throw std::runtime_error("TIFF scanline read failed");
                 }
@@ -164,16 +185,22 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             {
                 if (TIFFReadScanline(tif, dst, row, 0) < 0)
                 {
-                    delete[] pixelData;
+                    std::free(pixelData);
                     TIFFClose(tif);
                     throw std::runtime_error("TIFF scanline read failed");
                 }
             }
         }
-        delete[] rowBuf;
+        std::free(rowBuf);
         TIFFClose(tif);
 
-        ImagePluginData* data = new ImagePluginData{
+        ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
+        if (!data)
+        {
+            std::free(pixelData);
+            throw std::runtime_error("Failed to allocate ImagePluginData for TIFF scanline decode");
+        }
+        *data = ImagePluginData{
             .width              = static_cast<int>(width),
             .height             = static_cast<int>(height),
             .componentsPerPixel = static_cast<int>(samplesPerPixel),
@@ -187,7 +214,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         result.code = IMAGE_PLUGIN_OK;
         result.data = data;
     }
-    catch (const std::exception& e)
+    catch (const std::runtime_error& e)
     {
         lastError = e.what();
     }
@@ -199,8 +226,8 @@ export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)
 {
     if (imageData)
     {
-        delete[] imageData->data;
-        delete imageData;
+        std::free(imageData->data);
+        std::free(imageData);
     }
 }
 
