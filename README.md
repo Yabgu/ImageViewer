@@ -57,6 +57,15 @@ git clone https://github.com/Yabgu/ImageViewer.git
 cd ImageViewer
 ```
 
+### CI Runner Dev Shell
+For local debugging of the CI runner container, you can start an interactive shell instead of the GitHub Actions runner:
+
+```sh
+./ci/build-and-run.sh dev
+```
+
+This mounts your workspace into the container at `/home/runner/work/<repo-name>` and opens a normal bash shell there.
+
 ### Build
 ImageViewer is designed with the C++23 standard in mind, requiring a fairly recent compiler (e.g., GCC 13+, Clang 16+, MSVC 19.38+).
 

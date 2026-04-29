@@ -9,15 +9,9 @@ module;
 #include <format>
 #include "ImagePluginDef.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
+export module Image;
 
 import PluginManager;
-
-export module Image;
 
 // Plugin interface structure
 // struct ImageData
@@ -53,6 +47,21 @@ private:
 			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string());
 		}
 		return entry->loadFunc(imagePath.c_str());
+	}
+
+	static std::filesystem::path PluginFileName(const char* baseName)
+	{
+#ifdef _WIN32
+#ifdef __MINGW32__
+		return std::format("lib{}.dll", baseName);
+#else
+		return std::format("{}.dll", baseName);
+#endif
+#elif defined(__APPLE__)
+		return std::format("lib{}.dylib", baseName);
+#else
+		return std::format("lib{}.so", baseName);
+#endif
 	}
 
 	static void FreeImageResultViaPlugin(PluginManager& manager, const std::filesystem::path& pluginPath, ImagePluginResult& result)
@@ -137,43 +146,23 @@ public:
 		std::filesystem::path pluginPath;
 		if (std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex::icase)))
 		{
-#ifdef _WIN32
-			pluginPath = "ImageLoaderJpeg.dll";
-#else
-			pluginPath = "libImageLoaderJpeg.so";
-#endif
+			pluginPath = PluginFileName("ImageLoaderJpeg");
 		}
 		else if (std::regex_match(extension, std::regex("\\.png", std::regex::icase)))
 		{
-#ifdef _WIN32
-			pluginPath = "ImageLoaderPng.dll";
-#else
-			pluginPath = "libImageLoaderPng.so";
-#endif
+			pluginPath = PluginFileName("ImageLoaderPng");
 		}
 		else if (std::regex_match(extension, std::regex("\\.webp", std::regex::icase)))
 		{
-#ifdef _WIN32
-			pluginPath = "ImageLoaderWebp.dll";
-#else
-			pluginPath = "libImageLoaderWebp.so";
-#endif
+			pluginPath = PluginFileName("ImageLoaderWebp");
 		}
 		else if (std::regex_match(extension, std::regex("\\.tiff|\\.tif", std::regex::icase)))
 		{
-#ifdef _WIN32
-			pluginPath = "ImageLoaderTiff.dll";
-#else
-			pluginPath = "libImageLoaderTiff.so";
-#endif
+			pluginPath = PluginFileName("ImageLoaderTiff");
 		}
 		else if (std::regex_match(extension, std::regex("\\.bmp|\\.tga|\\.gif|\\.hdr|\\.pic|\\.ppm|\\.pgm", std::regex::icase)))
 		{
-#ifdef _WIN32
-			pluginPath = "ImageLoaderStb.dll";
-#else
-			pluginPath = "libImageLoaderStb.so";
-#endif
+			pluginPath = PluginFileName("ImageLoaderStb");
 		}
 		else
 		{

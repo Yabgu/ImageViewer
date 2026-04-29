@@ -1,8 +1,9 @@
 /install
 /third-party
-/build
+/build*
 /out
 /vcpkg_installed
 /.cache
 
 compile_commands.json
+.vscode/launch.json

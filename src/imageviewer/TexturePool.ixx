@@ -8,8 +8,9 @@ module;
 #include <condition_variable>
 #include "ImagePluginDef.h"
 
-import Image;
 export module TexturePool;
+
+import Image;
 export struct TextureCollection
 {
 public:
