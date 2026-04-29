@@ -6,7 +6,6 @@ module;
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-#include "ImagePluginDef.h"
 
 export module TexturePool;
 
