@@ -215,19 +215,22 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, nativeCls, 0, bitsPerComp };
             break;
         case IMAGE_CHANNEL_ORDER_GRAY_ALPHA:
-            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, nativeCls,             0, bitsPerComp };
-            nativeFmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    nativeCls, bitsPerComp, bitsPerComp };
+            /* GRAY at bit 0, ALPHA at bit bitsPerComp (both same width). */
+            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, nativeCls,           0u, bitsPerComp };
+            nativeFmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    nativeCls, bitsPerComp,  bitsPerComp };
             break;
         case IMAGE_CHANNEL_ORDER_RGBA:
-            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_R, nativeCls,                    0, bitsPerComp };
-            nativeFmt.components[1] = { IW_COMPONENT_SEMANTIC_G, nativeCls,   bitsPerComp, bitsPerComp };
-            nativeFmt.components[2] = { IW_COMPONENT_SEMANTIC_B, nativeCls, (uint16_t)(2*bitsPerComp), bitsPerComp };
-            nativeFmt.components[3] = { IW_COMPONENT_SEMANTIC_A, nativeCls, (uint16_t)(3*bitsPerComp), bitsPerComp };
+            /* R/G/B/A packed consecutively; offsets are 0, W, 2W, 3W where W=bitsPerComp. */
+            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_R, nativeCls,                      0u, bitsPerComp };
+            nativeFmt.components[1] = { IW_COMPONENT_SEMANTIC_G, nativeCls,           bitsPerComp,  bitsPerComp };
+            nativeFmt.components[2] = { IW_COMPONENT_SEMANTIC_B, nativeCls, (uint16_t)(2u*bitsPerComp), bitsPerComp };
+            nativeFmt.components[3] = { IW_COMPONENT_SEMANTIC_A, nativeCls, (uint16_t)(3u*bitsPerComp), bitsPerComp };
             break;
         default: /* IMAGE_CHANNEL_ORDER_RGB */
-            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_R, nativeCls,                    0, bitsPerComp };
-            nativeFmt.components[1] = { IW_COMPONENT_SEMANTIC_G, nativeCls,   bitsPerComp, bitsPerComp };
-            nativeFmt.components[2] = { IW_COMPONENT_SEMANTIC_B, nativeCls, (uint16_t)(2*bitsPerComp), bitsPerComp };
+            /* R/G/B packed consecutively; offsets are 0, W, 2W where W=bitsPerComp. */
+            nativeFmt.components[0] = { IW_COMPONENT_SEMANTIC_R, nativeCls,                      0u, bitsPerComp };
+            nativeFmt.components[1] = { IW_COMPONENT_SEMANTIC_G, nativeCls,           bitsPerComp,  bitsPerComp };
+            nativeFmt.components[2] = { IW_COMPONENT_SEMANTIC_B, nativeCls, (uint16_t)(2u*bitsPerComp), bitsPerComp };
             break;
         }
 
