@@ -34,7 +34,12 @@ private:
 	static int ComputeStride(int width, const IWImageFormat& fmt) noexcept
 	{
 		if (fmt.storageLayout == IW_STORAGE_PLANAR && fmt.componentCount > 0u) {
-			const uint16_t bitsPerSample = fmt.bitsPerPixel / fmt.componentCount;
+			// Planar: stride is the byte-width of one row of a single component plane.
+			// bitsPerPixel is the total across all components; divide to get per-component.
+			// Integer division rounds down — if components have unequal widths the caller
+			// should set bitsPerPixel to the maximum component width instead.
+			const uint16_t bitsPerSample =
+			    static_cast<uint16_t>(fmt.bitsPerPixel / fmt.componentCount);
 			return width * static_cast<int>((bitsPerSample + 7u) / 8u);
 		}
 		return width * static_cast<int>((fmt.bitsPerPixel + 7u) / 8u);

@@ -48,6 +48,9 @@ static float TP_ExtractComponent(const uint8_t* pixelBytes,
     const int byteStart   = comp.bitOffset / 8;
     const int bitStart    = comp.bitOffset % 8;
     const int bytesNeeded = (bitStart + comp.bitWidth + 7) / 8;
+    // A component can be at most 32 bits wide; starting up to 7 bits into a byte
+    // means we read at most ceil((7+32)/8) = 5 bytes.  Cap at 5 to avoid
+    // reading beyond a valid pixel word.
     uint64_t word = 0;
     for (int i = 0; i < bytesNeeded && i < 5; ++i)
         word |= static_cast<uint64_t>(pixelBytes[byteStart + i]) << (i * 8);
