@@ -11,85 +11,11 @@ module;
 #include <condition_variable>
 #include <glad/glad.h>
 #include "ImagePluginDef.h"
+#include "Utils.hpp"
 
 export module TexturePool;
 
 import Image;
-
-// ─── Component extraction helpers (module-private) ───────────────────────────
-// Used to convert arbitrary IWImageFormat pixels to RGBA F32 when the format
-// cannot be directly uploaded to OpenGL.
-
-static float TP_HalfToFloat(uint16_t h) noexcept
-{
-    const uint32_t sign     = static_cast<uint32_t>(h & 0x8000u) << 16u;
-    const uint32_t exponent = static_cast<uint32_t>(h & 0x7C00u);
-    const uint32_t mantissa = static_cast<uint32_t>(h & 0x03FFu);
-    uint32_t f;
-    if (exponent == 0u) {
-        if (mantissa == 0u) {
-            f = sign;
-        } else {
-            uint32_t m = mantissa, e = 0x38800000u;
-            while (!(m & 0x400u)) { m <<= 1u; e -= 0x800000u; }
-            f = sign | e | ((m & 0x3FFu) << 13u);
-        }
-    } else if (exponent == 0x7C00u) {
-        f = sign | 0x7F800000u | (mantissa << 13u);
-    } else {
-        f = sign | (((exponent >> 10u) + 112u) << 23u) | (mantissa << 13u);
-    }
-    float result; std::memcpy(&result, &f, sizeof(result)); return result;
-}
-
-static float TP_ExtractComponent(const uint8_t* pixelBytes,
-                                  const IWComponentDef& comp) noexcept
-{
-    const int byteStart   = comp.bitOffset / 8;
-    const int bitStart    = comp.bitOffset % 8;
-    const int bytesNeeded = (bitStart + comp.bitWidth + 7) / 8;
-    // A component can be at most 32 bits wide; starting up to 7 bits into a byte
-    // means we read at most ceil((7+32)/8) = 5 bytes.  Cap at 5 to avoid
-    // reading beyond a valid pixel word.
-    uint64_t word = 0;
-    for (int i = 0; i < bytesNeeded && i < 5; ++i)
-        word |= static_cast<uint64_t>(pixelBytes[byteStart + i]) << (i * 8);
-    word >>= bitStart;
-    const uint64_t mask = (comp.bitWidth < 64u)
-                          ? ((uint64_t{1} << comp.bitWidth) - 1u) : ~uint64_t{0};
-    const uint64_t raw = word & mask;
-
-    switch (comp.componentClass) {
-    case IW_COMPONENT_CLASS_FLOAT:
-        if (comp.bitWidth == 16u) return TP_HalfToFloat(static_cast<uint16_t>(raw));
-        if (comp.bitWidth == 32u) {
-            float f; uint32_t u = static_cast<uint32_t>(raw);
-            std::memcpy(&f, &u, sizeof(f)); return f;
-        }
-        return static_cast<float>(raw);
-    case IW_COMPONENT_CLASS_UNORM: {
-        const uint64_t mx = (comp.bitWidth < 64u)
-                            ? ((uint64_t{1} << comp.bitWidth) - 1u) : ~uint64_t{0};
-        return static_cast<float>(raw) / static_cast<float>(mx);
-    }
-    case IW_COMPONENT_CLASS_SNORM: {
-        const uint64_t hr = uint64_t{1} << (comp.bitWidth - 1u);
-        const int64_t  s  = (raw >= hr)
-                            ? (static_cast<int64_t>(raw) - static_cast<int64_t>(uint64_t{1} << comp.bitWidth))
-                            : static_cast<int64_t>(raw);
-        return std::max(-1.0f, static_cast<float>(s) / static_cast<float>(hr - 1u));
-    }
-    case IW_COMPONENT_CLASS_SINT: {
-        const uint64_t hr = uint64_t{1} << (comp.bitWidth - 1u);
-        const int64_t  s  = (raw >= hr)
-                            ? (static_cast<int64_t>(raw) - static_cast<int64_t>(uint64_t{1} << comp.bitWidth))
-                            : static_cast<int64_t>(raw);
-        return static_cast<float>(s);
-    }
-    default: /* IW_COMPONENT_CLASS_UINT */
-        return static_cast<float>(raw);
-    }
-}
 
 // ─── GL parameter inference ───────────────────────────────────────────────────
 
@@ -183,7 +109,7 @@ static float* ConvertToRGBAF32(const Image& img)
             float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
             int genericSlot = 0; /* maps H/S/L/UV/… sequentially to R/G/B */
             for (int c = 0; c < n; ++c) {
-                const float v = TP_ExtractComponent(pixel, fmt.components[c]);
+                const float v = ExtractComponent(pixel, fmt.components[c]);
                 switch (fmt.components[c].semantic) {
                 case IW_COMPONENT_SEMANTIC_NONE:                    break; /* unused slot – skip */
                 case IW_COMPONENT_SEMANTIC_R:    rgba[0] = v;       break;
