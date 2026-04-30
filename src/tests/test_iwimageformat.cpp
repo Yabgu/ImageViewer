@@ -511,7 +511,7 @@ TEST_SUITE("ExtractComponent")
     TEST_CASE("RGB565 red channel: bitOffset=11, bitWidth=5, 0xF800 → 31.0f (UINT)")
     {
         /* 0xF800 in little-endian is {0x00, 0xF8}.
-         * Bits [11..15] = 0b11111 = 31. */
+           Bits [11..15] = 0b11111 = 31. */
         uint8_t pixel[2] = {0x00, 0xF8};
         IWComponentDef c = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 11, 5 };
         CHECK(ExtractComponent(pixel, c) == 31.0f);
@@ -520,7 +520,7 @@ TEST_SUITE("ExtractComponent")
     TEST_CASE("RGB565 green channel: bitOffset=5, bitWidth=6, 0x07E0 → 63.0f (UINT)")
     {
         /* 0x07E0 in little-endian is {0xE0, 0x07}.
-         * Bits [5..10] = 0b111111 = 63. */
+           Bits [5..10] = 0b111111 = 63. */
         uint8_t pixel[2] = {0xE0, 0x07};
         IWComponentDef c = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 5, 6 };
         CHECK(ExtractComponent(pixel, c) == 63.0f);
@@ -546,9 +546,9 @@ TEST_SUITE("ExtractComponent")
     TEST_CASE("float8 (unsupported width): raw bits returned as integer float")
     {
         /* For FLOAT components with widths other than 16 or 32, the code
-         * returns static_cast<float>(raw).  A byte value of 56 (0x38) should
-         * give 56.0f.  This test documents the current fall-through behaviour
-         * for future E4M3 / E5M2 formats once proper decoding is added. */
+           returns static_cast<float>(raw).  A byte value of 56 (0x38) should
+           give 56.0f.  This test documents the current fall-through behaviour
+           for future E4M3 / E5M2 formats once proper decoding is added. */
         uint8_t pixel[1] = {0x38};   /* decimal 56 */
         IWComponentDef c = { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_FLOAT, 0, 8 };
         CHECK(ExtractComponent(pixel, c) == 56.0f);
