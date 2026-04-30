@@ -88,9 +88,8 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     color_type = png_get_color_type(png_ptr, info_ptr);
     int componentsPerPixel = png_get_channels(png_ptr, info_ptr);
 
-    // --- Pixel format ---
-    ImagePixelFormat pixelFormat = (bit_depth == 16) ? IMAGE_PIXEL_FORMAT_U16 : IMAGE_PIXEL_FORMAT_U8;
-    int bpc = ImagePixelFormatBytesPerChannel(pixelFormat);
+    // --- Bytes per channel and colour space ---
+    int bpc = (bit_depth == 16) ? 2 : 1;
 
     // --- Colour space: prefer explicit PNG metadata over heuristics ---
     ImageColorSpace colorSpace;
@@ -112,27 +111,34 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         }
     }
 
-    // --- Channel order ---
-    ImageChannelOrder channelOrder;
-    switch (color_type) {
-    case PNG_COLOR_TYPE_GRAY:
-        channelOrder = IMAGE_CHANNEL_ORDER_GRAY;
-        break;
-    case PNG_COLOR_TYPE_GRAY_ALPHA:
-        channelOrder = IMAGE_CHANNEL_ORDER_GRAY_ALPHA;
-        break;
-    case PNG_COLOR_TYPE_RGBA:
-        channelOrder = IMAGE_CHANNEL_ORDER_RGBA;
-        break;
-    case PNG_COLOR_TYPE_RGB:
-        channelOrder = IMAGE_CHANNEL_ORDER_RGB;
-        break;
-    default:
-        png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
-        fclose(file);
-        snprintf(lastError, sizeof(lastError), "Unsupported PNG color type: %d", color_type);
-        result.code = IMAGE_PLUGIN_UNKNOWN_ERROR;
-        return result;
+    // --- Per-component format descriptor ---
+    IWImageFormat fmt = {};
+    {
+        const uint16_t bw = static_cast<uint16_t>(bit_depth);
+
+        fmt.componentCount = static_cast<uint16_t>(componentsPerPixel);
+        fmt.bitsPerPixel   = static_cast<uint16_t>(componentsPerPixel * bit_depth);
+
+        switch (color_type) {
+        case PNG_COLOR_TYPE_GRAY:
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, bw };
+            break;
+        case PNG_COLOR_TYPE_GRAY_ALPHA:
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0,  bw };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, bw, bw };
+            break;
+        case PNG_COLOR_TYPE_RGBA:
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(0 * bw), bw };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(1 * bw), bw };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(2 * bw), bw };
+            fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(3 * bw), bw };
+            break;
+        default: /* PNG_COLOR_TYPE_RGB and palette-expanded RGB */
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(0 * bw), bw };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(1 * bw), bw };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(2 * bw), bw };
+            break;
+        }
     }
 
     int    strideBytes = width * componentsPerPixel * bpc;
@@ -141,13 +147,11 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     ImagePluginData* data = new ImagePluginData{
         .width             = width,
         .height            = height,
-        .componentsPerPixel = componentsPerPixel,
         .stride            = strideBytes,
+        .colorSpace        = colorSpace,
         .size              = dataSize,
         .data              = new uint8_t[dataSize],
-        .pixelFormat       = pixelFormat,
-        .colorSpace        = colorSpace,
-        .channelOrder      = channelOrder
+        .format            = fmt
     };
     if (!data->data) {
         png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);

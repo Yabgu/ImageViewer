@@ -8,6 +8,33 @@ on:
   workflow_dispatch:
 
 jobs:
+  test-native:
+    name: Unit tests (native Linux)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download doctest header
+        run: |
+          mkdir -p /tmp/doctest/doctest
+          curl -fsSL -o /tmp/doctest/doctest/doctest.h \
+            https://raw.githubusercontent.com/doctest/doctest/v2.4.11/doctest/doctest.h
+          echo "44faa038e9c3f9728efbda143748d01124ea0a27f4bf78f35a15d8fab2e039fb  /tmp/doctest/doctest/doctest.h" | sha256sum -c -
+
+      - name: Build unit tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I src/imageviewer \
+            -I /tmp/doctest \
+            src/tests/test_iwimageformat.cpp \
+            -o /tmp/iview_tests
+
+      - name: Run unit tests
+        run: /tmp/iview_tests --no-intro
+
   build-linux:
     name: Build (Linux)
     runs-on: [mingw32, linux, x64]

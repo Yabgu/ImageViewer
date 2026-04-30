@@ -1,16 +1,116 @@
 module;
 
+#include <cstdint>
+#include <cstring>
+#include <cmath>
+#include <memory>
 #include <stdexcept>
 #include <thread>
-#include <glad/glad.h>
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <glad/glad.h>
 #include "ImagePluginDef.h"
+#include "Utils.hpp"
 
 export module TexturePool;
 
 import Image;
+
+// ─── GL parameter inference ───────────────────────────────────────────────────
+
+struct GLTexParams {
+    GLenum internalFormat;
+    GLenum format;
+    GLenum type;
+    bool   valid;
+};
+
+/* Try to map an IWImageFormat to a direct glTexImage2D call.
+ * Delegates format classification to ClassifyGLUpload() (Utils.hpp) and maps
+ * the result to concrete GL enumerators.
+ * Returns valid=false for anything else (caller falls back to RGBA F32). */
+static GLTexParams TryGetGLParams(const IWImageFormat& fmt) noexcept
+{
+    constexpr GLTexParams INVALID = {0, 0, 0, false};
+
+    const IWGLUploadHint hint = ClassifyGLUpload(fmt);
+    if (!hint.valid) return INVALID;
+
+    const bool     isFloat = hint.isFloat;
+    const uint16_t bw      = hint.bitWidth;
+    const uint16_t n       = hint.channels;
+    const bool     isBGR   = hint.isBGR;
+
+    GLenum glType;
+    if      (isFloat)       glType = GL_FLOAT;
+    else if (bw ==  8u)     glType = GL_UNSIGNED_BYTE;
+    else                    glType = GL_UNSIGNED_SHORT;  /* bw == 16 */
+
+    GLenum glFmt, intFmt;
+    switch (n) {
+    case 1:
+        glFmt  = GL_RED;
+        intFmt = isFloat ? GL_R32F  : (bw == 16u ? GL_R16   : GL_R8);
+        break;
+    case 2:
+        glFmt  = GL_RG;
+        intFmt = isFloat ? GL_RG32F : (bw == 16u ? GL_RG16  : GL_RG8);
+        break;
+    case 3:
+        glFmt  = isBGR ? GL_BGR  : GL_RGB;
+        intFmt = isFloat ? GL_RGB32F  : (bw == 16u ? GL_RGB16  : GL_RGB8);
+        break;
+    default: /* n == 4 */
+        glFmt  = isBGR ? GL_BGRA : GL_RGBA;
+        intFmt = isFloat ? GL_RGBA32F : (bw == 16u ? GL_RGBA16 : GL_RGBA8);
+        break;
+    }
+
+    return {intFmt, glFmt, glType, true};
+}
+
+/* Convert any interleaved IWImageFormat to RGBA F32.
+ * Returns a heap-allocated buffer of width*height*4*sizeof(float) bytes;
+ * the caller must delete[] it. */
+static float* ConvertToRGBAF32(const Image& img)
+{
+    const IWImageFormat& fmt = img.format;
+    const int            bpp = img.BytesPerPixel();
+    const int            n   = img.ComponentCount();
+    float* dst = new float[static_cast<size_t>(img.width) * img.height * 4u];
+
+    for (int y = 0; y < img.height; ++y) {
+        const uint8_t* row = img.data + static_cast<ptrdiff_t>(y) * img.stride;
+        float*         out = dst + static_cast<ptrdiff_t>(y) * img.width * 4;
+        for (int x = 0; x < img.width; ++x) {
+            const uint8_t* pixel = row + x * bpp;
+            float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            int genericSlot = 0; /* maps H/S/L/UV/… sequentially to R/G/B */
+            for (int c = 0; c < n; ++c) {
+                const float v = ExtractComponent(pixel, fmt.components[c]);
+                switch (fmt.components[c].semantic) {
+                case IW_COMPONENT_SEMANTIC_NONE:                    break; /* unused slot – skip */
+                case IW_COMPONENT_SEMANTIC_R:    rgba[0] = v;       break;
+                case IW_COMPONENT_SEMANTIC_G:    rgba[1] = v;       break;
+                case IW_COMPONENT_SEMANTIC_B:    rgba[2] = v;       break;
+                case IW_COMPONENT_SEMANTIC_A:    rgba[3] = v;       break;
+                case IW_COMPONENT_SEMANTIC_GRAY: rgba[0] = rgba[1] = rgba[2] = v; break;
+                default:
+                    if (genericSlot < 3) rgba[genericSlot] = v;
+                    ++genericSlot;
+                    break;
+                }
+            }
+            out[x * 4 + 0] = rgba[0];
+            out[x * 4 + 1] = rgba[1];
+            out[x * 4 + 2] = rgba[2];
+            out[x * 4 + 3] = rgba[3];
+        }
+    }
+    return dst;
+}
+
 export struct TextureCollection
 {
 public:
@@ -189,9 +289,7 @@ public:
 	GLuint UpdateTexture(const int index, const Image& image)
 	{
 		if (index >= capacity)
-		{
 			[[unlikely]] throw std::runtime_error("Max capacity reached for texture pool");
-		}
 
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, textures[index]);
@@ -202,68 +300,22 @@ public:
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-		GLenum type;
-		switch (image.pixelFormat)
-		{
-		case IMAGE_PIXEL_FORMAT_U16:
-			type = GL_UNSIGNED_SHORT;
-			break;
-		case IMAGE_PIXEL_FORMAT_F32:
-			type = GL_FLOAT;
-			break;
-		default: /* IMAGE_PIXEL_FORMAT_U8 */
-			type = GL_UNSIGNED_BYTE;
-			break;
+		const GLTexParams gp = TryGetGLParams(image.format);
+		if (gp.valid) {
+			// Fast path: format is directly GL-uploadable.
+			glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(gp.internalFormat),
+			             image.width, image.height, 0,
+			             gp.format, gp.type, image.data);
+		} else {
+			// Slow path: convert component-by-component to RGBA F32, then upload.
+			float* tmp = ConvertToRGBAF32(image);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F,
+			             image.width, image.height, 0,
+			             GL_RGBA, GL_FLOAT, tmp);
+			delete[] tmp;
 		}
-
-		GLint  internalFormat;
-		GLenum format;
-		switch (image.channelOrder)
-		{
-		case IMAGE_CHANNEL_ORDER_RGBA:
-			format         = GL_RGBA;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGBA32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGBA16
-			               : GL_RGBA8;
-			break;
-		case IMAGE_CHANNEL_ORDER_BGR:
-			format         = GL_BGR;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGB32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGB16
-			               : GL_RGB8;
-			break;
-		case IMAGE_CHANNEL_ORDER_BGRA:
-			format         = GL_BGRA;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGBA32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGBA16
-			               : GL_RGBA8;
-			break;
-		case IMAGE_CHANNEL_ORDER_GRAY:
-			format         = GL_RED;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_R32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_R16
-			               : GL_R8;
-			break;
-		case IMAGE_CHANNEL_ORDER_GRAY_ALPHA:
-			format         = GL_RG;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RG32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RG16
-			               : GL_RG8;
-			break;
-		default: /* IMAGE_CHANNEL_ORDER_RGB */
-			format         = GL_RGB;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGB32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGB16
-			               : GL_RGB8;
-			break;
-		}
-
-		glTexImage2D(GL_TEXTURE_2D, 0, internalFormat,
-		             image.width, image.height, 0,
-		             format, type, image.data);
 
 		glBindTexture(GL_TEXTURE_2D, 0);
-
 		return textures[index];
 	}
 

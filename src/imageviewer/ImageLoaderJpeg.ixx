@@ -71,16 +71,28 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
     JSAMPARRAY buffer = (*cinfo.mem->alloc_sarray)((j_common_ptr)&cinfo, JPOOL_IMAGE, row_stride, MaxLinesToRead);
 
+    int components = cinfo.output_components;
+    size_t dataSize = static_cast<size_t>(cinfo.output_width) * cinfo.output_height * components;
+
+    IWImageFormat fmt = {};
+    fmt.componentCount = static_cast<uint16_t>(components);
+    fmt.bitsPerPixel   = static_cast<uint16_t>(components * 8);
+    if (components == 1) {
+        fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 8 };
+    } else {
+        fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
+        fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
+        fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
+    }
+
     ImagePluginData* data = new ImagePluginData{
-        .width = static_cast<int>(cinfo.output_width),
-        .height = static_cast<int>(cinfo.output_height),
-        .componentsPerPixel = cinfo.output_components,
-        .stride = static_cast<int>(cinfo.output_width * cinfo.output_components),
-        .size = static_cast<size_t>(cinfo.output_width * cinfo.output_height * cinfo.output_components),
-        .data = new uint8_t[cinfo.output_width * cinfo.output_height * cinfo.output_components],
-        .pixelFormat  = IMAGE_PIXEL_FORMAT_U8,
-        .colorSpace   = IMAGE_COLOR_SPACE_SRGB,
-        .channelOrder = (cinfo.output_components == 1) ? IMAGE_CHANNEL_ORDER_GRAY : IMAGE_CHANNEL_ORDER_RGB
+        .width      = static_cast<int>(cinfo.output_width),
+        .height     = static_cast<int>(cinfo.output_height),
+        .stride     = static_cast<int>(cinfo.output_width) * components,
+        .colorSpace = IMAGE_COLOR_SPACE_SRGB,
+        .size       = dataSize,
+        .data       = new uint8_t[dataSize],
+        .format     = fmt
     };
     if (!data->data) {
         jpeg_destroy_decompress(&cinfo);

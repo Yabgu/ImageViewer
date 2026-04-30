@@ -59,19 +59,24 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
                           extraSampleTypes[0] == EXTRASAMPLE_UNASSALPHA));
 
         // Determine pixel format from TIFF metadata
-        ImagePixelFormat pixelFormat;
-        if (bitsPerSample == 32 && sampleFormat == SAMPLEFORMAT_IEEEFP)
-            pixelFormat = IMAGE_PIXEL_FORMAT_F32;
-        else if (bitsPerSample == 16)
-            pixelFormat = IMAGE_PIXEL_FORMAT_U16;
-        else
-            pixelFormat = IMAGE_PIXEL_FORMAT_U8;
+        IWComponentClass componentClass;
+        uint16_t         componentBitWidth;
+        if (bitsPerSample == 32 && sampleFormat == SAMPLEFORMAT_IEEEFP) {
+            componentClass    = IW_COMPONENT_CLASS_FLOAT;
+            componentBitWidth = 32;
+        } else if (bitsPerSample == 16) {
+            componentClass    = IW_COMPONENT_CLASS_UINT;
+            componentBitWidth = 16;
+        } else {
+            componentClass    = IW_COMPONENT_CLASS_UINT;
+            componentBitWidth = 8;
+        }
 
         // Determine colour space (heuristic: float/16-bit TIFF files are
         // typically stored as linear light). A future filter layer can refine
         // this using the optional TIFFTAG_TRANSFERFUNCTION or ICC profile.
         ImageColorSpace colorSpace;
-        if (pixelFormat == IMAGE_PIXEL_FORMAT_F32 || pixelFormat == IMAGE_PIXEL_FORMAT_U16)
+        if (componentBitWidth == 32 || componentBitWidth == 16)
             colorSpace = IMAGE_COLOR_SPACE_LINEAR;
         else
             colorSpace = IMAGE_COLOR_SPACE_SRGB;
@@ -86,11 +91,25 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             (isGrayPhotometric || isRgbPhotometric) && (planarConfig == PLANARCONFIG_CONTIG);
 
         // Determine channel order for native scanline decoding.
-        ImageChannelOrder channelOrder;
-        if (isGrayPhotometric)
-            channelOrder = hasAlpha ? IMAGE_CHANNEL_ORDER_GRAY_ALPHA : IMAGE_CHANNEL_ORDER_GRAY;
-        else
-            channelOrder = hasAlpha ? IMAGE_CHANNEL_ORDER_RGBA : IMAGE_CHANNEL_ORDER_RGB;
+        // Build the IWImageFormat for the native-scanline path.
+        // (The tiled/fallback path always produces 8-bit RGBA via libtiff.)
+        auto BuildNativeFormat = [&](int nComponents, bool alpha) -> IWImageFormat {
+            IWImageFormat f = {};
+            f.componentCount = static_cast<uint16_t>(nComponents);
+            f.bitsPerPixel   = static_cast<uint16_t>(nComponents * componentBitWidth);
+            if (isGrayPhotometric) {
+                f.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, componentClass, 0, componentBitWidth };
+                if (alpha)
+                    f.components[1] = { IW_COMPONENT_SEMANTIC_A, componentClass, componentBitWidth, componentBitWidth };
+            } else {
+                f.components[0] = { IW_COMPONENT_SEMANTIC_R, componentClass, static_cast<uint16_t>(0 * componentBitWidth), componentBitWidth };
+                f.components[1] = { IW_COMPONENT_SEMANTIC_G, componentClass, static_cast<uint16_t>(1 * componentBitWidth), componentBitWidth };
+                f.components[2] = { IW_COMPONENT_SEMANTIC_B, componentClass, static_cast<uint16_t>(2 * componentBitWidth), componentBitWidth };
+                if (alpha)
+                    f.components[3] = { IW_COMPONENT_SEMANTIC_A, componentClass, static_cast<uint16_t>(3 * componentBitWidth), componentBitWidth };
+            }
+            return f;
+        };
 
         // Tiled TIFFs and unsupported photometrics/planar configs: fall back to
         // the 8-bit RGBA convenience reader so libtiff performs any required
@@ -123,6 +142,14 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             std::memcpy(pixelData, raster, dataSize);
             _TIFFfree(raster);
 
+            IWImageFormat tiledFmt = {};
+            tiledFmt.componentCount = components;
+            tiledFmt.bitsPerPixel   = components * 8;
+            tiledFmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
+            tiledFmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
+            tiledFmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
+            tiledFmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, 24, 8 };
+
             ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
             if (!data)
             {
@@ -131,15 +158,13 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             }
             std::memset(data, 0, sizeof(ImagePluginData));
             *data = ImagePluginData{
-                .width              = static_cast<int>(width),
-                .height             = static_cast<int>(height),
-                .componentsPerPixel = components,
-                .stride             = static_cast<int>(width) * components,
-                .size               = dataSize,
-                .data               = pixelData,
-                .pixelFormat        = IMAGE_PIXEL_FORMAT_U8,
-                .colorSpace         = IMAGE_COLOR_SPACE_SRGB,
-                .channelOrder       = IMAGE_CHANNEL_ORDER_RGBA
+                .width      = static_cast<int>(width),
+                .height     = static_cast<int>(height),
+                .stride     = static_cast<int>(width) * components,
+                .colorSpace = IMAGE_COLOR_SPACE_SRGB,
+                .size       = dataSize,
+                .data       = pixelData,
+                .format     = tiledFmt
             };
             result.code = IMAGE_PLUGIN_OK;
             result.data = data;
@@ -147,7 +172,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         }
 
         // Strip-based TIFF: read scanlines at native bit depth
-        int bpc = ImagePixelFormatBytesPerChannel(pixelFormat);
+        int bpc = componentBitWidth / 8;
         tmsize_t tiffRowBytes = TIFFScanlineSize(tif);
         size_t   packRowBytes = static_cast<size_t>(width) * samplesPerPixel * bpc;
         size_t   dataSize     = packRowBytes * height;
@@ -203,15 +228,13 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         }
         std::memset(data, 0, sizeof(ImagePluginData));
         *data = ImagePluginData{
-            .width              = static_cast<int>(width),
-            .height             = static_cast<int>(height),
-            .componentsPerPixel = static_cast<int>(samplesPerPixel),
-            .stride             = static_cast<int>(packRowBytes),
-            .size               = dataSize,
-            .data               = pixelData,
-            .pixelFormat        = pixelFormat,
-            .colorSpace         = colorSpace,
-            .channelOrder       = channelOrder
+            .width      = static_cast<int>(width),
+            .height     = static_cast<int>(height),
+            .stride     = static_cast<int>(packRowBytes),
+            .colorSpace = colorSpace,
+            .size       = dataSize,
+            .data       = pixelData,
+            .format     = BuildNativeFormat(static_cast<int>(samplesPerPixel), hasAlpha)
         };
         result.code = IMAGE_PLUGIN_OK;
         result.data = data;
