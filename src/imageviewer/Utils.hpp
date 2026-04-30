@@ -5,6 +5,146 @@
 #include <cmath>
 #include "ImagePluginDef.h"
 
+// ─── Format validation ────────────────────────────────────────────────────────
+
+/*
+ * Validate an IWImageFormat for internal consistency.
+ *
+ * Returns false (and optionally sets *outError to a static description string)
+ * when any of the following holds:
+ *   - componentCount > IW_MAX_COMPONENTS
+ *   - any active component has bitWidth == 0
+ *   - any active component's bit range (bitOffset+bitWidth) exceeds bitsPerPixel
+ *     (interleaved only)
+ *   - any two active components have overlapping bit ranges (interleaved only)
+ *
+ * Returns true and leaves *outError unchanged when the descriptor is valid.
+ */
+inline bool ValidateImageFormat(const IWImageFormat& fmt,
+                                 const char** outError = nullptr) noexcept
+{
+    auto fail = [&](const char* msg) -> bool {
+        if (outError) *outError = msg;
+        return false;
+    };
+
+    if (fmt.componentCount > IW_MAX_COMPONENTS)
+        return fail("componentCount exceeds IW_MAX_COMPONENTS");
+
+    for (uint16_t i = 0u; i < fmt.componentCount; ++i) {
+        if (fmt.components[i].bitWidth == 0u)
+            return fail("component bitWidth is 0");
+    }
+
+    if (fmt.storageLayout == IW_STORAGE_INTERLEAVED) {
+        for (uint16_t i = 0u; i < fmt.componentCount; ++i) {
+            const uint32_t end = static_cast<uint32_t>(fmt.components[i].bitOffset)
+                               + fmt.components[i].bitWidth;
+            if (end > fmt.bitsPerPixel)
+                return fail("bitsPerPixel too small for component layout");
+        }
+        for (uint16_t i = 0u; i < fmt.componentCount; ++i) {
+            const uint32_t startI = fmt.components[i].bitOffset;
+            const uint32_t endI   = startI + fmt.components[i].bitWidth;
+            for (uint16_t j = static_cast<uint16_t>(i + 1u); j < fmt.componentCount; ++j) {
+                const uint32_t startJ = fmt.components[j].bitOffset;
+                const uint32_t endJ   = startJ + fmt.components[j].bitWidth;
+                if (startI < endJ && startJ < endI)
+                    return fail("interleaved component bit ranges overlap");
+            }
+        }
+    }
+
+    if (outError) *outError = nullptr;
+    return true;
+}
+
+// ─── GL-upload classification (GL-type-free) ─────────────────────────────────
+
+/*
+ * Lightweight classification of a format for direct OpenGL upload.
+ *
+ * This struct carries no GL-specific types so it can be used in contexts that
+ * do not include glad/GL headers.  TexturePool maps it to actual GLenum values.
+ */
+struct IWGLUploadHint {
+    bool    valid;    /* false → slow path (ConvertToRGBAF32) */
+    uint8_t channels; /* 1, 2, 3, or 4  (meaningful only when valid) */
+    uint8_t bitWidth; /* 8, 16, or 32   (meaningful only when valid) */
+    bool    isFloat;  /* true = float32 (meaningful only when valid) */
+    bool    isBGR;    /* B/G/R channel order (meaningful only when valid) */
+};
+
+/*
+ * Returns a valid IWGLUploadHint only for interleaved, uniform-width,
+ * byte-aligned, standard-semantic formats whose GL equivalents are
+ * GL_UNSIGNED_BYTE / GL_UNSIGNED_SHORT / GL_FLOAT:
+ *
+ *   GRAY8, GRAY16, GRAY32F  (1 channel)
+ *   GRAY+A 8/16/32F         (2 channels)
+ *   RGB/BGR 8/16/32F        (3 channels)
+ *   RGBA/BGRA 8/16/32F      (4 channels)
+ *
+ * Everything else (mixed-precision, float16, exotic semantics, planar) returns
+ * valid=false.
+ */
+inline IWGLUploadHint ClassifyGLUpload(const IWImageFormat& fmt) noexcept
+{
+    const IWGLUploadHint INVALID = {};   /* zero-init → valid=false */
+
+    if (fmt.storageLayout != IW_STORAGE_INTERLEAVED) return INVALID;
+
+    const uint16_t n = fmt.componentCount;
+    if (n == 0u || n > 4u) return INVALID;
+
+    const IWComponentClass cls = fmt.components[0].componentClass;
+    const uint16_t         bw  = fmt.components[0].bitWidth;
+    for (uint16_t i = 1u; i < n; ++i)
+        if (fmt.components[i].componentClass != cls || fmt.components[i].bitWidth != bw)
+            return INVALID;   /* mixed-precision */
+
+    const bool isFloat = (cls == IW_COMPONENT_CLASS_FLOAT);
+    if (isFloat && bw != 32u) return INVALID;           /* float16 / float64 */
+    if (!isFloat && bw != 8u && bw != 16u) return INVALID; /* packed / exotic width */
+
+    auto s = [&](int i) { return fmt.components[i].semantic; };
+
+    bool isBGR = false;
+    bool ok    = false;
+    if (n == 1u && s(0) == IW_COMPONENT_SEMANTIC_GRAY) {
+        ok = true;
+    } else if (n == 2u && s(0) == IW_COMPONENT_SEMANTIC_GRAY &&
+                           s(1) == IW_COMPONENT_SEMANTIC_A) {
+        ok = true;
+    } else if (n == 3u && s(0) == IW_COMPONENT_SEMANTIC_R &&
+                           s(1) == IW_COMPONENT_SEMANTIC_G &&
+                           s(2) == IW_COMPONENT_SEMANTIC_B) {
+        ok = true;
+    } else if (n == 3u && s(0) == IW_COMPONENT_SEMANTIC_B &&
+                           s(1) == IW_COMPONENT_SEMANTIC_G &&
+                           s(2) == IW_COMPONENT_SEMANTIC_R) {
+        ok = true; isBGR = true;
+    } else if (n == 4u && s(0) == IW_COMPONENT_SEMANTIC_R &&
+                           s(1) == IW_COMPONENT_SEMANTIC_G &&
+                           s(2) == IW_COMPONENT_SEMANTIC_B &&
+                           s(3) == IW_COMPONENT_SEMANTIC_A) {
+        ok = true;
+    } else if (n == 4u && s(0) == IW_COMPONENT_SEMANTIC_B &&
+                           s(1) == IW_COMPONENT_SEMANTIC_G &&
+                           s(2) == IW_COMPONENT_SEMANTIC_R &&
+                           s(3) == IW_COMPONENT_SEMANTIC_A) {
+        ok = true; isBGR = true;
+    }
+
+    if (!ok) return INVALID;   /* exotic semantics (H, S, L, UV, …) */
+
+    return { true,
+             static_cast<uint8_t>(n),
+             static_cast<uint8_t>(bw),
+             isFloat,
+             isBGR };
+}
+
 // ─── IEEE 754 half-precision (float16) conversion ────────────────────────────
 
 /* Convert a 16-bit IEEE 754 half-precision value to a 32-bit float.

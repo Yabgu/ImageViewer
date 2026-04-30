@@ -27,65 +27,44 @@ struct GLTexParams {
 };
 
 /* Try to map an IWImageFormat to a direct glTexImage2D call.
- * Only interleaved, uniform-width, byte-aligned, standard-semantic formats
- * with 8-bit uint, 16-bit uint, or 32-bit float components are accepted.
+ * Delegates format classification to ClassifyGLUpload() (Utils.hpp) and maps
+ * the result to concrete GL enumerators.
  * Returns valid=false for anything else (caller falls back to RGBA F32). */
 static GLTexParams TryGetGLParams(const IWImageFormat& fmt) noexcept
 {
     constexpr GLTexParams INVALID = {0, 0, 0, false};
 
-    if (fmt.storageLayout != IW_STORAGE_INTERLEAVED) return INVALID;
+    const IWGLUploadHint hint = ClassifyGLUpload(fmt);
+    if (!hint.valid) return INVALID;
 
-    const uint16_t n = fmt.componentCount;
-    if (n == 0u || n > 4u) return INVALID;
+    const bool     isFloat = hint.isFloat;
+    const uint16_t bw      = hint.bitWidth;
+    const uint16_t n       = hint.channels;
+    const bool     isBGR   = hint.isBGR;
 
-    const IWComponentClass cls = fmt.components[0].componentClass;
-    const uint16_t         bw  = fmt.components[0].bitWidth;
-    for (uint16_t i = 1u; i < n; ++i)
-        if (fmt.components[i].componentClass != cls || fmt.components[i].bitWidth != bw)
-            return INVALID;
-
-    const bool isFloat = (cls == IW_COMPONENT_CLASS_FLOAT);
     GLenum glType;
-    if      (isFloat  && bw == 32u) glType = GL_FLOAT;
-    else if (!isFloat && bw ==  8u) glType = GL_UNSIGNED_BYTE;
-    else if (!isFloat && bw == 16u) glType = GL_UNSIGNED_SHORT;
-    else return INVALID;   /* float16, float64, 1-bit, etc. need conversion */
-
-    auto s = [&](int i) { return fmt.components[i].semantic; };
+    if      (isFloat)       glType = GL_FLOAT;
+    else if (bw ==  8u)     glType = GL_UNSIGNED_BYTE;
+    else                    glType = GL_UNSIGNED_SHORT;  /* bw == 16 */
 
     GLenum glFmt, intFmt;
-    if (n == 1u && s(0) == IW_COMPONENT_SEMANTIC_GRAY) {
+    switch (n) {
+    case 1:
         glFmt  = GL_RED;
-        intFmt = isFloat ? GL_R32F : (bw == 16u ? GL_R16  : GL_R8);
-    } else if (n == 2u && s(0) == IW_COMPONENT_SEMANTIC_GRAY &&
-                          s(1) == IW_COMPONENT_SEMANTIC_A) {
+        intFmt = isFloat ? GL_R32F  : (bw == 16u ? GL_R16   : GL_R8);
+        break;
+    case 2:
         glFmt  = GL_RG;
-        intFmt = isFloat ? GL_RG32F : (bw == 16u ? GL_RG16 : GL_RG8);
-    } else if (n == 3u && s(0) == IW_COMPONENT_SEMANTIC_R &&
-                          s(1) == IW_COMPONENT_SEMANTIC_G &&
-                          s(2) == IW_COMPONENT_SEMANTIC_B) {
-        glFmt  = GL_RGB;
-        intFmt = isFloat ? GL_RGB32F : (bw == 16u ? GL_RGB16 : GL_RGB8);
-    } else if (n == 3u && s(0) == IW_COMPONENT_SEMANTIC_B &&
-                          s(1) == IW_COMPONENT_SEMANTIC_G &&
-                          s(2) == IW_COMPONENT_SEMANTIC_R) {
-        glFmt  = GL_BGR;
-        intFmt = isFloat ? GL_RGB32F : (bw == 16u ? GL_RGB16 : GL_RGB8);
-    } else if (n == 4u && s(0) == IW_COMPONENT_SEMANTIC_R &&
-                          s(1) == IW_COMPONENT_SEMANTIC_G &&
-                          s(2) == IW_COMPONENT_SEMANTIC_B &&
-                          s(3) == IW_COMPONENT_SEMANTIC_A) {
-        glFmt  = GL_RGBA;
+        intFmt = isFloat ? GL_RG32F : (bw == 16u ? GL_RG16  : GL_RG8);
+        break;
+    case 3:
+        glFmt  = isBGR ? GL_BGR  : GL_RGB;
+        intFmt = isFloat ? GL_RGB32F  : (bw == 16u ? GL_RGB16  : GL_RGB8);
+        break;
+    default: /* n == 4 */
+        glFmt  = isBGR ? GL_BGRA : GL_RGBA;
         intFmt = isFloat ? GL_RGBA32F : (bw == 16u ? GL_RGBA16 : GL_RGBA8);
-    } else if (n == 4u && s(0) == IW_COMPONENT_SEMANTIC_B &&
-                          s(1) == IW_COMPONENT_SEMANTIC_G &&
-                          s(2) == IW_COMPONENT_SEMANTIC_R &&
-                          s(3) == IW_COMPONENT_SEMANTIC_A) {
-        glFmt  = GL_BGRA;
-        intFmt = isFloat ? GL_RGBA32F : (bw == 16u ? GL_RGBA16 : GL_RGBA8);
-    } else {
-        return INVALID;   /* non-RGB/RGBA semantics (H, S, L, UV, …) */
+        break;
     }
 
     return {intFmt, glFmt, glType, true};
