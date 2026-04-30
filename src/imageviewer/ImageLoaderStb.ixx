@@ -43,8 +43,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         int height = 0;
         int componentsPerPixel = 0;
 
-        ImagePixelFormat  pixelFormat;
-        ImageColorSpace   colorSpace;
+        ImageColorSpace colorSpace;
 
         void* pixels = nullptr;
         size_t bytesPerChannel;
@@ -52,14 +51,12 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         if (isHdr)
         {
             pixels          = stbi_loadf_from_file(file, &width, &height, &componentsPerPixel, 0);
-            pixelFormat     = IMAGE_PIXEL_FORMAT_F32;
             colorSpace      = IMAGE_COLOR_SPACE_LINEAR;
             bytesPerChannel = 4;
         }
         else
         {
             pixels          = stbi_load_from_file(file, &width, &height, &componentsPerPixel, 0);
-            pixelFormat     = IMAGE_PIXEL_FORMAT_U8;
             colorSpace      = IMAGE_COLOR_SPACE_SRGB;
             bytesPerChannel = 1;
         }
@@ -71,15 +68,36 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             throw std::runtime_error(std::string("stb_image decode failed: ") + (stbiErr ? stbiErr : "unknown"));
         }
 
-        ImageChannelOrder channelOrder;
-        switch (componentsPerPixel) {
-        case 1:  channelOrder = IMAGE_CHANNEL_ORDER_GRAY;       break;
-        case 2:  channelOrder = IMAGE_CHANNEL_ORDER_GRAY_ALPHA; break;
-        case 3:  channelOrder = IMAGE_CHANNEL_ORDER_RGB;        break;
-        case 4:  channelOrder = IMAGE_CHANNEL_ORDER_RGBA;       break;
-        default:
-            stbi_image_free(pixels);
-            throw std::runtime_error("Unsupported number of channels: " + std::to_string(componentsPerPixel));
+        // Build per-component format descriptor
+        IWImageFormat fmt = {};
+        {
+            const uint16_t bw  = static_cast<uint16_t>(bytesPerChannel * 8);
+            const IWComponentClass cls = isHdr ? IW_COMPONENT_CLASS_FLOAT : IW_COMPONENT_CLASS_UINT;
+            fmt.componentCount = static_cast<uint16_t>(componentsPerPixel);
+            fmt.bitsPerPixel   = static_cast<uint16_t>(componentsPerPixel) * bw;
+            switch (componentsPerPixel) {
+            case 1:
+                fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, cls, 0, bw };
+                break;
+            case 2:
+                fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, cls, 0,  bw };
+                fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    cls, bw, bw };
+                break;
+            case 3:
+                fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, cls, static_cast<uint16_t>(0 * bw), bw };
+                fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls, static_cast<uint16_t>(1 * bw), bw };
+                fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, static_cast<uint16_t>(2 * bw), bw };
+                break;
+            default:
+                stbi_image_free(pixels);
+                throw std::runtime_error("Unsupported number of channels: " + std::to_string(componentsPerPixel));
+            case 4:
+                fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, cls, static_cast<uint16_t>(0 * bw), bw };
+                fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls, static_cast<uint16_t>(1 * bw), bw };
+                fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, static_cast<uint16_t>(2 * bw), bw };
+                fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, cls, static_cast<uint16_t>(3 * bw), bw };
+                break;
+            }
         }
 
         size_t dataSize = static_cast<size_t>(width) * height * componentsPerPixel * bytesPerChannel;
@@ -90,15 +108,13 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             throw std::runtime_error("Failed to allocate image buffer");
         }
 
-        block->width              = width;
-        block->height             = height;
-        block->componentsPerPixel = componentsPerPixel;
-        block->stride             = static_cast<int>(static_cast<size_t>(width) * componentsPerPixel * bytesPerChannel);
-        block->size               = dataSize;
-        block->data               = static_cast<uint8_t*>(static_cast<void*>(block)) + sizeof(ImagePluginData);
-        block->pixelFormat        = pixelFormat;
-        block->colorSpace         = colorSpace;
-        block->channelOrder       = channelOrder;
+        block->width      = width;
+        block->height     = height;
+        block->stride     = static_cast<int>(static_cast<size_t>(width) * componentsPerPixel * bytesPerChannel);
+        block->colorSpace = colorSpace;
+        block->size       = dataSize;
+        block->data       = static_cast<uint8_t*>(static_cast<void*>(block)) + sizeof(ImagePluginData);
+        block->format     = fmt;
 
         std::memcpy(block->data, pixels, dataSize);
         stbi_image_free(pixels);
