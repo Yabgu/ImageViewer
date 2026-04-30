@@ -185,10 +185,11 @@ static float* ConvertToRGBAF32(const Image& img)
             for (int c = 0; c < n; ++c) {
                 const float v = TP_ExtractComponent(pixel, fmt.components[c]);
                 switch (fmt.components[c].semantic) {
-                case IW_COMPONENT_SEMANTIC_R:    rgba[0] = v; break;
-                case IW_COMPONENT_SEMANTIC_G:    rgba[1] = v; break;
-                case IW_COMPONENT_SEMANTIC_B:    rgba[2] = v; break;
-                case IW_COMPONENT_SEMANTIC_A:    rgba[3] = v; break;
+                case IW_COMPONENT_SEMANTIC_NONE:                    break; /* unused slot – skip */
+                case IW_COMPONENT_SEMANTIC_R:    rgba[0] = v;       break;
+                case IW_COMPONENT_SEMANTIC_G:    rgba[1] = v;       break;
+                case IW_COMPONENT_SEMANTIC_B:    rgba[2] = v;       break;
+                case IW_COMPONENT_SEMANTIC_A:    rgba[3] = v;       break;
                 case IW_COMPONENT_SEMANTIC_GRAY: rgba[0] = rgba[1] = rgba[2] = v; break;
                 default:
                     if (genericSlot < 3) rgba[genericSlot] = v;

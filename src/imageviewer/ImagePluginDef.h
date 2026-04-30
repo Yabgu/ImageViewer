@@ -45,15 +45,26 @@ enum {
 /* ── Per-component semantic: what a component represents ───────────────────── */
 typedef uint32_t IWComponentSemantic;
 enum {
-    IW_COMPONENT_SEMANTIC_R       = 0,
-    IW_COMPONENT_SEMANTIC_G       = 1,
-    IW_COMPONENT_SEMANTIC_B       = 2,
-    IW_COMPONENT_SEMANTIC_A       = 3,
-    IW_COMPONENT_SEMANTIC_H       = 4,   /* hue                                  */
-    IW_COMPONENT_SEMANTIC_S       = 5,   /* saturation                           */
-    IW_COMPONENT_SEMANTIC_L       = 6,   /* lightness / luminance                */
-    IW_COMPONENT_SEMANTIC_GRAY    = 7,
-    IW_COMPONENT_SEMANTIC_UNKNOWN = 255
+    /*
+     * IW_COMPONENT_SEMANTIC_NONE = 0 is RESERVED.
+     *
+     * IWImageFormat zero-initialises its components[IW_MAX_COMPONENTS] array,
+     * so every slot beyond componentCount will have semantic == 0.  Using 0 as
+     * a sentinel for "unused / padding" lets callers detect unset slots without
+     * inspecting componentCount, and avoids mistaking an uninitialised slot for
+     * a real R component.
+     */
+    IW_COMPONENT_SEMANTIC_NONE    = 0,   /* reserved – unused / padding slot     */
+
+    IW_COMPONENT_SEMANTIC_R       = 1,
+    IW_COMPONENT_SEMANTIC_G       = 2,
+    IW_COMPONENT_SEMANTIC_B       = 3,
+    IW_COMPONENT_SEMANTIC_A       = 4,
+    IW_COMPONENT_SEMANTIC_H       = 5,   /* hue                                  */
+    IW_COMPONENT_SEMANTIC_S       = 6,   /* saturation                           */
+    IW_COMPONENT_SEMANTIC_L       = 7,   /* lightness / luminance                */
+    IW_COMPONENT_SEMANTIC_GRAY    = 8,
+    IW_COMPONENT_SEMANTIC_UNKNOWN = 255  /* active component, semantic unspecified */
 };
 
 /* ── Per-component layout descriptor ──────────────────────────────────────── */
