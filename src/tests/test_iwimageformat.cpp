@@ -96,8 +96,9 @@ TEST_SUITE("ValidateImageFormat")
     TEST_CASE("accepts zero componentCount (empty / padding descriptor)")
     {
         IWImageFormat fmt = {};
-        /* componentCount=0 with any bitsPerPixel is technically valid: no
-           active components means there are no ranges to check. */
+        /* An empty descriptor (componentCount=0) is accepted: there are no
+           active components, so there are no bit-range constraints to check.
+           This is a valid edge case, not an error. */
         fmt.bitsPerPixel = 0;
         CHECK(ValidateImageFormat(fmt));
     }
@@ -208,9 +209,11 @@ TEST_SUITE("Loader format descriptors")
 
     TEST_CASE("TIFF 12-bit grayscale: 1 component, UINT, bitOffset 0, bitWidth 12")
     {
-        /* A 12-bit grayscale TIFF is a valid IWImageFormat even if the current
-           TIFF loader snaps to 8/16 at decode time.  This test documents and
-           validates the expected descriptor for future native 12-bit support. */
+        /* Validates that the IWImageFormat ABI can represent a 12-bit grayscale
+           descriptor.  The current TIFF loader normalises bit depths to 8 or 16
+           at decode time, so it does not yet emit this exact descriptor.  This
+           test documents the expected structure for future native 12-bit support
+           and verifies that ValidateImageFormat() accepts it. */
         IWImageFormat fmt = {};
         fmt.componentCount = 1;
         fmt.bitsPerPixel   = 12;
@@ -545,10 +548,11 @@ TEST_SUITE("ExtractComponent")
 
     TEST_CASE("float8 (unsupported width): raw bits returned as integer float")
     {
-        /* For FLOAT components with widths other than 16 or 32, the code
-           returns static_cast<float>(raw).  A byte value of 56 (0x38) should
-           give 56.0f.  This test documents the current fall-through behaviour
-           for future E4M3 / E5M2 formats once proper decoding is added. */
+        /* For IW_COMPONENT_CLASS_FLOAT with bitWidth != 16 and != 32, the
+           current implementation returns static_cast<float>(raw) — the raw
+           unsigned integer value cast to float.  This is the intended fallback
+           for widths not yet decoded (e.g. E4M3 / E5M2).  When proper decoding
+           for such formats is added, this test should be updated accordingly. */
         uint8_t pixel[1] = {0x38};   /* decimal 56 */
         IWComponentDef c = { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_FLOAT, 0, 8 };
         CHECK(ExtractComponent(pixel, c) == 56.0f);
