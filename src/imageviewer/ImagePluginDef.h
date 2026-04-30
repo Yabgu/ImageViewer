@@ -60,7 +60,7 @@ enum {
 typedef struct IWComponentDef {
     IWComponentSemantic semantic;       /* what this component represents        */
     IWComponentClass    componentClass; /* how the stored bits are interpreted   */
-    uint16_t            bitOffset;      /* bit offset from the start of a pixel  */
+    uint16_t            bitOffset;      /* bit offset from the start of a pixel (interleaved only) */
     uint16_t            bitWidth;       /* number of bits occupied               */
 } IWComponentDef;
 
@@ -68,28 +68,60 @@ typedef struct IWComponentDef {
 #define IW_MAX_COMPONENTS 8
 
 /*
- * Per-pixel format descriptor.
+ * How component data is laid out in the pixel buffer.
  *
- * Replaces the old uniform pixelFormat + channelOrder pair.  Each component
- * is described independently, enabling mixed-precision and non-RGB layouts
- * such as HSL with H=8-bit UINT, S=6-bit UNORM, L=float16.
+ * IW_STORAGE_INTERLEAVED (default)
+ *   All components of one pixel are packed together before the next pixel:
+ *   [RGBRGBRGB...].  bitOffset in each IWComponentDef is measured from the
+ *   start of the pixel word.
  *
- * Example – RGB8 packed:
- *   componentCount = 3, bitsPerPixel = 24
- *   components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 }
- *   components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 }
- *   components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 }
+ * IW_STORAGE_PLANAR
+ *   All values of component 0 come first (one full plane), followed by all
+ *   values of component 1, and so on:  [RRR...GGG...BBB...].
+ *   Each plane occupies  (height × width × ceil(bitWidth/8))  bytes.
+ *   bitOffset in IWComponentDef is unused for this layout.
+ */
+typedef uint32_t IWStorageLayout;
+enum {
+    IW_STORAGE_INTERLEAVED = 0u, /* default; components packed per pixel     */
+    IW_STORAGE_PLANAR      = 1u  /* one contiguous plane per component       */
+};
+
+/*
+ * Complete format descriptor for a single image.
  *
- * Example – HSL mixed-precision:
- *   componentCount = 3, bitsPerPixel = 30
+ * Every component is described independently, so mixed-precision and
+ * non-RGB layouts (HSL, UV, infrared+visible+depth, …) are expressible
+ * without adding new enumerators.
+ *
+ * bitsPerPixel is the total number of bits consumed per logical pixel
+ * for IW_STORAGE_INTERLEAVED, or per sample (one component of one pixel)
+ * for IW_STORAGE_PLANAR.
+ *
+ * Example – RGB8 packed (interleaved):
+ *   componentCount = 3, bitsPerPixel = 24,
+ *   storageLayout  = IW_STORAGE_INTERLEAVED
+ *   components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 }
+ *   components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 }
+ *   components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 }
+ *
+ * Example – HSL mixed-precision (interleaved):
+ *   componentCount = 3, bitsPerPixel = 30,
+ *   storageLayout  = IW_STORAGE_INTERLEAVED
  *   components[0] = { IW_COMPONENT_SEMANTIC_H, IW_COMPONENT_CLASS_UINT,   0,  8 }
  *   components[1] = { IW_COMPONENT_SEMANTIC_S, IW_COMPONENT_CLASS_UNORM,  8,  6 }
  *   components[2] = { IW_COMPONENT_SEMANTIC_L, IW_COMPONENT_CLASS_FLOAT, 14, 16 }
+ *
+ * Example – 16-bit grayscale planar (one plane):
+ *   componentCount = 1, bitsPerPixel = 16,
+ *   storageLayout  = IW_STORAGE_PLANAR
+ *   components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 16 }
  */
 typedef struct IWImageFormat {
-    uint16_t       componentCount;                  /* number of valid entries in components[] */
-    uint16_t       bitsPerPixel;                    /* total bits consumed per pixel           */
-    IWComponentDef components[IW_MAX_COMPONENTS];   /* per-component descriptors (packed)      */
+    uint16_t        componentCount;                 /* number of active components (<= IW_MAX_COMPONENTS) */
+    uint16_t        bitsPerPixel;                   /* bits per pixel (interleaved) / per sample (planar) */
+    IWStorageLayout storageLayout;                  /* how components are arranged in memory              */
+    IWComponentDef  components[IW_MAX_COMPONENTS];  /* per-component descriptors                          */
 } IWImageFormat;
 
 /*

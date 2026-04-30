@@ -1,15 +1,207 @@
 module;
 
+#include <cstdint>
+#include <cstring>
+#include <cmath>
+#include <memory>
 #include <stdexcept>
 #include <thread>
-#include <glad/glad.h>
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <glad/glad.h>
+#include "ImagePluginDef.h"
 
 export module TexturePool;
 
 import Image;
+
+// ─── Component extraction helpers (module-private) ───────────────────────────
+// Used to convert arbitrary IWImageFormat pixels to RGBA F32 when the format
+// cannot be directly uploaded to OpenGL.
+
+static float TP_HalfToFloat(uint16_t h) noexcept
+{
+    const uint32_t sign     = static_cast<uint32_t>(h & 0x8000u) << 16u;
+    const uint32_t exponent = static_cast<uint32_t>(h & 0x7C00u);
+    const uint32_t mantissa = static_cast<uint32_t>(h & 0x03FFu);
+    uint32_t f;
+    if (exponent == 0u) {
+        if (mantissa == 0u) {
+            f = sign;
+        } else {
+            uint32_t m = mantissa, e = 0x38800000u;
+            while (!(m & 0x400u)) { m <<= 1u; e -= 0x800000u; }
+            f = sign | e | ((m & 0x3FFu) << 13u);
+        }
+    } else if (exponent == 0x7C00u) {
+        f = sign | 0x7F800000u | (mantissa << 13u);
+    } else {
+        f = sign | (((exponent >> 10u) + 112u) << 23u) | (mantissa << 13u);
+    }
+    float result; std::memcpy(&result, &f, sizeof(result)); return result;
+}
+
+static float TP_ExtractComponent(const uint8_t* pixelBytes,
+                                  const IWComponentDef& comp) noexcept
+{
+    const int byteStart   = comp.bitOffset / 8;
+    const int bitStart    = comp.bitOffset % 8;
+    const int bytesNeeded = (bitStart + comp.bitWidth + 7) / 8;
+    uint64_t word = 0;
+    for (int i = 0; i < bytesNeeded && i < 5; ++i)
+        word |= static_cast<uint64_t>(pixelBytes[byteStart + i]) << (i * 8);
+    word >>= bitStart;
+    const uint64_t mask = (comp.bitWidth < 64u)
+                          ? ((uint64_t{1} << comp.bitWidth) - 1u) : ~uint64_t{0};
+    const uint64_t raw = word & mask;
+
+    switch (comp.componentClass) {
+    case IW_COMPONENT_CLASS_FLOAT:
+        if (comp.bitWidth == 16u) return TP_HalfToFloat(static_cast<uint16_t>(raw));
+        if (comp.bitWidth == 32u) {
+            float f; uint32_t u = static_cast<uint32_t>(raw);
+            std::memcpy(&f, &u, sizeof(f)); return f;
+        }
+        return static_cast<float>(raw);
+    case IW_COMPONENT_CLASS_UNORM: {
+        const uint64_t mx = (comp.bitWidth < 64u)
+                            ? ((uint64_t{1} << comp.bitWidth) - 1u) : ~uint64_t{0};
+        return static_cast<float>(raw) / static_cast<float>(mx);
+    }
+    case IW_COMPONENT_CLASS_SNORM: {
+        const uint64_t hr = uint64_t{1} << (comp.bitWidth - 1u);
+        const int64_t  s  = (raw >= hr)
+                            ? (static_cast<int64_t>(raw) - static_cast<int64_t>(uint64_t{1} << comp.bitWidth))
+                            : static_cast<int64_t>(raw);
+        return std::max(-1.0f, static_cast<float>(s) / static_cast<float>(hr - 1u));
+    }
+    case IW_COMPONENT_CLASS_SINT: {
+        const uint64_t hr = uint64_t{1} << (comp.bitWidth - 1u);
+        const int64_t  s  = (raw >= hr)
+                            ? (static_cast<int64_t>(raw) - static_cast<int64_t>(uint64_t{1} << comp.bitWidth))
+                            : static_cast<int64_t>(raw);
+        return static_cast<float>(s);
+    }
+    default: /* IW_COMPONENT_CLASS_UINT */
+        return static_cast<float>(raw);
+    }
+}
+
+// ─── GL parameter inference ───────────────────────────────────────────────────
+
+struct GLTexParams {
+    GLenum internalFormat;
+    GLenum format;
+    GLenum type;
+    bool   valid;
+};
+
+/* Try to map an IWImageFormat to a direct glTexImage2D call.
+ * Only interleaved, uniform-width, byte-aligned, standard-semantic formats
+ * with 8-bit uint, 16-bit uint, or 32-bit float components are accepted.
+ * Returns valid=false for anything else (caller falls back to RGBA F32). */
+static GLTexParams TryGetGLParams(const IWImageFormat& fmt) noexcept
+{
+    constexpr GLTexParams INVALID = {0, 0, 0, false};
+
+    if (fmt.storageLayout != IW_STORAGE_INTERLEAVED) return INVALID;
+
+    const uint16_t n = fmt.componentCount;
+    if (n == 0u || n > 4u) return INVALID;
+
+    const IWComponentClass cls = fmt.components[0].componentClass;
+    const uint16_t         bw  = fmt.components[0].bitWidth;
+    for (uint16_t i = 1u; i < n; ++i)
+        if (fmt.components[i].componentClass != cls || fmt.components[i].bitWidth != bw)
+            return INVALID;
+
+    const bool isFloat = (cls == IW_COMPONENT_CLASS_FLOAT);
+    GLenum glType;
+    if      (isFloat  && bw == 32u) glType = GL_FLOAT;
+    else if (!isFloat && bw ==  8u) glType = GL_UNSIGNED_BYTE;
+    else if (!isFloat && bw == 16u) glType = GL_UNSIGNED_SHORT;
+    else return INVALID;   /* float16, float64, 1-bit, etc. need conversion */
+
+    auto s = [&](int i) { return fmt.components[i].semantic; };
+
+    GLenum glFmt, intFmt;
+    if (n == 1u && s(0) == IW_COMPONENT_SEMANTIC_GRAY) {
+        glFmt  = GL_RED;
+        intFmt = isFloat ? GL_R32F : (bw == 16u ? GL_R16  : GL_R8);
+    } else if (n == 2u && s(0) == IW_COMPONENT_SEMANTIC_GRAY &&
+                          s(1) == IW_COMPONENT_SEMANTIC_A) {
+        glFmt  = GL_RG;
+        intFmt = isFloat ? GL_RG32F : (bw == 16u ? GL_RG16 : GL_RG8);
+    } else if (n == 3u && s(0) == IW_COMPONENT_SEMANTIC_R &&
+                          s(1) == IW_COMPONENT_SEMANTIC_G &&
+                          s(2) == IW_COMPONENT_SEMANTIC_B) {
+        glFmt  = GL_RGB;
+        intFmt = isFloat ? GL_RGB32F : (bw == 16u ? GL_RGB16 : GL_RGB8);
+    } else if (n == 3u && s(0) == IW_COMPONENT_SEMANTIC_B &&
+                          s(1) == IW_COMPONENT_SEMANTIC_G &&
+                          s(2) == IW_COMPONENT_SEMANTIC_R) {
+        glFmt  = GL_BGR;
+        intFmt = isFloat ? GL_RGB32F : (bw == 16u ? GL_RGB16 : GL_RGB8);
+    } else if (n == 4u && s(0) == IW_COMPONENT_SEMANTIC_R &&
+                          s(1) == IW_COMPONENT_SEMANTIC_G &&
+                          s(2) == IW_COMPONENT_SEMANTIC_B &&
+                          s(3) == IW_COMPONENT_SEMANTIC_A) {
+        glFmt  = GL_RGBA;
+        intFmt = isFloat ? GL_RGBA32F : (bw == 16u ? GL_RGBA16 : GL_RGBA8);
+    } else if (n == 4u && s(0) == IW_COMPONENT_SEMANTIC_B &&
+                          s(1) == IW_COMPONENT_SEMANTIC_G &&
+                          s(2) == IW_COMPONENT_SEMANTIC_R &&
+                          s(3) == IW_COMPONENT_SEMANTIC_A) {
+        glFmt  = GL_BGRA;
+        intFmt = isFloat ? GL_RGBA32F : (bw == 16u ? GL_RGBA16 : GL_RGBA8);
+    } else {
+        return INVALID;   /* non-RGB/RGBA semantics (H, S, L, UV, …) */
+    }
+
+    return {intFmt, glFmt, glType, true};
+}
+
+/* Convert any interleaved IWImageFormat to RGBA F32.
+ * Returns a heap-allocated buffer of width*height*4*sizeof(float) bytes;
+ * the caller must delete[] it. */
+static float* ConvertToRGBAF32(const Image& img)
+{
+    const IWImageFormat& fmt = img.format;
+    const int            bpp = img.BytesPerPixel();
+    const int            n   = img.ComponentCount();
+    float* dst = new float[static_cast<size_t>(img.width) * img.height * 4u];
+
+    for (int y = 0; y < img.height; ++y) {
+        const uint8_t* row = img.data + static_cast<ptrdiff_t>(y) * img.stride;
+        float*         out = dst + static_cast<ptrdiff_t>(y) * img.width * 4;
+        for (int x = 0; x < img.width; ++x) {
+            const uint8_t* pixel = row + x * bpp;
+            float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            int genericSlot = 0; /* maps H/S/L/UV/… sequentially to R/G/B */
+            for (int c = 0; c < n; ++c) {
+                const float v = TP_ExtractComponent(pixel, fmt.components[c]);
+                switch (fmt.components[c].semantic) {
+                case IW_COMPONENT_SEMANTIC_R:    rgba[0] = v; break;
+                case IW_COMPONENT_SEMANTIC_G:    rgba[1] = v; break;
+                case IW_COMPONENT_SEMANTIC_B:    rgba[2] = v; break;
+                case IW_COMPONENT_SEMANTIC_A:    rgba[3] = v; break;
+                case IW_COMPONENT_SEMANTIC_GRAY: rgba[0] = rgba[1] = rgba[2] = v; break;
+                default:
+                    if (genericSlot < 3) rgba[genericSlot] = v;
+                    ++genericSlot;
+                    break;
+                }
+            }
+            out[x * 4 + 0] = rgba[0];
+            out[x * 4 + 1] = rgba[1];
+            out[x * 4 + 2] = rgba[2];
+            out[x * 4 + 3] = rgba[3];
+        }
+    }
+    return dst;
+}
+
 export struct TextureCollection
 {
 public:
@@ -188,9 +380,7 @@ public:
 	GLuint UpdateTexture(const int index, const Image& image)
 	{
 		if (index >= capacity)
-		{
 			[[unlikely]] throw std::runtime_error("Max capacity reached for texture pool");
-		}
 
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, textures[index]);
@@ -201,68 +391,22 @@ public:
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-		GLenum type;
-		switch (image.pixelFormat)
-		{
-		case IMAGE_PIXEL_FORMAT_U16:
-			type = GL_UNSIGNED_SHORT;
-			break;
-		case IMAGE_PIXEL_FORMAT_F32:
-			type = GL_FLOAT;
-			break;
-		default: /* IMAGE_PIXEL_FORMAT_U8 */
-			type = GL_UNSIGNED_BYTE;
-			break;
+		const GLTexParams gp = TryGetGLParams(image.format);
+		if (gp.valid) {
+			// Fast path: format is directly GL-uploadable.
+			glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(gp.internalFormat),
+			             image.width, image.height, 0,
+			             gp.format, gp.type, image.data);
+		} else {
+			// Slow path: convert component-by-component to RGBA F32, then upload.
+			float* tmp = ConvertToRGBAF32(image);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F,
+			             image.width, image.height, 0,
+			             GL_RGBA, GL_FLOAT, tmp);
+			delete[] tmp;
 		}
-
-		GLint  internalFormat;
-		GLenum format;
-		switch (image.channelOrder)
-		{
-		case IMAGE_CHANNEL_ORDER_RGBA:
-			format         = GL_RGBA;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGBA32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGBA16
-			               : GL_RGBA8;
-			break;
-		case IMAGE_CHANNEL_ORDER_BGR:
-			format         = GL_BGR;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGB32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGB16
-			               : GL_RGB8;
-			break;
-		case IMAGE_CHANNEL_ORDER_BGRA:
-			format         = GL_BGRA;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGBA32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGBA16
-			               : GL_RGBA8;
-			break;
-		case IMAGE_CHANNEL_ORDER_GRAY:
-			format         = GL_RED;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_R32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_R16
-			               : GL_R8;
-			break;
-		case IMAGE_CHANNEL_ORDER_GRAY_ALPHA:
-			format         = GL_RG;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RG32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RG16
-			               : GL_RG8;
-			break;
-		default: /* IMAGE_CHANNEL_ORDER_RGB */
-			format         = GL_RGB;
-			internalFormat = (image.pixelFormat == IMAGE_PIXEL_FORMAT_F32) ? GL_RGB32F
-			               : (image.pixelFormat == IMAGE_PIXEL_FORMAT_U16) ? GL_RGB16
-			               : GL_RGB8;
-			break;
-		}
-
-		glTexImage2D(GL_TEXTURE_2D, 0, internalFormat,
-		             image.width, image.height, 0,
-		             format, type, image.data);
 
 		glBindTexture(GL_TEXTURE_2D, 0);
-
 		return textures[index];
 	}
 
