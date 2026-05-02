@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include "FilterPluginDef.h"
 
 import Image;
 import UserInterface;
