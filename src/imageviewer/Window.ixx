@@ -10,6 +10,7 @@ module;
 #include <thread>
 #include <chrono>
 #include <filesystem>
+#include <algorithm>
 
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>
