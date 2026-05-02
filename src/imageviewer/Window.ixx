@@ -326,12 +326,50 @@ public:
 	/* Query how many bits per colour channel the current GL framebuffer has. */
 	static IWScreenInfo QueryScreenInfo() noexcept
 	{
-		GLint redBits = 8;
+		GLint redBits = 0;
+		GLint greenBits = 0;
+		GLint blueBits = 0;
+		GLint alphaBits = 0;
+
 		glGetFramebufferAttachmentParameteriv(
 			GL_FRAMEBUFFER, GL_BACK_LEFT,
 			GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE, &redBits);
-		if (redBits <= 0) redBits = 8;
-		return { static_cast<uint8_t>(redBits), 4u };
+		glGetFramebufferAttachmentParameteriv(
+			GL_FRAMEBUFFER, GL_BACK_LEFT,
+			GL_FRAMEBUFFER_ATTACHMENT_GREEN_SIZE, &greenBits);
+		glGetFramebufferAttachmentParameteriv(
+			GL_FRAMEBUFFER, GL_BACK_LEFT,
+			GL_FRAMEBUFFER_ATTACHMENT_BLUE_SIZE, &blueBits);
+		glGetFramebufferAttachmentParameteriv(
+			GL_FRAMEBUFFER, GL_BACK_LEFT,
+			GL_FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE, &alphaBits);
+
+		uint8_t channelCount = 0;
+		GLint minBits = 0;
+
+		auto considerChannel = [&](GLint bits) noexcept
+		{
+			if (bits > 0)
+			{
+				++channelCount;
+				if (minBits == 0 || bits < minBits)
+				{
+					minBits = bits;
+				}
+			}
+		};
+
+		considerChannel(redBits);
+		considerChannel(greenBits);
+		considerChannel(blueBits);
+		considerChannel(alphaBits);
+
+		if (channelCount == 0 || minBits <= 0)
+		{
+			return { static_cast<uint8_t>(8), 4u };
+		}
+
+		return { static_cast<uint8_t>(minBits), channelCount };
 	}
 
 	/* Build an ImagePluginData view of an Image (no pixel data copy). */
