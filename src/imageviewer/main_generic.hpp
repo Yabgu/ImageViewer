@@ -64,11 +64,23 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
         static constexpr int PreferredTextureWidth = 256;
         static constexpr int PreferredTextureHeight = 256;
         static constexpr int PreferredRedundantBorder = 2;
+
+        /* Default filter options: NONE dither (convert to screen precision
+         * without any dithering noise).  Switch to IW_DITHER_PWM for
+         * temporal dither or IW_DITHER_ORDERED / IW_DITHER_FLOYD_STEINBERG
+         * for spatial dithering. */
+        static constexpr IWFilterOptions kDefaultFilterOpts = {
+            IW_FILTER_OPTIONS_VERSION,
+            IW_DITHER_NONE,
+            0u
+        };
+
         window->LoadTextures(
             *image,
             PreferredTextureWidth,
             PreferredTextureHeight,
-            PreferredRedundantBorder);
+            PreferredRedundantBorder,
+            kDefaultFilterOpts);
 
         image.reset();
     }

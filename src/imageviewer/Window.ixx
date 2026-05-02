@@ -4,20 +4,25 @@ module;
 #include <vector>
 #include <iostream>
 #include <cstdint>
+#include <cstring>
 #include <cassert>
 #include <format>
 #include <thread>
+#include <chrono>
 #include <filesystem>
 
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+#include "FilterPluginDef.h"
+
 export module UserInterface;
 
 import TexturePool;
 import Image;
 import HotkeysHandler;
+import FilterPlugin;
 
 export class Window
 {
@@ -72,6 +77,13 @@ private:
 	int height;
 	int scroll;
 	std::shared_ptr<TextureCollection> textureCollection;
+	/* PWM frame set: non-empty when filter plugin produced multiple frames.
+	 * textureCollection always points to pwmFrames_[0] when the vector is
+	 * non-empty, so the rest of the code (panning, zooming, …) keeps working
+	 * without change.  Draw() cycles through pwmFrames_ at 60 fps. */
+	std::vector<std::shared_ptr<TextureCollection>> pwmFrames_;
+	mutable uint64_t frameCounter_ = 0;
+	FilterPlugin filterPlugin_;
 	GLuint shaderProgram;
 	double panX = 0.0;
 	double panY = 0.0;
@@ -285,6 +297,13 @@ public:
 		hotkeysHandler.setPanCallback([this](int dx, int dy) { adjustPan(dx, dy); });
 		hotkeysHandler.setSetZoomCallback([this](double zoomLevel) { setZoom(zoomLevel); });
 		hotkeysHandler.setFitToWindowCallback([this]() { fitToWindow(); });
+
+		/* Try to load the default filter plugin (non-fatal if absent). */
+		try {
+			filterPlugin_.Load(FilterPlugin::DefaultPluginPath());
+		} catch (const std::exception& ex) {
+			std::cerr << "Warning: filter plugin not loaded: " << ex.what() << '\n';
+		}
 	}
 
 	~Window()
@@ -301,13 +320,102 @@ public:
 		}
 	}
 
+	/* ── Filter-plugin helpers ──────────────────────────────────────────── */
+
+	/* Query how many bits per colour channel the current GL framebuffer has. */
+	static IWScreenInfo QueryScreenInfo() noexcept
+	{
+		GLint redBits = 8;
+		glGetFramebufferAttachmentParameteriv(
+			GL_FRAMEBUFFER, GL_BACK_LEFT,
+			GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE, &redBits);
+		if (redBits <= 0) redBits = 8;
+		return { static_cast<uint8_t>(redBits), 4u };
+	}
+
+	/* Build an ImagePluginData view of an Image (no pixel data copy). */
+	static ImagePluginData MakePluginDataView(const Image& image) noexcept
+	{
+		ImagePluginData pd;
+		pd.width      = image.width;
+		pd.height     = image.height;
+		pd.stride     = image.stride;
+		pd.colorSpace = image.colorSpace;
+		pd.size       = image.size;
+		pd.data       = image.data;
+		pd.format     = image.format;
+		return pd;
+	}
+
+	/* Create a TextureCollection from an ImagePluginData frame.
+	 * Makes a full copy of the pixel data so the filter plugin's malloc
+	 * allocation is not touched by Image's delete[]-based destructor. */
+	static std::shared_ptr<TextureCollection> MakeCollection(
+		const ImagePluginData& pd, int segW, int segH, int border)
+	{
+		Image tmp(pd.width, pd.height, pd.format, pd.colorSpace);
+		if (pd.stride == tmp.stride) {
+			std::memcpy(tmp.data, pd.data, tmp.size);
+		} else {
+			const int copyBytes = std::min(pd.stride, tmp.stride);
+			for (int y = 0; y < pd.height; ++y) {
+				std::memcpy(tmp.data + static_cast<ptrdiff_t>(y) * tmp.stride,
+				            pd.data  + static_cast<ptrdiff_t>(y) * pd.stride,
+				            copyBytes);
+			}
+		}
+		return std::make_shared<TextureCollection>(tmp, segW, segH, border);
+	}
+
+public:
 	void LoadTextures(
 		const Image& image,
 		const int segmentWidth,
 		const int segmentHeight,
-		const int redundantBorderSize)
+		const int redundantBorderSize,
+		const IWFilterOptions& opts = IWFilterOptions{
+			IW_FILTER_OPTIONS_VERSION, IW_DITHER_NONE, 0u })
 	{
-		this->textureCollection.reset(new TextureCollection(image, segmentWidth, segmentHeight, redundantBorderSize));
+		pwmFrames_.clear();
+		frameCounter_ = 0;
+
+		if (filterPlugin_.IsLoaded()) {
+			const ImagePluginData pd   = MakePluginDataView(image);
+			const IWScreenInfo  screen = QueryScreenInfo();
+
+			IWFilterImageSet* set = nullptr;
+			try {
+				set = filterPlugin_.Filter(&pd, &screen, &opts);
+			} catch (...) {
+				set = nullptr;
+			}
+
+			if (set && set->frameCount > 0 && set->frames) {
+				for (uint32_t i = 0; i < set->frameCount; ++i) {
+					if (!set->frames[i]) continue;
+					try {
+						pwmFrames_.push_back(
+							MakeCollection(*set->frames[i],
+							               segmentWidth,
+							               segmentHeight,
+							               redundantBorderSize));
+					} catch (...) {
+						/* If one frame fails, skip it. */
+					}
+				}
+				filterPlugin_.Free(set);
+			} else {
+				if (set) filterPlugin_.Free(set);
+			}
+		}
+
+		if (pwmFrames_.empty()) {
+			/* Fallback: no filter or filter returned nothing — use image directly. */
+			pwmFrames_.push_back(std::make_shared<TextureCollection>(
+				image, segmentWidth, segmentHeight, redundantBorderSize));
+		}
+
+		textureCollection = pwmFrames_[0];
 		CenterImage();
 	}
 
@@ -326,11 +434,21 @@ public:
 		// Set the texture unit for the sampler
 		glUniform1i(textureSamplerLoc, 0); // Corresponds to GL_TEXTURE0
 
-		if (textureCollection != nullptr)
+		/* Select the active frame (PWM cycles through all frames). */
+		TextureCollection* activeTc = nullptr;
+		if (!pwmFrames_.empty()) {
+			const size_t idx = (pwmFrames_.size() > 1u)
+			                 ? (frameCounter_ % pwmFrames_.size())
+			                 : 0u;
+			++frameCounter_;
+			activeTc = pwmFrames_[idx].get();
+		}
+
+		if (activeTc != nullptr)
 		{
 			double zoom = getZoom();
-			float imgW = textureCollection->width * zoom;
-			float imgH = textureCollection->height * zoom;
+			float imgW = activeTc->width * zoom;
+			float imgH = activeTc->height * zoom;
 			float cx = (width - imgW) * 0.5f;
 			float cy = (height - imgH) * 0.5f;
 			float left = (-cx - panX) / zoom;
@@ -346,7 +464,7 @@ public:
 				-(right + left) / (right - left), -(top + bottom) / (top - bottom), -(farVal + nearVal) / (farVal - nearVal), 1.0f
 			};
 			glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, ortho);
-			textureCollection->Draw(modelLoc);
+			activeTc->Draw(modelLoc);
 		}
 		glfwSwapBuffers(glfwWindow);
 	}
@@ -354,11 +472,31 @@ public:
 	void Main()
 	{
 		glfwMakeContextCurrent(this->glfwWindow);
+
+		using Clock    = std::chrono::steady_clock;
+		using Duration = std::chrono::duration<double>;
+		constexpr double kFrameSeconds = 1.0 / 60.0;
+
+		auto lastFrame = Clock::now();
+
 		while (!glfwWindowShouldClose(this->glfwWindow))
 		{
 			[[likely]]
 			Draw();
-			glfwWaitEventsTimeout(1.0 / 60);
+
+			if (pwmFrames_.size() > 1u) {
+				/* PWM active: poll events and busy-sleep to maintain 60 fps so
+				 * each frame gets an equal display duration. */
+				glfwPollEvents();
+				const auto target = lastFrame + Duration(kFrameSeconds);
+				while (Clock::now() < target)
+					std::this_thread::sleep_for(std::chrono::microseconds(100));
+				lastFrame = Clock::now();
+			} else {
+				/* Single frame: wait for events (power-efficient). */
+				glfwWaitEventsTimeout(kFrameSeconds);
+				lastFrame = Clock::now();
+			}
 		}
 	}
 
