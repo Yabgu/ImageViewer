@@ -87,8 +87,8 @@ private:
     static std::filesystem::path ExeDir() noexcept
     {
 #if defined(_WIN32)
-        wchar_t buf[32768];
-        DWORD len = GetModuleFileNameW(nullptr, buf, 32768);
+        wchar_t buf[MAX_PATH];
+        DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
         if (len > 0)
             return std::filesystem::path(buf).parent_path();
         return {};

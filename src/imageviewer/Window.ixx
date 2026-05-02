@@ -485,12 +485,10 @@ public:
 			Draw();
 
 			if (pwmFrames_.size() > 1u) {
-				/* PWM active: poll events and busy-sleep to maintain 60 fps so
-				 * each frame gets an equal display duration. */
+				/* PWM active: poll events and sleep until the next 60 fps deadline
+				 * so each frame gets an equal display duration. */
 				glfwPollEvents();
-				const auto target = lastFrame + Duration(kFrameSeconds);
-				while (Clock::now() < target)
-					std::this_thread::sleep_for(std::chrono::microseconds(100));
+				std::this_thread::sleep_until(lastFrame + Duration(kFrameSeconds));
 				lastFrame = Clock::now();
 			} else {
 				/* Single frame: wait for events (power-efficient). */

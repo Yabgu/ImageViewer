@@ -177,11 +177,11 @@ static bool PixmanOrderedDither(const ImagePluginData& src,
     const pixman_format_code_t df = GetPixmanFormat(dst->format);
     if (df == (pixman_format_code_t)0) return false;
 
-    /*
-     * Build a 4×4 Bayer noise tile in RGBA8 (PIXMAN_a8b8g8r8) memory layout.
-     * Noise value for each matrix entry n = round(Bayer[r][c] * 255 / 16) so
-     * that it fits in one 8-bit channel, scaled to one LSB.
-     * We use the same value for R/G/B; alpha noise is zero.
+    /* Build a 4×4 Bayer noise tile in RGBA8 (PIXMAN_a8b8g8r8) memory layout.
+     * Noise value for row r, col c: round(kBayerIdx[r][c] / 16.0 * 255)
+     *   = (kBayerIdx[r][c] * 255 + 8) / 16   (integer, +8 rounds to nearest)
+     * Max intermediate value: 15 * 255 + 8 = 3833 < UINT32_MAX — no overflow.
+     * We apply the same noise to R/G/B; alpha noise is zero.
      */
     uint8_t bayerTile[4 * 4 * 4]; /* 4 rows × 4 pixels × 4 bytes (RGBA8) */
     static const uint8_t kBayerIdx[4][4] = {
@@ -193,7 +193,7 @@ static bool PixmanOrderedDither(const ImagePluginData& src,
     for (int r = 0; r < 4; ++r) {
         for (int c = 0; c < 4; ++c) {
             const uint8_t n = static_cast<uint8_t>(
-                (kBayerIdx[r][c] * 255u + 8u) / 16u);
+                (static_cast<unsigned>(kBayerIdx[r][c]) * 255u + 8u) / 16u);
             /* PIXMAN_a8b8g8r8: byte order [R, G, B, A] in memory. */
             uint8_t* p = bayerTile + (r * 4 + c) * 4;
             p[0] = n; /* R */
