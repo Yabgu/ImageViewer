@@ -174,26 +174,38 @@ public:
     /* Load plugin from path; throws std::runtime_error on failure. */
     void Load(const std::filesystem::path& path)
     {
+        /* Unload any previously-loaded library and clear ALL state immediately,
+         * so that function pointers never point into an unloaded library. */
         if (handle_) { CloseLib(handle_); handle_ = nullptr; }
+        filterFunc_ = nullptr;
+        freeFunc_   = nullptr;
+        errorFunc_  = nullptr;
 
         Handle h = FindAndLoad(path);
         if (!h)
             throw std::runtime_error(
                 "FilterPlugin: failed to open \"" + path.string() + "\"");
 
-        filterFunc_ = reinterpret_cast<FilterImageFunc>(Sym(h, "FilterImage"));
-        freeFunc_   = reinterpret_cast<FreeFilterImageSetFunc>(
+        /* Resolve all symbols into locals first; only commit to member state
+         * after every required symbol is verified. */
+        auto filterFunc = reinterpret_cast<FilterImageFunc>(Sym(h, "FilterImage"));
+        auto freeFunc   = reinterpret_cast<FreeFilterImageSetFunc>(
             Sym(h, "FreeFilterImageSet"));
-        errorFunc_  = reinterpret_cast<FilterPluginGetLastErrorFunc>(
+        auto errorFunc  = reinterpret_cast<FilterPluginGetLastErrorFunc>(
             Sym(h, "FilterPluginGetLastError"));
 
-        if (!filterFunc_ || !freeFunc_) {
+        if (!filterFunc || !freeFunc) {
             CloseLib(h);
             throw std::runtime_error(
                 "FilterPlugin: missing required exports in \"" +
                 path.string() + "\"");
         }
-        handle_ = h;
+
+        /* All required symbols resolved — commit. */
+        handle_     = h;
+        filterFunc_ = filterFunc;
+        freeFunc_   = freeFunc;
+        errorFunc_  = errorFunc;
     }
 
     /* Return the platform-appropriate filename for the default pixman plugin. */
