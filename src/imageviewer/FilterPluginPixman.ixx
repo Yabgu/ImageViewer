@@ -266,7 +266,7 @@ static uint32_t GetArgU32(const IWFilterOptions* opts,
     if (!opts || !opts->argv) return defaultVal;
     for (uint32_t i = 0; i < opts->argc; ++i) {
         const IWFilterArg& a = opts->argv[i];
-        if (std::strncmp(a.name, name, IW_FILTER_ARG_NAME_MAX) == 0) {
+        if (std::strcmp(a.name, name) == 0) {
             if (a.type == IW_FILTER_ARG_UINT32) return a.value.u32;
             break;
         }

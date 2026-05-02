@@ -137,7 +137,7 @@ static inline void WriteBitsLE(uint8_t* pixelBase,
     while (remaining > 0u) {
         const uint32_t byteIndex = currentBit / 8u;
         const uint32_t bitInByte = currentBit % 8u;
-        const uint32_t bitsThisByte = std::min<uint32_t>(remaining, 8u - bitInByte);
+        const uint32_t bitsThisByte = std::min(remaining, 8u - bitInByte);
         const uint32_t fieldMask = ((1u << bitsThisByte) - 1u) << bitInByte;
         const uint32_t fieldValue =
             ((value >> valueShift) & ((1u << bitsThisByte) - 1u)) << bitInByte;
