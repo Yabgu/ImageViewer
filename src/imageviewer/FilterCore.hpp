@@ -114,21 +114,48 @@ static inline float GetComponentValue(const float rgba[4],
 
 /*
  * Write a pre-computed integer quantised value into one component slot of
- * a packed-interleaved pixel.  Assumes byte-aligned bitOffsets (as produced
- * by MakeTargetFormat).
+ * a packed-interleaved pixel. Supports arbitrary bit offsets/widths up to
+ * 32 bits and preserves surrounding bits in packed formats.
  */
+static inline void WriteBitsLE(uint8_t* pixelBase,
+                               uint16_t bitOffset,
+                               uint16_t bitWidth,
+                               uint32_t value) noexcept
+{
+    if (bitWidth == 0) {
+        return;
+    }
+
+    if (bitWidth < 32u) {
+        value &= ((1u << bitWidth) - 1u);
+    }
+
+    uint32_t remaining = bitWidth;
+    uint32_t valueShift = 0;
+    uint32_t currentBit = bitOffset;
+
+    while (remaining > 0u) {
+        const uint32_t byteIndex = currentBit / 8u;
+        const uint32_t bitInByte = currentBit % 8u;
+        const uint32_t bitsThisByte = std::min<uint32_t>(remaining, 8u - bitInByte);
+        const uint32_t fieldMask = ((1u << bitsThisByte) - 1u) << bitInByte;
+        const uint32_t fieldValue =
+            ((value >> valueShift) & ((1u << bitsThisByte) - 1u)) << bitInByte;
+
+        pixelBase[byteIndex] = static_cast<uint8_t>(
+            (pixelBase[byteIndex] & ~fieldMask) | fieldValue);
+
+        currentBit += bitsThisByte;
+        valueShift += bitsThisByte;
+        remaining -= bitsThisByte;
+    }
+}
+
 static inline void WriteQuantizedComponent(uint8_t* pixelBase,
                                             const IWComponentDef& cd,
                                             uint32_t quantized) noexcept
 {
-    uint8_t* p = pixelBase + cd.bitOffset / 8;
-    const int bpc = (cd.bitWidth + 7) / 8;
-    if (bpc == 1) {
-        p[0] = static_cast<uint8_t>(quantized);
-    } else { /* bpc == 2 */
-        p[0] = static_cast<uint8_t>(quantized & 0xFFu);
-        p[1] = static_cast<uint8_t>((quantized >> 8) & 0xFFu);
-    }
+    WriteBitsLE(pixelBase, cd.bitOffset, cd.bitWidth, quantized);
 }
 
 /* Round a normalised float to the nearest integer in [0, maxVal]. */
