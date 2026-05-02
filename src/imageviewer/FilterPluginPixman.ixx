@@ -8,20 +8,33 @@ module;
  *   FreeFilterImageSet     — release memory
  *   FilterPluginGetLastError — last error string
  *
+ * Named arguments recognised by this plugin (all optional):
+ *
+ *   "mode"     uint32  0=none (default), 1=ordered, 2=floyd_steinberg, 3=pwm
+ *   "pwm_bits" uint32  extra virtual bits for PWM mode (default 1, max 8)
+ *
  * Strategy
  * ────────
  * For common packed-integer source formats (RGBA8, BGRA8, RGB8, …) that
  * pixman understands natively:
- *   • NONE dither  – use pixman_image_composite32(PIXMAN_OP_SRC) for fast
- *                    format conversion.
- *   • ORDERED      – add a tiled 4×4 Bayer noise image via PIXMAN_OP_ADD
- *                    on the 8-bit output, then clamp.  Meaningful for 8→8
- *                    passthrough; higher-precision source paths fall through
- *                    to FilterCore.
+ *   • mode=0 (none)    – use pixman_image_composite32(PIXMAN_OP_SRC) for fast
+ *                        format conversion.
+ *   • mode=1 (ordered) – add a tiled 4×4 Bayer noise image via PIXMAN_OP_ADD
+ *                        on the 8-bit output, then clamp.
  *
  * For all other source formats (16-bit, float, planar, exotic semantics)
- * and for Floyd-Steinberg / PWM, the implementation falls back to
- * FilterCore, which operates in normalised float space.
+ * and for mode=2 (floyd_steinberg) / mode=3 (pwm), the implementation falls
+ * back to FilterCore, which operates in normalised float space.
+ *
+ * Internal mode constants (NOT part of the public ABI):
+ */
+static constexpr uint32_t kModeNone            = 0u;
+static constexpr uint32_t kModeOrdered         = 1u;
+static constexpr uint32_t kModeFloydSteinberg  = 2u;
+static constexpr uint32_t kModePWM             = 3u;
+/*
+ * Hosts pass named IWFilterArg entries to select behaviour; these integer
+ * values are internal to FilterPluginPixman and are not exposed in any header.
  */
 
 #include <cstdlib>
@@ -242,6 +255,25 @@ static bool NeedsDownsample(const ImagePluginData& src,
     return false;
 }
 
+/*
+ * Look up a named uint32 argument from the options argv list.
+ * Returns defaultVal when the argument is not present or has the wrong type.
+ */
+static uint32_t GetArgU32(const IWFilterOptions* opts,
+                           const char*            name,
+                           uint32_t               defaultVal) noexcept
+{
+    if (!opts || !opts->argv) return defaultVal;
+    for (uint32_t i = 0; i < opts->argc; ++i) {
+        const IWFilterArg& a = opts->argv[i];
+        if (std::strncmp(a.name, name, IW_FILTER_ARG_NAME_MAX) == 0) {
+            if (a.type == IW_FILTER_ARG_UINT32) return a.value.u32;
+            break;
+        }
+    }
+    return defaultVal;
+}
+
 /* ── Exported plugin symbols ─────────────────────────────────────────────── */
 
 export extern "C" FILTERPLUGIN_API
@@ -256,12 +288,21 @@ IWFilterImageSet* FilterImage(const ImagePluginData*  src,
         return nullptr;
     }
 
+    if (options->version != IW_FILTER_OPTIONS_VERSION) {
+        SetError("FilterImage: unsupported options version");
+        return nullptr;
+    }
+
     const IWImageFormat targetFmt = FilterCore::MakeTargetFormat(*screen);
 
+    /* Read named arguments (all optional; defaults shown in comments). */
+    const uint32_t mode    = GetArgU32(options, "mode",     kModeNone);
+    const uint32_t pwmBits = GetArgU32(options, "pwm_bits", 1u);
+
     /* ── PWM path (always uses FilterCore) ────────────────────────────── */
-    if (options->ditherMode == IW_DITHER_PWM) {
+    if (mode == kModePWM) {
         IWFilterImageSet* set =
-            FilterCore::ApplyPWM(*src, targetFmt, options->pwmBits);
+            FilterCore::ApplyPWM(*src, targetFmt, pwmBits);
         if (!set) SetError("FilterImage: PWM allocation failed");
         return set;
     }
@@ -283,9 +324,7 @@ IWFilterImageSet* FilterImage(const ImagePluginData*  src,
 
     ImagePluginData* frame = nullptr;
 
-    switch (options->ditherMode) {
-
-    case IW_DITHER_NONE: {
+    if (mode == kModeNone) {
         /* Fast path: try pixman format conversion when source is
          * pixman-compatible and no bit depth reduction is needed. */
         if (!NeedsDownsample(*src, *screen) &&
@@ -300,10 +339,8 @@ IWFilterImageSet* FilterImage(const ImagePluginData*  src,
         }
         if (!frame)
             frame = FilterCore::ApplyNone(*src, targetFmt);
-        break;
-    }
 
-    case IW_DITHER_ORDERED: {
+    } else if (mode == kModeOrdered) {
         /* Try pixman Bayer on 8-bit → 8-bit paths; fall back to FilterCore. */
         if (!NeedsDownsample(*src, *screen) &&
             GetPixmanFormat(src->format) != (pixman_format_code_t)0)
@@ -316,16 +353,13 @@ IWFilterImageSet* FilterImage(const ImagePluginData*  src,
         }
         if (!frame)
             frame = FilterCore::ApplyOrdered(*src, targetFmt);
-        break;
-    }
 
-    case IW_DITHER_FLOYD_STEINBERG:
+    } else if (mode == kModeFloydSteinberg) {
         frame = FilterCore::ApplyFloydSteinberg(*src, targetFmt);
-        break;
 
-    default:
+    } else {
+        /* Unknown mode: fall back to no dither. */
         frame = FilterCore::ApplyNone(*src, targetFmt);
-        break;
     }
 
     if (!frame) {

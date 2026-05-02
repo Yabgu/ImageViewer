@@ -413,7 +413,7 @@ public:
 		const int segmentHeight,
 		const int redundantBorderSize,
 		const IWFilterOptions& opts = IWFilterOptions{
-			IW_FILTER_OPTIONS_VERSION, IW_DITHER_NONE, 0u })
+			IW_FILTER_OPTIONS_VERSION, 0u, nullptr })
 	{
 		pwmFrames_.clear();
 		frameCounter_ = 0;
