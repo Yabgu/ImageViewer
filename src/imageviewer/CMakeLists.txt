@@ -41,6 +41,29 @@ else()
 endif()
 find_package(Stb REQUIRED)
 
+# ── pixman ────────────────────────────────────────────────────────────────────
+# vcpkg exports pixman via the unofficial-pixman CONFIG package.
+# Fall back to pkg-config (native system builds).
+find_package(unofficial-pixman CONFIG QUIET)
+if(unofficial-pixman_FOUND)
+    set(PIXMAN_TARGET unofficial::pixman::pixman)
+else()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(PIXMAN IMPORTED_TARGET pixman-1)
+        if(PIXMAN_FOUND)
+            set(PIXMAN_TARGET PkgConfig::PIXMAN)
+        endif()
+    endif()
+endif()
+
+if(NOT DEFINED PIXMAN_TARGET)
+    message(WARNING
+        "pixman not found — FilterPixman plugin will not be built. "
+        "Add pixman to vcpkg.json or install libpixman-1-dev.")
+    set(PIXMAN_TARGET "")
+endif()
+
 # Main executable
 if(WIN32)
     add_executable(iview WIN32)
@@ -59,6 +82,7 @@ target_sources(imageviewer PUBLIC
         Image.ixx
         HotkeysHandler.ixx
         PluginManager.ixx
+        FilterPlugin.ixx
 )
 
 
@@ -204,3 +228,28 @@ target_sources(ImageLoaderStb PUBLIC
 )
 set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
 target_include_directories(ImageLoaderStb PRIVATE ${Stb_INCLUDE_DIR})
+
+# FilterPixman Plugin DLL — only built when pixman is available
+if(PIXMAN_TARGET)
+    add_library(FilterPixman SHARED)
+    target_sources(FilterPixman PUBLIC
+        FILE_SET filterpixman TYPE CXX_MODULES
+        FILES
+            FilterPluginPixman.ixx
+    )
+    set_property(TARGET FilterPixman PROPERTY CXX_STANDARD 23)
+    target_include_directories(FilterPixman PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET})
+
+    # Copy FilterPixman DLL next to iview on Windows (same logic as runtime DLLs)
+    if(WIN32)
+        add_custom_command(TARGET iview POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:FilterPixman>
+                $<TARGET_FILE_DIR:iview>
+            VERBATIM
+        )
+    endif()
+endif()
