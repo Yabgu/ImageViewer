@@ -94,6 +94,10 @@ static inline void ExtractPixelF(const ImagePluginData& src,
         default:                                                           break;
         }
     }
+    /* Normalise all channels to [0.0, 1.0] so downstream quantisers always
+     * receive values in range (e.g. HDR floats > 1.0 are clipped to display). */
+    for (int i = 0; i < 4; ++i)
+        rgba[i] = std::max(0.f, std::min(1.f, rgba[i]));
 }
 
 /*

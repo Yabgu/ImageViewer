@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <cstdlib>
 #include <cstring>
 #include "ImagePluginDef.h"
 #include "Utils.hpp"
@@ -934,5 +935,660 @@ TEST_SUITE("FilterCore::ApplyFloydSteinberg")
         FilterCore::FreeFrame(outNone);
         FilterCore::FreeFrame(outFS);
         FilterCore::FreeFrame(src);
+    }
+}
+
+// ─── FilterCore::BytesPerPixel ────────────────────────────────────────────────
+
+TEST_SUITE("FilterCore::BytesPerPixel (via MakeTargetFormat)")
+{
+    TEST_CASE("4-channel 8-bit → 4 bytes per pixel (stride = width * 4)")
+    {
+        IWScreenInfo screen{ 8, 4 };
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        CHECK(fmt.bitsPerPixel == 32);
+        ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
+        ImagePluginData* out = FilterCore::ApplyNone(*src, fmt);
+        REQUIRE(out != nullptr);
+        CHECK(out->stride == out->width * 4);
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("4-channel 16-bit → 8 bytes per pixel (stride = width * 8)")
+    {
+        IWScreenInfo screen{ 16, 4 };
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        CHECK(fmt.bitsPerPixel == 64);
+        ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
+        ImagePluginData* out = FilterCore::ApplyNone(*src, fmt);
+        REQUIRE(out != nullptr);
+        CHECK(out->stride == out->width * 8);
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("4-channel 10-bit → 5 bytes per pixel (ceiling of 40/8)")
+    {
+        IWScreenInfo screen{ 10, 4 };
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        CHECK(fmt.bitsPerPixel == 40);
+        ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
+        ImagePluginData* out = FilterCore::ApplyNone(*src, fmt);
+        REQUIRE(out != nullptr);
+        CHECK(out->stride == out->width * 5);
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+}
+
+// ─── FilterCore::MakeTargetFormat 10-bit writability ─────────────────────────
+
+TEST_SUITE("FilterCore::MakeTargetFormat 10-bit writability")
+{
+    TEST_CASE("10-bit screen produces correct packed bitOffsets (0, 10, 20, 30)")
+    {
+        IWScreenInfo screen{ 10, 4 };
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        CHECK(fmt.components[0].bitOffset == 0);
+        CHECK(fmt.components[1].bitOffset == 10);
+        CHECK(fmt.components[2].bitOffset == 20);
+        CHECK(fmt.components[3].bitOffset == 30);
+        CHECK(fmt.components[0].bitWidth  == 10);
+    }
+
+    TEST_CASE("ApplyNone on 10-bit target: zero source → all bytes zero")
+    {
+        ImagePluginData* src = MakeRGBA16Pixel(0x0000u, 0x0000u);
+        IWScreenInfo screen{ 10, 4 };
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+
+        ImagePluginData* out = FilterCore::ApplyNone(*src, target);
+        REQUIRE(out != nullptr);
+        /* 4-channel 10-bit packs into 5 bytes; all-zero input → all bytes 0. */
+        for (int b = 0; b < 5; ++b)
+            CHECK(out->data[b] == 0);
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("ApplyNone on 10-bit target: max source → all 40 bits set (5 × 0xFF)")
+    {
+        ImagePluginData* src = MakeRGBA16Pixel(0xFFFFu, 0xFFFFu);
+        IWScreenInfo screen{ 10, 4 };
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+
+        ImagePluginData* out = FilterCore::ApplyNone(*src, target);
+        REQUIRE(out != nullptr);
+        for (int b = 0; b < 5; ++b)
+            CHECK(out->data[b] == 0xFF);
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("ApplyNone on 10-bit target: mid value round-trips to ~512 per channel")
+    {
+        /* 0x8000 / 65535 ≈ 0.500 → 10-bit: round(0.5 * 1023) = 512.
+         * MakeTargetFormat uses IW_COMPONENT_CLASS_UNORM, so ExtractComponent
+         * returns the normalised value: 512 / 1023 ≈ 0.500. */
+        ImagePluginData* src = MakeRGBA16Pixel(0x8000u, 0xFFFFu);
+        IWScreenInfo screen{ 10, 4 };
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+
+        ImagePluginData* out = FilterCore::ApplyNone(*src, target);
+        REQUIRE(out != nullptr);
+
+        for (int c = 0; c < 3; ++c) {
+            const float v = ExtractComponent(out->data, target.components[c]);
+            /* UNORM: 512/1023 ≈ 0.500; allow ±0.01 tolerance. */
+            CHECK(v == doctest::Approx(0.5f).epsilon(0.01));
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+}
+
+// ─── FilterCore::QuantizeRound ────────────────────────────────────────────────
+
+TEST_SUITE("FilterCore::QuantizeRound")
+{
+    TEST_CASE("0.0 → 0")
+    {
+        CHECK(FilterCore::QuantizeRound(0.0f, 255u) == 0u);
+    }
+
+    TEST_CASE("1.0 → maxVal (255)")
+    {
+        CHECK(FilterCore::QuantizeRound(1.0f, 255u) == 255u);
+    }
+
+    TEST_CASE("0.5 with maxVal=255 → 128 (rounds up)")
+    {
+        /* round(0.5 * 255 + 0.5) = round(128.0) = 128 */
+        CHECK(FilterCore::QuantizeRound(0.5f, 255u) == 128u);
+    }
+
+    TEST_CASE("0.5 with maxVal=1 → 1 (rounds up)")
+    {
+        CHECK(FilterCore::QuantizeRound(0.5f, 1u) == 1u);
+    }
+
+    TEST_CASE("negative value clamped to 0")
+    {
+        CHECK(FilterCore::QuantizeRound(-0.5f, 255u) == 0u);
+    }
+
+    TEST_CASE("value > 1.0 clamped to maxVal")
+    {
+        CHECK(FilterCore::QuantizeRound(2.0f, 255u) == 255u);
+    }
+
+    TEST_CASE("0.0 with maxVal=1 → 0")
+    {
+        CHECK(FilterCore::QuantizeRound(0.0f, 1u) == 0u);
+    }
+
+    TEST_CASE("maxVal=0 always returns 0")
+    {
+        CHECK(FilterCore::QuantizeRound(0.5f, 0u) == 0u);
+        CHECK(FilterCore::QuantizeRound(1.0f, 0u) == 0u);
+    }
+
+    TEST_CASE("0.25 with maxVal=255 → 64")
+    {
+        /* round(0.25 * 255 + 0.5) = round(64.25) = 64 */
+        CHECK(FilterCore::QuantizeRound(0.25f, 255u) == 64u);
+    }
+
+    TEST_CASE("0.75 with maxVal=255 → 191")
+    {
+        /* round(0.75 * 255 + 0.5) = round(191.75) = 192 — or 191 depending on impl.
+         * The implementation uses (v * maxVal + 0.5f) cast to uint.
+         * 0.75 * 255 + 0.5 = 191.75 → cast to uint = 191. */
+        CHECK(FilterCore::QuantizeRound(0.75f, 255u) == 191u);
+    }
+}
+
+// ─── FilterCore::QuantizeBayer ────────────────────────────────────────────────
+
+TEST_SUITE("FilterCore::QuantizeBayer")
+{
+    TEST_CASE("threshold 0.0: same as floor(v * maxVal)")
+    {
+        /* floor(0.5 * 1 + 0.0) = floor(0.5) = 0 */
+        CHECK(FilterCore::QuantizeBayer(0.5f, 1u, 0.0f) == 0u);
+    }
+
+    TEST_CASE("threshold 0.5: lifts value 0.5 * maxVal=1 to 1")
+    {
+        /* floor(0.5 * 1 + 0.5) = floor(1.0) = 1 */
+        CHECK(FilterCore::QuantizeBayer(0.5f, 1u, 0.5f) == 1u);
+    }
+
+    TEST_CASE("result never exceeds maxVal regardless of threshold")
+    {
+        /* floor(1.0 * 255 + 15/16) = floor(255.9375) = 255 — must not be 256 */
+        CHECK(FilterCore::QuantizeBayer(1.0f, 255u, 15.0f / 16.0f) == 255u);
+    }
+
+    TEST_CASE("negative value clamped to 0 before bayer add")
+    {
+        CHECK(FilterCore::QuantizeBayer(-1.0f, 255u, 0.5f) == 0u);
+    }
+
+    TEST_CASE("value > 1.0 clamped to 1.0 before bayer add")
+    {
+        CHECK(FilterCore::QuantizeBayer(2.0f, 255u, 0.0f) == 255u);
+    }
+
+    TEST_CASE("0.0 with any threshold → 0 (floor(0 + bayer) = 0 for bayer < 1)")
+    {
+        /* floor(0.0 * 255 + 0/16) = 0 */
+        CHECK(FilterCore::QuantizeBayer(0.0f, 255u, 0.0f)          == 0u);
+        CHECK(FilterCore::QuantizeBayer(0.0f, 255u, 15.0f / 16.0f) == 0u);
+    }
+
+    TEST_CASE("0.25 with threshold 0 → 63")
+    {
+        /* floor(0.25 * 255 + 0.0) = floor(63.75) = 63 */
+        CHECK(FilterCore::QuantizeBayer(0.25f, 255u, 0.0f) == 63u);
+    }
+
+    TEST_CASE("0.25 with threshold 8/16 → 63")
+    {
+        /* floor(0.25 * 255 + 0.5) = floor(64.25) = 64 */
+        CHECK(FilterCore::QuantizeBayer(0.25f, 255u, 8.0f / 16.0f) == 64u);
+    }
+}
+
+// ─── FilterCore::WriteBitsLE ─────────────────────────────────────────────────
+
+TEST_SUITE("FilterCore::WriteBitsLE")
+{
+    TEST_CASE("8-bit at offset 0: writes all 8 bits of first byte")
+    {
+        uint8_t pixel[4] = {0, 0, 0, 0};
+        FilterCore::WriteBitsLE(pixel, 0, 8, 0xABu);
+        CHECK(pixel[0] == 0xABu);
+        CHECK(pixel[1] == 0x00u);
+    }
+
+    TEST_CASE("8-bit at offset 8: writes second byte, first byte untouched")
+    {
+        uint8_t pixel[4] = {0xFF, 0, 0, 0};
+        FilterCore::WriteBitsLE(pixel, 8, 8, 0xCDu);
+        CHECK(pixel[0] == 0xFFu);
+        CHECK(pixel[1] == 0xCDu);
+    }
+
+    TEST_CASE("10-bit at offset 0: all 10 bits set → byte0=0xFF, byte1 low 2 bits=0x03")
+    {
+        uint8_t pixel[5] = {0, 0, 0, 0, 0};
+        FilterCore::WriteBitsLE(pixel, 0, 10, 0x3FFu);
+        CHECK(pixel[0] == 0xFFu);
+        CHECK((pixel[1] & 0x03u) == 0x03u);
+    }
+
+    TEST_CASE("10-bit value 512 at offset 0: bit 9 set in byte 1")
+    {
+        uint8_t pixel[5] = {0, 0, 0, 0, 0};
+        /* 512 = 0x200 = 0b10_0000_0000; bit 9 is in byte 1, position 1. */
+        FilterCore::WriteBitsLE(pixel, 0, 10, 0x200u);
+        CHECK(pixel[0] == 0x00u);
+        CHECK((pixel[1] & 0x03u) == 0x02u); /* bit 1 set */
+    }
+
+    TEST_CASE("zero bitWidth: no bytes touched")
+    {
+        uint8_t pixel[2] = {0xAA, 0xBB};
+        FilterCore::WriteBitsLE(pixel, 0, 0, 0xFFu);
+        CHECK(pixel[0] == 0xAAu);
+        CHECK(pixel[1] == 0xBBu);
+    }
+
+    TEST_CASE("write 0 into non-zero byte: clears only target bits")
+    {
+        uint8_t pixel[2] = {0xFF, 0xFF};
+        FilterCore::WriteBitsLE(pixel, 0, 8, 0x00u);
+        CHECK(pixel[0] == 0x00u);
+        CHECK(pixel[1] == 0xFFu);
+    }
+
+    TEST_CASE("4-bit field inside a byte: surrounding bits preserved")
+    {
+        /* pixel[0] = 0b1111_0000; write 0b0101 into bits 0-3. */
+        uint8_t pixel[1] = {0xF0u};
+        FilterCore::WriteBitsLE(pixel, 0, 4, 0x05u);
+        CHECK(pixel[0] == 0xF5u); /* upper nibble preserved, lower = 0101 */
+    }
+}
+
+// ─── FilterCore::ExtractPixelF (normalised output) ───────────────────────────
+
+TEST_SUITE("FilterCore::ExtractPixelF")
+{
+    TEST_CASE("16-bit UNORM mid value → all colour channels near 0.5")
+    {
+        ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
+        float rgba[4] = {};
+        FilterCore::ExtractPixelF(*src, 0, 0, rgba);
+        /* 0x8000 / 65535 ≈ 0.50004 */
+        CHECK(rgba[0] == doctest::Approx(0.5f).epsilon(0.01));
+        CHECK(rgba[1] == doctest::Approx(0.5f).epsilon(0.01));
+        CHECK(rgba[2] == doctest::Approx(0.5f).epsilon(0.01));
+        CHECK(rgba[3] == doctest::Approx(1.0f));
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("float32 HDR value 2.0 is clamped to 1.0")
+    {
+        IWImageFormat fmt = {};
+        fmt.componentCount = 4;
+        fmt.bitsPerPixel   = 128;
+        fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 32 };
+        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 32, 32 };
+        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 };
+        fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_FLOAT, 96, 32 };
+
+        float vals[4] = {2.0f, 0.5f, -0.5f, 1.5f};
+        uint8_t* buf = static_cast<uint8_t*>(std::malloc(16));
+        std::memcpy(buf, vals, 16);
+
+        ImagePluginData pd;
+        pd.width = 1; pd.height = 1; pd.stride = 16;
+        pd.colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+        pd.size = 16; pd.data = buf; pd.format = fmt;
+
+        float rgba[4] = {};
+        FilterCore::ExtractPixelF(pd, 0, 0, rgba);
+
+        CHECK(rgba[0] == doctest::Approx(1.0f)); /* 2.0 clamped */
+        CHECK(rgba[1] == doctest::Approx(0.5f)); /* 0.5 unchanged */
+        CHECK(rgba[2] == doctest::Approx(0.0f)); /* -0.5 clamped */
+        CHECK(rgba[3] == doctest::Approx(1.0f)); /* 1.5 clamped */
+
+        std::free(buf);
+    }
+
+    TEST_CASE("GRAY8 channel maps to R/G/B, alpha defaults to 1.0")
+    {
+        IWImageFormat fmt = {};
+        fmt.componentCount = 1;
+        fmt.bitsPerPixel   = 8;
+        fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 8 };
+
+        uint8_t grayBuf[1] = {128u};
+        ImagePluginData pd;
+        pd.width = 1; pd.height = 1; pd.stride = 1;
+        pd.colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+        pd.size = 1; pd.data = grayBuf; pd.format = fmt;
+
+        float rgba[4] = {};
+        FilterCore::ExtractPixelF(pd, 0, 0, rgba);
+
+        const float expected = 128.0f / 255.0f;
+        CHECK(rgba[0] == doctest::Approx(expected));
+        CHECK(rgba[1] == doctest::Approx(expected));
+        CHECK(rgba[2] == doctest::Approx(expected));
+        CHECK(rgba[3] == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("zero value → colour channels 0, alpha 1")
+    {
+        ImagePluginData* src = MakeRGBA16Pixel(0x0000u);
+        float rgba[4] = {};
+        FilterCore::ExtractPixelF(*src, 0, 0, rgba);
+        CHECK(rgba[0] == 0.0f);
+        CHECK(rgba[1] == 0.0f);
+        CHECK(rgba[2] == 0.0f);
+        CHECK(rgba[3] == 1.0f); /* alpha was 0xFFFF */
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("all channels in [0.0, 1.0] for any normalised UNORM input")
+    {
+        /* Test a selection of 16-bit values to confirm every output is in range. */
+        const uint16_t values[] = {0x0000, 0x0001, 0x7FFF, 0x8000, 0xFFFE, 0xFFFF};
+        for (uint16_t v : values) {
+            ImagePluginData* src = MakeRGBA16Pixel(v);
+            float rgba[4] = {};
+            FilterCore::ExtractPixelF(*src, 0, 0, rgba);
+            for (int i = 0; i < 4; ++i) {
+                CHECK(rgba[i] >= 0.0f);
+                CHECK(rgba[i] <= 1.0f);
+            }
+            FilterCore::FreeFrame(src);
+        }
+    }
+}
+
+// ─── FilterCore::ApplyOrdered — no-brightening invariant ─────────────────────
+//
+// Correct ordered dithering: for every pixel and channel the output value
+// must be either floor(v * maxVal) or min(floor(v * maxVal) + 1, maxVal).
+// The Bayer threshold only shifts the rounding point; it must never add
+// more than one LSB and the result must never exceed maxVal.
+
+TEST_SUITE("FilterCore::ApplyOrdered no-brightening invariant")
+{
+    TEST_CASE("mid-value pixel: each channel is floor or ceil, never higher")
+    {
+        /* 4-pixel row so all Bayer columns (0-3) are exercised. */
+        ImagePluginData* src = MakeRGBA16Row(4, 0x8000u);
+        IWScreenInfo screen{ 8, 4 };
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        const float norm  = 0x8000u / 65535.0f;
+        const float scaled = norm * 255.0f;
+        const uint32_t lo = static_cast<uint32_t>(std::floor(scaled));
+        const uint32_t hi = std::min(lo + 1u, 255u);
+
+        for (int x = 0; x < 4; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const uint32_t v = out->data[x * 4 + c];
+                CHECK(v >= lo);
+                CHECK(v <= hi);
+            }
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("full-white pixel: all RGB channels == 255 (never overflow)")
+    {
+        ImagePluginData* src = MakeRGBA16Row(4, 0xFFFFu);
+        IWScreenInfo screen{ 8, 4 };
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        for (int x = 0; x < 4; ++x) {
+            CHECK(out->data[x * 4 + 0] == 255u);
+            CHECK(out->data[x * 4 + 1] == 255u);
+            CHECK(out->data[x * 4 + 2] == 255u);
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("black pixel: all RGB channels == 0 (Bayer never introduces darkness)")
+    {
+        ImagePluginData* src = MakeRGBA16Row(4, 0x0000u);
+        IWScreenInfo screen{ 8, 4 };
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        for (int x = 0; x < 4; ++x) {
+            CHECK(out->data[x * 4 + 0] == 0u);
+            CHECK(out->data[x * 4 + 1] == 0u);
+            CHECK(out->data[x * 4 + 2] == 0u);
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("low-value pixel: output is 0 or 1 — never 2+")
+    {
+        /* 16-bit value 256 ≈ 0.003906. Scaled to 8-bit ≈ 0.996. floor=0, hi=1. */
+        ImagePluginData* src = MakeRGBA16Row(4, 256u);
+        IWScreenInfo screen{ 8, 4 };
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        for (int x = 0; x < 4; ++x)
+            for (int c = 0; c < 3; ++c)
+                CHECK(out->data[x * 4 + c] <= 1u);
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("0.25 normalised value: output is 63 or 64 at every Bayer position")
+    {
+        /* 0.25 * 255 = 63.75; floor=63, hi=64. */
+        const uint16_t raw16 = static_cast<uint16_t>(0.25f * 65535.f);
+        ImagePluginData* src = MakeRGBA16Row(4, raw16);
+        IWScreenInfo screen{ 8, 4 };
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        for (int x = 0; x < 4; ++x)
+            for (int c = 0; c < 3; ++c) {
+                const uint32_t v = out->data[x * 4 + c];
+                CHECK(v >= 63u);
+                CHECK(v <= 64u);
+            }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+}
+
+// ─── ExtractComponent normalised values ──────────────────────────────────────
+
+TEST_SUITE("ExtractComponent normalised values")
+{
+    TEST_CASE("UNORM 16-bit: 0.0 (0x0000) → 0.0f")
+    {
+        uint8_t pixel[2] = {0x00, 0x00};
+        IWComponentDef c = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, 0, 16 };
+        CHECK(ExtractComponent(pixel, c) == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("UNORM 16-bit: 1.0 (0xFFFF) → 1.0f")
+    {
+        uint8_t pixel[2] = {0xFF, 0xFF};
+        IWComponentDef c = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, 0, 16 };
+        CHECK(ExtractComponent(pixel, c) == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("UNORM 16-bit: 0x8000 ≈ 0.500")
+    {
+        uint8_t pixel[2] = {0x00, 0x80};
+        IWComponentDef c = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, 0, 16 };
+        CHECK(ExtractComponent(pixel, c) == doctest::Approx(0.5f).epsilon(0.01));
+    }
+
+    TEST_CASE("float32: value 0.25 round-trips")
+    {
+        float val = 0.25f;
+        uint8_t pixel[4];
+        std::memcpy(pixel, &val, 4);
+        IWComponentDef c = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT, 0, 32 };
+        CHECK(ExtractComponent(pixel, c) == doctest::Approx(0.25f));
+    }
+
+    TEST_CASE("float32: value 0.75 round-trips")
+    {
+        float val = 0.75f;
+        uint8_t pixel[4];
+        std::memcpy(pixel, &val, 4);
+        IWComponentDef c = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT, 0, 32 };
+        CHECK(ExtractComponent(pixel, c) == doctest::Approx(0.75f));
+    }
+
+    TEST_CASE("UNORM 8-bit: 128/255 ≈ 0.502")
+    {
+        uint8_t pixel[1] = {128u};
+        IWComponentDef c = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, 0, 8 };
+        CHECK(ExtractComponent(pixel, c) == doctest::Approx(128.0f / 255.0f));
+    }
+
+    TEST_CASE("UNORM 8-bit: 64/255 ≈ 0.251")
+    {
+        uint8_t pixel[1] = {64u};
+        IWComponentDef c = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, 0, 8 };
+        CHECK(ExtractComponent(pixel, c) == doctest::Approx(64.0f / 255.0f));
+    }
+}
+
+// ─── ClassifyGLUpload extra cases ────────────────────────────────────────────
+
+TEST_SUITE("ClassifyGLUpload extra")
+{
+    TEST_CASE("GRAY8 + ALPHA8 → valid, 2 channels, not BGR")
+    {
+        IWImageFormat fmt = {};
+        fmt.componentCount = 2;
+        fmt.bitsPerPixel   = 16;
+        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 8 };
+        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, 8, 8 };
+        const auto h = ClassifyGLUpload(fmt);
+        CHECK(h.valid);
+        CHECK(h.channels == 2);
+        CHECK(!h.isFloat);
+        CHECK(!h.isBGR);
+    }
+
+    TEST_CASE("RGB32F → valid, float, 3 channels")
+    {
+        IWImageFormat fmt = {};
+        fmt.componentCount = 3;
+        fmt.bitsPerPixel   = 96;
+        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 32 };
+        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 32, 32 };
+        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 };
+        const auto h = ClassifyGLUpload(fmt);
+        CHECK(h.valid);
+        CHECK(h.channels == 3);
+        CHECK(h.bitWidth  == 32);
+        CHECK(h.isFloat);
+        CHECK(!h.isBGR);
+    }
+
+    TEST_CASE("GRAY16 → valid, 1 channel, 16-bit, not float")
+    {
+        IWImageFormat fmt = {};
+        fmt.componentCount = 1;
+        fmt.bitsPerPixel   = 16;
+        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 16 };
+        const auto h = ClassifyGLUpload(fmt);
+        CHECK(h.valid);
+        CHECK(h.channels == 1);
+        CHECK(h.bitWidth == 16);
+        CHECK(!h.isFloat);
+    }
+
+    TEST_CASE("zero componentCount → invalid")
+    {
+        IWImageFormat fmt = {};
+        fmt.componentCount = 0;
+        CHECK(!ClassifyGLUpload(fmt).valid);
+    }
+
+    TEST_CASE("10-bit packed RGB → invalid (not byte-aligned bit-width)")
+    {
+        IWImageFormat fmt = {};
+        fmt.componentCount = 3;
+        fmt.bitsPerPixel   = 30;
+        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 10 };
+        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 10, 10 };
+        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 20, 10 };
+        CHECK(!ClassifyGLUpload(fmt).valid);
+    }
+}
+
+// ─── HalfToFloat normalised values ───────────────────────────────────────────
+
+TEST_SUITE("HalfToFloat normalised values")
+{
+    TEST_CASE("0.5 half (0x3800) → 0.5f")
+    {
+        CHECK(HalfToFloat(0x3800u) == doctest::Approx(0.5f));
+    }
+
+    TEST_CASE("0.25 half (0x3400) → 0.25f")
+    {
+        CHECK(HalfToFloat(0x3400u) == doctest::Approx(0.25f));
+    }
+
+    TEST_CASE("0.75 half (0x3A00) → 0.75f")
+    {
+        CHECK(HalfToFloat(0x3A00u) == doctest::Approx(0.75f));
+    }
+
+    TEST_CASE("round-trip: value near 1/3 preserved to half precision")
+    {
+        /* 0x3555 ≈ 0.3333 in half precision. */
+        const float v = HalfToFloat(0x3555u);
+        CHECK(v == doctest::Approx(1.0f / 3.0f).epsilon(0.001));
     }
 }
