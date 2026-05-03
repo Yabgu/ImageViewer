@@ -2,7 +2,9 @@ syntax = "proto3";
 
 package iw;
 
-// Matches IW_COMPONENT_SEMANTIC_* constants in ImagePluginDef.h
+// Matches IW_COMPONENT_SEMANTIC_* constants in ImagePluginDef.h.
+// Values are kept identical to the C ABI so that static_cast conversions
+// between the C enum and this proto enum are always safe.
 enum ComponentSemantic {
     COMPONENT_SEMANTIC_NONE    = 0;
     COMPONENT_SEMANTIC_R       = 1;
@@ -13,7 +15,8 @@ enum ComponentSemantic {
     COMPONENT_SEMANTIC_S       = 6;
     COMPONENT_SEMANTIC_L       = 7;
     COMPONENT_SEMANTIC_GRAY    = 8;
-    COMPONENT_SEMANTIC_UNKNOWN = 255;
+    // 9-254 reserved for future semantics (e.g. depth, UV, infrared …).
+    COMPONENT_SEMANTIC_UNKNOWN = 255;  // active component, semantic unspecified
 }
 
 // Matches IW_COMPONENT_CLASS_* constants in ImagePluginDef.h
@@ -31,13 +34,16 @@ enum StorageLayout {
     STORAGE_PLANAR      = 1;
 }
 
-// Matches ImageColorSpace constants in ImagePluginDef.h
+// Matches ImageColorSpace constants in ImagePluginDef.h.
+// Values are kept identical to the C ABI so that static_cast conversions
+// between the C enum and this proto enum are always safe.
 enum ColorSpace {
     COLOR_SPACE_SRGB    = 0;
     COLOR_SPACE_LINEAR  = 1;
     COLOR_SPACE_HDR_PQ  = 2;
     COLOR_SPACE_HDR_HLG = 3;
-    COLOR_SPACE_UNKNOWN = 255;
+    // 4-254 reserved for future transfer functions.
+    COLOR_SPACE_UNKNOWN = 255;  // unrecognised / not signalled
 }
 
 // Per-component layout descriptor — mirrors IWComponentDef
