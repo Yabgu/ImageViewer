@@ -36,8 +36,10 @@ jobs:
         run: /tmp/iview_tests --no-intro
 
   test-format:
-    name: Format conversion tests (native Linux)
+    name: Format conversion tests (native Linux / vcpkg)
     runs-on: ubuntu-latest
+    env:
+      VCPKG_DISABLE_METRICS: "1"
     permissions:
       contents: read
     steps:
@@ -46,39 +48,31 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install dependencies
+      - name: Bootstrap vcpkg
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libprotobuf-dev protobuf-compiler libpng-dev
+          set -euo pipefail
+          mkdir -p third-party
+          pushd third-party
+          git clone https://github.com/microsoft/vcpkg --depth 1
+          pushd vcpkg
+          ./bootstrap-vcpkg.sh --disableMetrics
+          popd
+          popd
 
-      - name: Download doctest header
+      - name: Configure
         run: |
-          mkdir -p /tmp/doctest/doctest
-          curl -fsSL -o /tmp/doctest/doctest/doctest.h \
-            https://raw.githubusercontent.com/doctest/doctest/v2.4.11/doctest/doctest.h
-          echo "44faa038e9c3f9728efbda143748d01124ea0a27f4bf78f35a15d8fab2e039fb  /tmp/doctest/doctest/doctest.h" | sha256sum -c -
+          set -euo pipefail
+          cmake -S . -B build-format \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DIMAGEVIEWER_BUILD_VIEWER=OFF
 
-      - name: Generate protobuf sources
+      - name: Build format tests
         run: |
-          mkdir -p /tmp/proto_gen
-          protoc --proto_path=src/format --cpp_out=/tmp/proto_gen src/format/iw_image.proto
-
-      - name: Build format conversion tests
-        run: |
-          g++ -std=c++17 -Wall -Wextra -Werror \
-            -I src/imageviewer \
-            -I src/format \
-            -I /tmp/doctest \
-            -I /tmp/proto_gen \
-            -DGRADIENT_TEST_DIR_DEFAULT="\"$PWD/third-party/gradient/test_sequences/1920x1080\"" \
-            /tmp/proto_gen/iw_image.pb.cc \
-            src/tests/format/test_image_conversion.cpp \
-            -lpng -lprotobuf \
-            -o /tmp/format_tests
+          set -euo pipefail
+          cmake --build build-format --target iview_format_tests -j"$(nproc)"
 
       - name: Run format conversion tests
-        run: /tmp/format_tests --no-intro
+        run: ctest --test-dir build-format --output-on-failure -R iview_format_tests
 
   build-linux:
     name: Build (Linux)
