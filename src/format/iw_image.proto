@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package iw;
+
+// Matches IW_COMPONENT_SEMANTIC_* constants in ImagePluginDef.h
+enum ComponentSemantic {
+    COMPONENT_SEMANTIC_NONE    = 0;
+    COMPONENT_SEMANTIC_R       = 1;
+    COMPONENT_SEMANTIC_G       = 2;
+    COMPONENT_SEMANTIC_B       = 3;
+    COMPONENT_SEMANTIC_A       = 4;
+    COMPONENT_SEMANTIC_H       = 5;
+    COMPONENT_SEMANTIC_S       = 6;
+    COMPONENT_SEMANTIC_L       = 7;
+    COMPONENT_SEMANTIC_GRAY    = 8;
+    COMPONENT_SEMANTIC_UNKNOWN = 255;
+}
+
+// Matches IW_COMPONENT_CLASS_* constants in ImagePluginDef.h
+enum ComponentClass {
+    COMPONENT_CLASS_UINT  = 0;
+    COMPONENT_CLASS_SINT  = 1;
+    COMPONENT_CLASS_UNORM = 2;
+    COMPONENT_CLASS_SNORM = 3;
+    COMPONENT_CLASS_FLOAT = 4;
+}
+
+// Matches IW_STORAGE_* constants in ImagePluginDef.h
+enum StorageLayout {
+    STORAGE_INTERLEAVED = 0;
+    STORAGE_PLANAR      = 1;
+}
+
+// Matches ImageColorSpace constants in ImagePluginDef.h
+enum ColorSpace {
+    COLOR_SPACE_SRGB    = 0;
+    COLOR_SPACE_LINEAR  = 1;
+    COLOR_SPACE_HDR_PQ  = 2;
+    COLOR_SPACE_HDR_HLG = 3;
+    COLOR_SPACE_UNKNOWN = 255;
+}
+
+// Per-component layout descriptor — mirrors IWComponentDef
+message ComponentDef {
+    ComponentSemantic semantic        = 1;
+    ComponentClass    component_class = 2;
+    uint32            bit_offset      = 3;
+    uint32            bit_width       = 4;
+}
+
+// Complete pixel format descriptor — mirrors IWImageFormat
+message ImageFormat {
+    uint32              component_count = 1;
+    uint32              bits_per_pixel  = 2;
+    StorageLayout       storage_layout  = 3;
+    repeated ComponentDef components    = 4;
+}
+
+// A complete image including metadata and raw pixel data (.iwi file)
+message Image {
+    uint32      width      = 1;
+    uint32      height     = 2;
+    ColorSpace  color_space = 3;
+    ImageFormat format     = 4;
+    bytes       pixel_data = 5;
+}

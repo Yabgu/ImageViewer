@@ -11,6 +11,18 @@ if (OPENMP_FOUND)
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif()
 
+# Build the GUI viewer and its image-loader plugins.
+# Set IMAGEVIEWER_BUILD_VIEWER=OFF to compile only the format library and tools
+# (e.g. for native Linux CI that lacks GLFW/GLAD).
+option(IMAGEVIEWER_BUILD_VIEWER
+    "Build the ImageViewer GUI application and image-loader plugins (requires GLFW, GLAD)"
+    ON)
+
+if(NOT IMAGEVIEWER_BUILD_VIEWER)
+    message(STATUS "IMAGEVIEWER_BUILD_VIEWER=OFF — skipping GUI viewer build")
+    return()
+endif()
+
 find_package(JPEG REQUIRED)
 set(IMAGEVIEWER_JPEG_TARGET JPEG::JPEG)
 find_package(glfw3 CONFIG REQUIRED)

@@ -35,6 +35,51 @@ jobs:
       - name: Run unit tests
         run: /tmp/iview_tests --no-intro
 
+  test-format:
+    name: Format conversion tests (native Linux)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libprotobuf-dev protobuf-compiler libpng-dev
+
+      - name: Download doctest header
+        run: |
+          mkdir -p /tmp/doctest/doctest
+          curl -fsSL -o /tmp/doctest/doctest/doctest.h \
+            https://raw.githubusercontent.com/doctest/doctest/v2.4.11/doctest/doctest.h
+          echo "44faa038e9c3f9728efbda143748d01124ea0a27f4bf78f35a15d8fab2e039fb  /tmp/doctest/doctest/doctest.h" | sha256sum -c -
+
+      - name: Generate protobuf sources
+        run: |
+          mkdir -p /tmp/proto_gen
+          protoc --proto_path=src/format --cpp_out=/tmp/proto_gen src/format/iw_image.proto
+
+      - name: Build format conversion tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I src/imageviewer \
+            -I src/format \
+            -I /tmp/doctest \
+            -I /tmp/proto_gen \
+            -DGRADIENT_TEST_DIR_DEFAULT="\"$PWD/third-party/gradient/test_sequences/1920x1080\"" \
+            /tmp/proto_gen/iw_image.pb.cc \
+            src/tests/format/test_image_conversion.cpp \
+            -lpng -lprotobuf \
+            -o /tmp/format_tests
+
+      - name: Run format conversion tests
+        run: /tmp/format_tests --no-intro
+
   build-linux:
     name: Build (Linux)
     runs-on: [mingw32, linux, x64]
