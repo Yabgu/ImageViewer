@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include "FilterPluginDef.h"
 
 import Image;
 import UserInterface;
@@ -64,11 +65,25 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
         static constexpr int PreferredTextureWidth = 256;
         static constexpr int PreferredTextureHeight = 256;
         static constexpr int PreferredRedundantBorder = 2;
+
+        /* Default filter options: no arguments → plugin uses its built-in
+         * defaults (typically a pass-through conversion to screen precision).
+         * To configure dithering, pass named IWFilterArg entries, e.g.:
+         *   IWFilterArg modeArg{ "mode", IW_FILTER_ARG_UINT32, {.u32=3} }; // PWM
+         *   IWFilterArg bitsArg{ "pwm_bits", IW_FILTER_ARG_UINT32, {.u32=1} };
+         *   IWFilterOptions opts{ IW_FILTER_OPTIONS_VERSION, 2, args }; */
+        static constexpr IWFilterOptions kDefaultFilterOpts = {
+            IW_FILTER_OPTIONS_VERSION,
+            0u,
+            nullptr
+        };
+
         window->LoadTextures(
             *image,
             PreferredTextureWidth,
             PreferredTextureHeight,
-            PreferredRedundantBorder);
+            PreferredRedundantBorder,
+            kDefaultFilterOpts);
 
         image.reset();
     }
