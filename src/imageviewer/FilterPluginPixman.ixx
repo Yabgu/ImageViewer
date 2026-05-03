@@ -1,4 +1,20 @@
 module;
+
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <cmath>
+#include <cstdio>
+#include <algorithm>
+
+#include "ImagePluginDef.h"
+#include "FilterPluginDef.h"
+#include "Utils.hpp"
+#include "FilterCore.hpp"
+#include <pixman.h>
+
+export module FilterPluginPixman;
+
 /*
  * FilterPluginPixman.ixx — filter plugin backed by pixman
  *
@@ -36,20 +52,6 @@ static constexpr uint32_t kModePWM             = 3u;
  * Hosts pass named IWFilterArg entries to select behaviour; these integer
  * values are internal to FilterPluginPixman and are not exposed in any header.
  */
-
-#include <cstdlib>
-#include <cstring>
-#include <cmath>
-#include <cstdio>
-#include <algorithm>
-
-#include "ImagePluginDef.h"
-#include "FilterPluginDef.h"
-#include "Utils.hpp"
-#include "FilterCore.hpp"
-#include <pixman.h>
-
-export module FilterPluginPixman;
 
 /* ── Thread-local error string ───────────────────────────────────────────── */
 static thread_local char g_lastError[512] = "";
