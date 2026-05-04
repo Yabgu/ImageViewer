@@ -1,98 +1,15 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 #include <png.h>
 
-#include "ImagePluginDef.h"
 #include "IWImageIO.hpp"
 
-// ── PNG helpers ───────────────────────────────────────────────────────────────
-
-struct PNGImage {
-    int width    = 0;
-    int height   = 0;
-    int channels = 0;
-    int bitDepth = 0;
-    std::vector<uint8_t> pixels;
-    ImageColorSpace colorSpace = IMAGE_COLOR_SPACE_UNKNOWN;
-};
-
-static PNGImage ReadPNG(const std::string& path)
-{
-    PNGImage out;
-
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f)
-        throw std::runtime_error("Cannot open: " + path);
-
-    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING,
-                                             nullptr, nullptr, nullptr);
-    png_infop info  = png_create_info_struct(png);
-    if (!png || !info) {
-        fclose(f);
-        throw std::runtime_error("PNG struct alloc failed");
-    }
-
-    if (setjmp(png_jmpbuf(png))) {
-        png_destroy_read_struct(&png, &info, nullptr);
-        fclose(f);
-        throw std::runtime_error("PNG decode error reading: " + path);
-    }
-
-    png_init_io(png, f);
-    png_read_info(png, info);
-
-    int ct = png_get_color_type(png, info);
-    int bd = png_get_bit_depth(png, info);
-
-    // Apply standard transforms (same logic as ImageLoaderPng.ixx)
-    if (ct == PNG_COLOR_TYPE_PALETTE)
-        png_set_palette_to_rgb(png);
-    if (ct == PNG_COLOR_TYPE_GRAY && bd < 8)
-        png_set_expand_gray_1_2_4_to_8(png);
-    if (png_get_valid(png, info, PNG_INFO_tRNS))
-        png_set_tRNS_to_alpha(png);
-    if (bd == 16)
-        png_set_swap(png);  // PNG is big-endian; swap to host byte order
-
-    png_read_update_info(png, info);
-
-    out.width    = static_cast<int>(png_get_image_width(png, info));
-    out.height   = static_cast<int>(png_get_image_height(png, info));
-    out.bitDepth = static_cast<int>(png_get_bit_depth(png, info));
-    out.channels = static_cast<int>(png_get_channels(png, info));
-
-    // Detect colour space from PNG metadata
-    int    srgb_intent = -1;
-    double gamma_val   = 0.0;
-    if (png_get_sRGB(png, info, &srgb_intent) == PNG_INFO_sRGB) {
-        out.colorSpace = IMAGE_COLOR_SPACE_SRGB;
-    } else if (png_get_gAMA(png, info, &gamma_val) == PNG_INFO_gAMA
-               && gamma_val > 0.99 && gamma_val < 1.01) {
-        out.colorSpace = IMAGE_COLOR_SPACE_LINEAR;
-    } else {
-        out.colorSpace = (out.bitDepth == 16)
-                         ? IMAGE_COLOR_SPACE_LINEAR : IMAGE_COLOR_SPACE_SRGB;
-    }
-
-    const int stride = out.width * out.channels * (out.bitDepth / 8);
-    out.pixels.resize(static_cast<size_t>(out.height) * stride);
-
-    for (int y = 0; y < out.height; ++y) {
-        png_bytep row = out.pixels.data() + static_cast<size_t>(y) * stride;
-        png_read_rows(png, &row, nullptr, 1);
-    }
-
-    png_destroy_read_struct(&png, &info, nullptr);
-    fclose(f);
-    return out;
-}
+import Image;
 
 static void WritePNG(const std::string& path, const iw::Image& proto_img)
 {
@@ -167,47 +84,6 @@ static void WritePNG(const std::string& path, const iw::Image& proto_img)
     fclose(f);
 }
 
-static IWImageFormat BuildFormatFromPNG(const PNGImage& img)
-{
-    IWImageFormat fmt = {};
-    fmt.componentCount = static_cast<uint16_t>(img.channels);
-    fmt.bitsPerPixel   = static_cast<uint16_t>(img.channels * img.bitDepth);
-    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-
-    const uint16_t bw = static_cast<uint16_t>(img.bitDepth);
-    switch (img.channels) {
-    case 1:
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, bw };
-        break;
-    case 2:
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0,  bw };
-        fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, bw, bw };
-        break;
-    case 3:
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(0 * bw), bw };
-        fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(1 * bw), bw };
-        fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(2 * bw), bw };
-        break;
-    case 4:
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(0 * bw), bw };
-        fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(1 * bw), bw };
-        fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(2 * bw), bw };
-        fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(3 * bw), bw };
-        break;
-    default:
-        throw std::runtime_error(
-            "Unsupported channel count: " + std::to_string(img.channels));
-    }
-    return fmt;
-}
-
 static std::string ToLower(std::string s)
 {
     std::transform(s.begin(), s.end(), s.begin(),
@@ -235,11 +111,10 @@ int main(int argc, char* argv[])
 
     try {
         if (inExt == ".png" && outExt == ".iwi") {
-            const PNGImage      img      = ReadPNG(input);
-            const IWImageFormat fmt      = BuildFormatFromPNG(img);
-            const iw::Image     protoImg = iw::BuildProtoImage(
+            const Image     img      = Image::FromFile(input);
+            const iw::Image protoImg = iw::BuildProtoImage(
                 img.width, img.height, img.colorSpace,
-                fmt, img.pixels.data(), img.pixels.size());
+                img.format, img.data, img.size);
             iw::SaveIWI(output, protoImg);
             fprintf(stdout, "Converted %s -> %s\n", input.c_str(), output.c_str());
 
