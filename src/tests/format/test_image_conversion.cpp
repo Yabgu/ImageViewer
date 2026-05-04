@@ -13,7 +13,8 @@
 #include <png.h>
 
 #include "ImagePluginDef.h"
-#include "IWImageIO.hpp"
+
+import IWImageIO;
 
 // ── PNG helpers (mirrors ImageLoaderPng.ixx and iwconv.cpp) ──────────────────
 

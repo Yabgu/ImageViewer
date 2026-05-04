@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <algorithm>
 #include <cstdint>
@@ -9,10 +9,12 @@
 #include "ImagePluginDef.h"
 #include "iw_image.pb.h"
 
+export module IWImageIO;
+
 // Conversion helpers between the plain-C image ABI (ImagePluginDef.h) and the
 // protobuf-serialised .iwi file format (iw_image.proto).
 
-namespace iw {
+export namespace iw {
 
 // ── C ABI <-> proto enum conversions ─────────────────────────────────────────
 

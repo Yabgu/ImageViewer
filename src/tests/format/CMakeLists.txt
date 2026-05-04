@@ -8,7 +8,7 @@ find_package(PNG REQUIRED)
 
 add_executable(iview_format_tests test_image_conversion.cpp)
 
-set_property(TARGET iview_format_tests PROPERTY CXX_STANDARD 17)
+set_property(TARGET iview_format_tests PROPERTY CXX_STANDARD 23)
 
 target_link_libraries(iview_format_tests PRIVATE
     iw_format

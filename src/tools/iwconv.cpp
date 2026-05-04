@@ -7,8 +7,9 @@
 
 #include <png.h>
 
-#include "IWImageIO.hpp"
+#include "ImagePluginDef.h"
 
+import IWImageIO;
 import Image;
 
 static void WritePNG(const std::string& path, const iw::Image& proto_img)
