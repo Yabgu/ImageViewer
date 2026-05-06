@@ -2,14 +2,21 @@
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "dependencies": [
     "doctest",
-    "glad",
-    "glfw3",
-    "libjpeg-turbo",
     "libpng",
-    "libwebp",
-    "pixman",
-    "protobuf",
-    "stb",
-    "tiff"
-  ]
+    "protobuf"
+  ],
+  "features": {
+    "viewer": {
+      "description": "Build the GUI image viewer (requires X11 on Linux)",
+      "dependencies": [
+        "glad",
+        "glfw3",
+        "libjpeg-turbo",
+        "libwebp",
+        "pixman",
+        "stb",
+        "tiff"
+      ]
+    }
+  }
 }
