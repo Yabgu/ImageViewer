@@ -11,6 +11,15 @@ module;
 
 export module IWImageIO;
 
+export namespace iw {
+    using Image = ::iw::Image;
+    using ImageFormat = ::iw::ImageFormat;
+    using ComponentDef = ::iw::ComponentDef;
+    using ComponentClass = ::iw::ComponentClass;
+    using ComponentSemantic = ::iw::ComponentSemantic;
+    using ColorSpace = ::iw::ColorSpace;
+}
+
 // Conversion helpers between the plain-C image ABI (ImagePluginDef.h) and the
 // protobuf-serialised .iwi file format (iw_image.proto).
 

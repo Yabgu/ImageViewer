@@ -18,7 +18,12 @@ option(IMAGEVIEWER_BUILD_VIEWER
 # Without this, vcpkg will not install glad/glfw3/etc. and the CI runners that
 # lack X11 headers (ubuntu-latest) will not fail on those packages.
 if(IMAGEVIEWER_BUILD_VIEWER)
-    list(APPEND VCPKG_MANIFEST_FEATURES "viewer")
+    if(NOT DEFINED VCPKG_MANIFEST_FEATURES)
+        set(VCPKG_MANIFEST_FEATURES "viewer" CACHE STRING "Vcpkg manifest features to install")
+    else()
+        list(APPEND VCPKG_MANIFEST_FEATURES "viewer")
+        set(VCPKG_MANIFEST_FEATURES "${VCPKG_MANIFEST_FEATURES}" CACHE STRING "Vcpkg manifest features to install" FORCE)
+    endif()
 endif()
 
 include(third-party/vcpkg/scripts/buildsystems/vcpkg.cmake)
