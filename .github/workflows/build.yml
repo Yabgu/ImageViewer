@@ -84,8 +84,8 @@ jobs:
       - name: Run format conversion tests
         run: ctest --test-dir build-format --output-on-failure -R iview_format_tests
 
-  build-linux:
-    name: Build (Linux)
+  build-mingw32:
+    name: Build (Windows / MinGW-w64 / vcpkg)
     runs-on: [mingw32, linux, x64]
     env:
       VCPKG_DISABLE_METRICS: "1"
