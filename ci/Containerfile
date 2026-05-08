@@ -23,11 +23,15 @@ RUN pacman -S --noconfirm --needed --ask 4  \
     git \
     krb5 \
     libunwind \
+    libxinerama \
+    libxcursor \
+    mesa-libgl \
     ninja \
     openssl \
     pkgconf \
     python \
     tar \
+    xorg-server \
     zlib \
     unzip \
     zip \
