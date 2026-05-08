@@ -23,7 +23,6 @@ RUN pacman -S --noconfirm --needed --ask 4  \
     git \
     krb5 \
     libunwind \
-    mingw-w64-gcc \
     ninja \
     openssl \
     pkgconf \

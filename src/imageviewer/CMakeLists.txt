@@ -1,5 +1,7 @@
 find_package(OpenMP)
-if (OPENMP_FOUND)
+# For cross-compilation targets, skip OpenMP since module metadata is strict about compile flags
+# and inconsistent OpenMP flags between modules cause precompilation metadata mismatches
+if (OPENMP_FOUND AND NOT CMAKE_CROSSCOMPILING)
     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 
@@ -16,8 +18,10 @@ if(NOT IMAGEVIEWER_BUILD_VIEWER)
     return()
 endif()
 
-find_package(JPEG REQUIRED)
-set(IMAGEVIEWER_JPEG_TARGET JPEG::JPEG)
+find_package(JPEG QUIET)
+if(JPEG_FOUND)
+    set(IMAGEVIEWER_JPEG_TARGET JPEG::JPEG)
+endif()
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
@@ -89,7 +93,6 @@ target_sources(imageviewer PUBLIC
         PluginManager.ixx
         FilterPlugin.ixx
 )
-
 
 if(WIN32)
     target_compile_definitions(iview PRIVATE
@@ -173,16 +176,18 @@ if(WIN32)
 endif()
 
 # JPEG Plugin DLL
-add_library(ImageLoaderJpeg SHARED)
-target_sources(ImageLoaderJpeg PUBLIC
-    FILE_SET jpegloader TYPE CXX_MODULES
-    FILES
-        ImageLoaderJpeg.ixx
-)
-set_property(TARGET ImageLoaderJpeg PROPERTY CXX_STANDARD 23)
-target_link_libraries(ImageLoaderJpeg PRIVATE
-    ${IMAGEVIEWER_JPEG_TARGET}
-)
+if(IMAGEVIEWER_JPEG_TARGET)
+    add_library(ImageLoaderJpeg SHARED)
+    target_sources(ImageLoaderJpeg PUBLIC
+        FILE_SET jpegloader TYPE CXX_MODULES
+        FILES
+            ImageLoaderJpeg.ixx
+    )
+    set_property(TARGET ImageLoaderJpeg PROPERTY CXX_STANDARD 23)
+    target_link_libraries(ImageLoaderJpeg PRIVATE
+        ${IMAGEVIEWER_JPEG_TARGET}
+    )
+endif()
 
 # PNG Plugin DLL
 add_library(ImageLoaderPng SHARED)

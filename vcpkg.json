@@ -3,20 +3,13 @@
   "dependencies": [
     "doctest",
     "libpng",
-    "protobuf"
-  ],
-  "features": {
-    "viewer": {
-      "description": "Build the GUI image viewer (requires X11 on Linux)",
-      "dependencies": [
-        "glad",
-        "glfw3",
-        "libjpeg-turbo",
-        "libwebp",
-        "pixman",
-        "stb",
-        "tiff"
-      ]
-    }
-  }
+    "protobuf",
+    "glad",
+    "glfw3",
+    "libjpeg-turbo",
+    "libwebp",
+    "pixman",
+    "stb",
+    "tiff"
+  ]
 }
