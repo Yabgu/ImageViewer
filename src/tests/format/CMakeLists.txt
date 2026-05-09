@@ -1,5 +1,5 @@
 if(NOT TARGET iw_format)
-    message(STATUS "iw_format not available (protobuf missing) — format tests will not be built")
+    message(STATUS "iw_format not available — format tests will not be built")
     return()
 endif()
 

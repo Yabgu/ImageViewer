@@ -1,9 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
-#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <stdexcept>
@@ -16,7 +16,7 @@
 
 import IWImageIO;
 
-// ── PNG helpers (mirrors ImageLoaderPng.ixx and iwconv.cpp) ──────────────────
+// ── PNG helpers ───────────────────────────────────────────────────────────────
 
 struct PNGImageData {
     int width    = 0;
@@ -36,9 +36,14 @@ static PNGImageData ReadPNG(const std::string& path)
 
     png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING,
                                              nullptr, nullptr, nullptr);
-    png_infop info  = png_create_info_struct(png);
-    REQUIRE(png != nullptr);
-    REQUIRE(info != nullptr);
+    REQUIRE_MESSAGE(png != nullptr, "png_create_read_struct failed");
+
+    png_infop info = png_create_info_struct(png);
+    if (!info) {
+        png_destroy_read_struct(&png, nullptr, nullptr);
+        fclose(f);
+        FAIL("png_create_info_struct failed");
+    }
 
     if (setjmp(png_jmpbuf(png))) {
         png_destroy_read_struct(&png, &info, nullptr);
@@ -136,45 +141,40 @@ static IWImageFormat BuildFormatFromPNG(const PNGImageData& img)
 
 // ── Round-trip helper ─────────────────────────────────────────────────────────
 
-// Performs a lossless PNG → IWI (in-memory proto) → pixel comparison.
+// Performs a lossless PNG → IWI (file) → IWI (memory) pixel comparison.
 // The .iwi format stores raw pixel data, so the round-trip must be bit-exact.
 static void RoundTripTest(const std::string& pngPath)
 {
     const PNGImageData original = ReadPNG(pngPath);
     const IWImageFormat fmt     = BuildFormatFromPNG(original);
 
-    // PNG -> proto
-    const iw::Image protoImg = iw::BuildProtoImage(
+    // PNG -> IWI struct
+    const iw::Image iwi = iw::BuildImage(
         original.width, original.height, original.colorSpace,
         fmt, original.pixels.data(), original.pixels.size());
 
-    // Serialize to string and deserialize back (tests full proto round-trip)
-    std::string serialized;
-    REQUIRE(protoImg.SerializeToString(&serialized));
-
-    iw::Image restored;
-    REQUIRE(restored.ParseFromString(serialized));
+    // Serialize to bytes and deserialize back (covers the full binary I/O path)
+    const std::vector<uint8_t> buf = iw::SerializeImage(iwi);
+    const iw::Image restored = iw::DeserializeImage(buf.data(), buf.size());
 
     // Dimensions must be preserved
-    CHECK(static_cast<int>(restored.width())  == original.width);
-    CHECK(static_cast<int>(restored.height()) == original.height);
+    CHECK(static_cast<int>(restored.width)  == original.width);
+    CHECK(static_cast<int>(restored.height) == original.height);
 
     // Format must be preserved
-    const IWImageFormat restoredFmt = iw::FromProtoFormat(restored.format());
-    CHECK(restoredFmt.componentCount == fmt.componentCount);
-    CHECK(restoredFmt.bitsPerPixel   == fmt.bitsPerPixel);
-    CHECK(restoredFmt.storageLayout  == fmt.storageLayout);
+    CHECK(restored.format.componentCount == fmt.componentCount);
+    CHECK(restored.format.bitsPerPixel   == fmt.bitsPerPixel);
+    CHECK(restored.format.storageLayout  == fmt.storageLayout);
     for (uint16_t i = 0; i < fmt.componentCount; ++i) {
-        CHECK(restoredFmt.components[i].semantic       == fmt.components[i].semantic);
-        CHECK(restoredFmt.components[i].componentClass == fmt.components[i].componentClass);
-        CHECK(restoredFmt.components[i].bitOffset      == fmt.components[i].bitOffset);
-        CHECK(restoredFmt.components[i].bitWidth       == fmt.components[i].bitWidth);
+        CHECK(restored.format.components[i].semantic       == fmt.components[i].semantic);
+        CHECK(restored.format.components[i].componentClass == fmt.components[i].componentClass);
+        CHECK(restored.format.components[i].bitOffset      == fmt.components[i].bitOffset);
+        CHECK(restored.format.components[i].bitWidth       == fmt.components[i].bitWidth);
     }
 
     // Pixel data must be bit-exact (lossless format)
-    const std::string& restoredPixels = restored.pixel_data();
-    REQUIRE(restoredPixels.size() == original.pixels.size());
-    CHECK(std::memcmp(restoredPixels.data(),
+    REQUIRE(restored.pixelData.size() == original.pixels.size());
+    CHECK(std::memcmp(restored.pixelData.data(),
                       original.pixels.data(),
                       original.pixels.size()) == 0);
 }
@@ -220,9 +220,8 @@ TEST_SUITE("IWI format: PNG round-trip (gradient 1920x1080)")
 
 TEST_SUITE("IWI format: serialization")
 {
-    TEST_CASE("RGB8 proto round-trip (synthetic)")
+    TEST_CASE("RGB8 binary round-trip (synthetic)")
     {
-        // Construct a tiny synthetic RGB8 image
         constexpr int W = 4, H = 2;
         IWImageFormat fmt = {};
         fmt.componentCount = 3;
@@ -236,25 +235,22 @@ TEST_SUITE("IWI format: serialization")
         for (int i = 0; i < W * H * 3; ++i)
             pixels[static_cast<size_t>(i)] = static_cast<uint8_t>(i * 13 % 256);
 
-        const iw::Image protoImg = iw::BuildProtoImage(
+        const iw::Image iwi = iw::BuildImage(
             W, H, IMAGE_COLOR_SPACE_SRGB, fmt,
             pixels.data(), pixels.size());
 
-        std::string buf;
-        REQUIRE(protoImg.SerializeToString(&buf));
+        const std::vector<uint8_t> buf = iw::SerializeImage(iwi);
+        const iw::Image restored = iw::DeserializeImage(buf.data(), buf.size());
 
-        iw::Image restored;
-        REQUIRE(restored.ParseFromString(buf));
-
-        CHECK(restored.width()  == W);
-        CHECK(restored.height() == H);
-        CHECK(iw::FromProtoColorSpace(restored.color_space()) == IMAGE_COLOR_SPACE_SRGB);
-        REQUIRE(restored.pixel_data().size() == pixels.size());
-        CHECK(std::memcmp(restored.pixel_data().data(),
+        CHECK(restored.width  == W);
+        CHECK(restored.height == H);
+        CHECK(restored.colorSpace == IMAGE_COLOR_SPACE_SRGB);
+        REQUIRE(restored.pixelData.size() == pixels.size());
+        CHECK(std::memcmp(restored.pixelData.data(),
                           pixels.data(), pixels.size()) == 0);
     }
 
-    TEST_CASE("GRAY16 planar proto round-trip (synthetic)")
+    TEST_CASE("GRAY16 planar binary round-trip (synthetic)")
     {
         constexpr int W = 3, H = 3;
         IWImageFormat fmt = {};
@@ -263,28 +259,60 @@ TEST_SUITE("IWI format: serialization")
         fmt.storageLayout  = IW_STORAGE_PLANAR;
         fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 16 };
 
-        std::vector<uint8_t> pixels(W * H * 2);  // 2 bytes per sample
+        std::vector<uint8_t> pixels(W * H * 2);
         for (size_t i = 0; i < pixels.size(); ++i)
             pixels[i] = static_cast<uint8_t>(i * 7 % 256);
 
-        const iw::Image protoImg = iw::BuildProtoImage(
+        const iw::Image iwi = iw::BuildImage(
             W, H, IMAGE_COLOR_SPACE_LINEAR, fmt,
             pixels.data(), pixels.size());
 
-        std::string buf;
-        REQUIRE(protoImg.SerializeToString(&buf));
+        const std::vector<uint8_t> buf = iw::SerializeImage(iwi);
+        const iw::Image restored = iw::DeserializeImage(buf.data(), buf.size());
 
-        iw::Image restored;
-        REQUIRE(restored.ParseFromString(buf));
+        CHECK(restored.format.storageLayout  == IW_STORAGE_PLANAR);
+        CHECK(restored.format.componentCount == 1);
+        CHECK(restored.format.bitsPerPixel   == 16);
+        CHECK(restored.format.components[0].semantic == IW_COMPONENT_SEMANTIC_GRAY);
+        CHECK(restored.colorSpace == IMAGE_COLOR_SPACE_LINEAR);
+        REQUIRE(restored.pixelData.size() == pixels.size());
+        CHECK(std::memcmp(restored.pixelData.data(),
+                          pixels.data(), pixels.size()) == 0);
+    }
 
-        const IWImageFormat restoredFmt = iw::FromProtoFormat(restored.format());
-        CHECK(restoredFmt.storageLayout  == IW_STORAGE_PLANAR);
-        CHECK(restoredFmt.componentCount == 1);
-        CHECK(restoredFmt.bitsPerPixel   == 16);
-        CHECK(restoredFmt.components[0].semantic == IW_COMPONENT_SEMANTIC_GRAY);
-        CHECK(iw::FromProtoColorSpace(restored.color_space()) == IMAGE_COLOR_SPACE_LINEAR);
-        REQUIRE(restored.pixel_data().size() == pixels.size());
-        CHECK(std::memcmp(restored.pixel_data().data(),
+    TEST_CASE("SaveIWI / LoadIWI file round-trip (synthetic RGB8)")
+    {
+        constexpr int W = 8, H = 4;
+        IWImageFormat fmt = {};
+        fmt.componentCount = 3;
+        fmt.bitsPerPixel   = 24;
+        fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
+        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
+        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
+
+        std::vector<uint8_t> pixels(W * H * 3);
+        for (size_t i = 0; i < pixels.size(); ++i)
+            pixels[i] = static_cast<uint8_t>(i * 31 % 256);
+
+        const iw::Image iwi = iw::BuildImage(
+            W, H, IMAGE_COLOR_SPACE_SRGB, fmt,
+            pixels.data(), pixels.size());
+
+        namespace fs = std::filesystem;
+        const std::string tmp = (fs::temp_directory_path() / "iview_test_round_trip.iwi").string();
+
+        iw::SaveIWI(tmp, iwi);
+        const iw::Image loaded = iw::LoadIWI(tmp);
+        fs::remove(tmp);
+
+        CHECK(loaded.width  == W);
+        CHECK(loaded.height == H);
+        CHECK(loaded.colorSpace == IMAGE_COLOR_SPACE_SRGB);
+        CHECK(loaded.format.componentCount == fmt.componentCount);
+        CHECK(loaded.format.bitsPerPixel   == fmt.bitsPerPixel);
+        REQUIRE(loaded.pixelData.size() == pixels.size());
+        CHECK(std::memcmp(loaded.pixelData.data(),
                           pixels.data(), pixels.size()) == 0);
     }
 }

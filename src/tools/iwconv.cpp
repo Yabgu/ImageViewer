@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <stdexcept>
@@ -12,15 +13,17 @@
 import IWImageIO;
 import Image;
 
-static void WritePNG(const std::string& path, const iw::Image& proto_img)
+static void WritePNG(const std::string& path, const iw::Image& iwi)
 {
-    const IWImageFormat fmt = iw::FromProtoFormat(proto_img.format());
-    assert(fmt.componentCount > 0 && fmt.components[0].bitWidth > 0);
+    assert(iwi.format.componentCount > 0 && iwi.format.components[0].bitWidth > 0);
 
-    const int w   = static_cast<int>(proto_img.width());
-    const int h   = static_cast<int>(proto_img.height());
-    const int n   = static_cast<int>(fmt.componentCount);
-    const int bw  = static_cast<int>(fmt.components[0].bitWidth);
+    if (iwi.format.storageLayout == IW_STORAGE_PLANAR)
+        throw std::runtime_error("WritePNG: planar IWI images are not supported");
+
+    const int w   = static_cast<int>(iwi.width);
+    const int h   = static_cast<int>(iwi.height);
+    const int n   = static_cast<int>(iwi.format.componentCount);
+    const int bw  = static_cast<int>(iwi.format.components[0].bitWidth);
     const int bpc = (bw + 7) / 8;
     const int stride = w * n * bpc;
 
@@ -30,10 +33,16 @@ static void WritePNG(const std::string& path, const iw::Image& proto_img)
 
     png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING,
                                               nullptr, nullptr, nullptr);
-    png_infop info  = png_create_info_struct(png);
-    if (!png || !info) {
+    if (!png) {
         fclose(f);
-        throw std::runtime_error("PNG write struct alloc failed");
+        throw std::runtime_error("png_create_write_struct failed");
+    }
+
+    png_infop info = png_create_info_struct(png);
+    if (!info) {
+        png_destroy_write_struct(&png, nullptr);
+        fclose(f);
+        throw std::runtime_error("png_create_info_struct failed");
     }
 
     if (setjmp(png_jmpbuf(png))) {
@@ -44,12 +53,11 @@ static void WritePNG(const std::string& path, const iw::Image& proto_img)
 
     png_init_io(png, f);
 
-    // Determine PNG colour type from component semantics
     bool hasAlpha = false;
     bool isGray   = false;
     for (int i = 0; i < n; ++i) {
-        if (fmt.components[i].semantic == IW_COMPONENT_SEMANTIC_A)    hasAlpha = true;
-        if (fmt.components[i].semantic == IW_COMPONENT_SEMANTIC_GRAY) isGray   = true;
+        if (iwi.format.components[i].semantic == IW_COMPONENT_SEMANTIC_A)    hasAlpha = true;
+        if (iwi.format.components[i].semantic == IW_COMPONENT_SEMANTIC_GRAY) isGray   = true;
     }
     const int color_type = isGray
         ? (hasAlpha ? PNG_COLOR_TYPE_GRAY_ALPHA : PNG_COLOR_TYPE_GRAY)
@@ -59,24 +67,19 @@ static void WritePNG(const std::string& path, const iw::Image& proto_img)
                  bw, color_type,
                  PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
 
-    // Preserve colour space metadata
-    const ImageColorSpace cs = iw::FromProtoColorSpace(proto_img.color_space());
-    if (cs == IMAGE_COLOR_SPACE_SRGB)
+    if (iwi.colorSpace == IMAGE_COLOR_SPACE_SRGB)
         png_set_sRGB(png, info, PNG_sRGB_INTENT_PERCEPTUAL);
-    else if (cs == IMAGE_COLOR_SPACE_LINEAR)
+    else if (iwi.colorSpace == IMAGE_COLOR_SPACE_LINEAR)
         png_set_gAMA(png, info, 1.0);
 
     png_write_info(png, info);
 
     if (bw == 16)
-        png_set_swap(png);  // host → PNG big-endian
+        png_set_swap(png);
 
-    const auto* pixels =
-        reinterpret_cast<const uint8_t*>(proto_img.pixel_data().data());
+    const auto* pixels = iwi.pixelData.data();
     for (int y = 0; y < h; ++y) {
-        // png_write_rows takes a non-const pointer; data is not modified
-        png_bytep row =
-            const_cast<uint8_t*>(pixels + static_cast<ptrdiff_t>(y) * stride);
+        png_bytep row = const_cast<uint8_t*>(pixels + static_cast<ptrdiff_t>(y) * stride);
         png_write_rows(png, &row, 1);
     }
 
@@ -87,8 +90,8 @@ static void WritePNG(const std::string& path, const iw::Image& proto_img)
 
 static std::string ToLower(std::string s)
 {
-    std::transform(s.begin(), s.end(), s.begin(),
-                   [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+    for (char& c : s)
+        c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
     return s;
 }
 
@@ -112,16 +115,16 @@ int main(int argc, char* argv[])
 
     try {
         if (inExt == ".png" && outExt == ".iwi") {
-            const Image     img      = Image::FromFile(input);
-            const iw::Image protoImg = iw::BuildProtoImage(
+            const Image img = Image::FromFile(input);
+            const iw::Image iwi = iw::BuildImage(
                 img.width, img.height, img.colorSpace,
                 img.format, img.data, img.size);
-            iw::SaveIWI(output, protoImg);
+            iw::SaveIWI(output, iwi);
             fprintf(stdout, "Converted %s -> %s\n", input.c_str(), output.c_str());
 
         } else if (inExt == ".iwi" && outExt == ".png") {
-            const iw::Image protoImg = iw::LoadIWI(input);
-            WritePNG(output, protoImg);
+            const iw::Image iwi = iw::LoadIWI(input);
+            WritePNG(output, iwi);
             fprintf(stdout, "Converted %s -> %s\n", input.c_str(), output.c_str());
 
         } else {

@@ -1,5 +1,5 @@
 if(NOT TARGET iw_format)
-    message(STATUS "iw_format not available (protobuf missing) — iwconv will not be built")
+    message(STATUS "iw_format not available — iwconv will not be built")
     return()
 endif()
 
@@ -7,6 +7,7 @@ if(NOT TARGET imageviewer)
     message(STATUS "imageviewer not available (IMAGEVIEWER_BUILD_VIEWER=OFF) — iwconv will not be built")
     return()
 endif()
+
 
 find_package(PNG REQUIRED)
 

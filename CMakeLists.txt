@@ -14,14 +14,15 @@ option(IMAGEVIEWER_BUILD_VIEWER
     "Build the ImageViewer GUI application and image-loader plugins (requires GLFW, GLAD)"
     ON)
 
-# Activate the 'viewer' vcpkg feature only when the GUI is requested.
-# Without this, vcpkg will not install glad/glfw3/etc. and the CI runners that
-# lack X11 headers (ubuntu-latest) will not fail on those packages.
+# Activate the 'viewer' vcpkg feature and all per-plugin features when the GUI
+# is requested.  Without this, vcpkg will not install glad/glfw3/plugin libs
+# and CI runners that lack X11 headers (ubuntu-latest) won't fail on them.
 if(IMAGEVIEWER_BUILD_VIEWER)
+    set(_IW_FEATURES "viewer;plugin-jpeg;plugin-webp;plugin-tiff;plugin-stb;plugin-pixman")
     if(NOT DEFINED VCPKG_MANIFEST_FEATURES)
-        set(VCPKG_MANIFEST_FEATURES "viewer" CACHE STRING "Vcpkg manifest features to install")
+        set(VCPKG_MANIFEST_FEATURES "${_IW_FEATURES}" CACHE STRING "Vcpkg manifest features to install")
     else()
-        list(APPEND VCPKG_MANIFEST_FEATURES "viewer")
+        list(APPEND VCPKG_MANIFEST_FEATURES ${_IW_FEATURES})
         set(VCPKG_MANIFEST_FEATURES "${VCPKG_MANIFEST_FEATURES}" CACHE STRING "Vcpkg manifest features to install" FORCE)
     endif()
 endif()

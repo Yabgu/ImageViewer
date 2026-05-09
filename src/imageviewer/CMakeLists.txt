@@ -18,13 +18,33 @@ if(NOT IMAGEVIEWER_BUILD_VIEWER)
     return()
 endif()
 
+find_package(glfw3 CONFIG REQUIRED)
+find_package(glad CONFIG REQUIRED)
+
+# ── Per-plugin optional dependencies (QUIET — skip plugin if not found) ────────
+
 find_package(JPEG QUIET)
 if(JPEG_FOUND)
     set(IMAGEVIEWER_JPEG_TARGET JPEG::JPEG)
+    message(STATUS "Plugin: ImageLoaderJpeg enabled (libjpeg-turbo found)")
+else()
+    message(STATUS "Plugin: ImageLoaderJpeg skipped (libjpeg-turbo not found)")
 endif()
-find_package(glfw3 CONFIG REQUIRED)
-find_package(glad CONFIG REQUIRED)
-find_package(WebP CONFIG REQUIRED)
+
+find_package(WebP CONFIG QUIET)
+if(WebP_FOUND)
+    message(STATUS "Plugin: ImageLoaderWebp enabled (libwebp found)")
+else()
+    message(STATUS "Plugin: ImageLoaderWebp skipped (libwebp not found)")
+endif()
+
+find_package(Stb QUIET)
+if(Stb_FOUND)
+    message(STATUS "Plugin: ImageLoaderStb enabled (stb found)")
+else()
+    message(STATUS "Plugin: ImageLoaderStb skipped (stb not found)")
+endif()
+
 if(CMAKE_CROSSCOMPILING)
     if(DEFINED VCPKG_INSTALLED_DIR AND NOT "${VCPKG_INSTALLED_DIR}" STREQUAL "")
         set(_VCPKG_INSTALLED_DIR "${VCPKG_INSTALLED_DIR}")
@@ -37,18 +57,25 @@ if(CMAKE_CROSSCOMPILING)
         PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
         NO_DEFAULT_PATH
     )
-    if(NOT _TIFF_LIBRARY)
-        message(FATAL_ERROR "Could not locate TIFF library for triplet ${VCPKG_TARGET_TRIPLET}")
+    if(_TIFF_LIBRARY)
+        add_library(TIFF::TIFF UNKNOWN IMPORTED)
+        set_target_properties(TIFF::TIFF PROPERTIES
+            IMPORTED_LOCATION "${_TIFF_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_TIFF_INCLUDE_DIR}"
+        )
+        set(TIFF_FOUND TRUE)
+        message(STATUS "Plugin: ImageLoaderTiff enabled (tiff found at ${_TIFF_LIBRARY})")
+    else()
+        message(STATUS "Plugin: ImageLoaderTiff skipped (tiff not found for triplet ${VCPKG_TARGET_TRIPLET})")
     endif()
-    add_library(TIFF::TIFF UNKNOWN IMPORTED)
-    set_target_properties(TIFF::TIFF PROPERTIES
-        IMPORTED_LOCATION "${_TIFF_LIBRARY}"
-        INTERFACE_INCLUDE_DIRECTORIES "${_TIFF_INCLUDE_DIR}"
-    )
 else()
-    find_package(TIFF REQUIRED)
+    find_package(TIFF QUIET)
+    if(TIFF_FOUND)
+        message(STATUS "Plugin: ImageLoaderTiff enabled (tiff found)")
+    else()
+        message(STATUS "Plugin: ImageLoaderTiff skipped (tiff not found)")
+    endif()
 endif()
-find_package(Stb REQUIRED)
 
 # ── pixman ────────────────────────────────────────────────────────────────────
 # vcpkg exports pixman via the unofficial-pixman CONFIG package.
@@ -66,11 +93,10 @@ else()
     endif()
 endif()
 
-if(NOT DEFINED PIXMAN_TARGET)
-    message(WARNING
-        "pixman not found — FilterPixman plugin will not be built. "
-        "Add pixman to vcpkg.json or install libpixman-1-dev.")
-    set(PIXMAN_TARGET "")
+if(DEFINED PIXMAN_TARGET)
+    message(STATUS "Plugin: FilterPixman enabled (pixman found)")
+else()
+    message(STATUS "Plugin: FilterPixman skipped (pixman not found)")
 endif()
 
 # Main executable
@@ -175,7 +201,7 @@ if(WIN32)
     endif()
 endif()
 
-# JPEG Plugin DLL
+# JPEG Plugin DLL — only when libjpeg-turbo is available
 if(IMAGEVIEWER_JPEG_TARGET)
     add_library(ImageLoaderJpeg SHARED)
     target_sources(ImageLoaderJpeg PUBLIC
@@ -189,7 +215,7 @@ if(IMAGEVIEWER_JPEG_TARGET)
     )
 endif()
 
-# PNG Plugin DLL
+# PNG Plugin DLL — always built (libpng is a default vcpkg dep)
 add_library(ImageLoaderPng SHARED)
 target_sources(ImageLoaderPng PUBLIC
     FILE_SET pngloader TYPE CXX_MODULES
@@ -204,43 +230,49 @@ target_link_libraries(ImageLoaderPng PRIVATE
     PNG::PNG
 )
 
-# WebP Plugin DLL
-add_library(ImageLoaderWebp SHARED)
-target_sources(ImageLoaderWebp PUBLIC
-    FILE_SET webploader TYPE CXX_MODULES
-    FILES
-        ImageLoaderWebp.ixx
-)
-set_property(TARGET ImageLoaderWebp PROPERTY CXX_STANDARD 23)
-target_link_libraries(ImageLoaderWebp PRIVATE
-    WebP::webp
-    WebP::webpdecoder
-)
+# WebP Plugin DLL — only when libwebp is available
+if(WebP_FOUND)
+    add_library(ImageLoaderWebp SHARED)
+    target_sources(ImageLoaderWebp PUBLIC
+        FILE_SET webploader TYPE CXX_MODULES
+        FILES
+            ImageLoaderWebp.ixx
+    )
+    set_property(TARGET ImageLoaderWebp PROPERTY CXX_STANDARD 23)
+    target_link_libraries(ImageLoaderWebp PRIVATE
+        WebP::webp
+        WebP::webpdecoder
+    )
+endif()
 
-# TIFF Plugin DLL
-add_library(ImageLoaderTiff SHARED)
-target_sources(ImageLoaderTiff PUBLIC
-    FILE_SET tiffloader TYPE CXX_MODULES
-    FILES
-        ImageLoaderTiff.ixx
-)
-set_property(TARGET ImageLoaderTiff PROPERTY CXX_STANDARD 23)
-target_link_libraries(ImageLoaderTiff PRIVATE
-    TIFF::TIFF
-)
+# TIFF Plugin DLL — only when libtiff is available
+if(TIFF_FOUND)
+    add_library(ImageLoaderTiff SHARED)
+    target_sources(ImageLoaderTiff PUBLIC
+        FILE_SET tiffloader TYPE CXX_MODULES
+        FILES
+            ImageLoaderTiff.ixx
+    )
+    set_property(TARGET ImageLoaderTiff PROPERTY CXX_STANDARD 23)
+    target_link_libraries(ImageLoaderTiff PRIVATE
+        TIFF::TIFF
+    )
+endif()
 
-# Stb Plugin DLL (BMP, TGA, GIF, HDR, PIC, PPM, PGM)
-add_library(ImageLoaderStb SHARED)
-target_sources(ImageLoaderStb PUBLIC
-    FILE_SET stbloader TYPE CXX_MODULES
-    FILES
-        ImageLoaderStb.ixx
-)
-set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
-target_include_directories(ImageLoaderStb PRIVATE ${Stb_INCLUDE_DIR})
+# Stb Plugin DLL — only when stb is available
+if(Stb_FOUND)
+    add_library(ImageLoaderStb SHARED)
+    target_sources(ImageLoaderStb PUBLIC
+        FILE_SET stbloader TYPE CXX_MODULES
+        FILES
+            ImageLoaderStb.ixx
+    )
+    set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
+    target_include_directories(ImageLoaderStb PRIVATE ${Stb_INCLUDE_DIR})
+endif()
 
-# FilterPixman Plugin DLL — only built when pixman is available
-if(PIXMAN_TARGET)
+# FilterPixman Plugin DLL — only when pixman is available
+if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
     add_library(FilterPixman SHARED)
     target_sources(FilterPixman PUBLIC
         FILE_SET filterpixman TYPE CXX_MODULES
