@@ -34,4 +34,5 @@ cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-mingw32" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/build-mingw32/vcpkg_installed/x64-mingw-dynamic" \
     -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/cmake/toolchains/x86_64-w64-mingw32.cmake" \
+    -DVCPKG_MANIFEST_FEATURES="viewer" \
     -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/third-party/vcpkg/scripts/buildsystems/vcpkg.cmake"
