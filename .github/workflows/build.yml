@@ -40,7 +40,8 @@ jobs:
           cmake ..
           popd
           cmake -S . -B build-native \
-            -DVCPKG_TARGET_TRIPLET=x64-linux
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DIMAGEVIEWER_BUILD_VIEWER=OFF
 
       - name: Build unit tests
         run: |

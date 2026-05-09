@@ -4,12 +4,19 @@
     "doctest",
     "libpng",
     "protobuf",
-    "glad",
-    "glfw3",
     "libjpeg-turbo",
     "libwebp",
     "pixman",
     "stb",
     "tiff"
-  ]
+  ],
+  "features": {
+    "viewer": {
+      "description": "GUI viewer dependencies",
+      "dependencies": [
+        "glad",
+        "glfw3"
+      ]
+    }
+  }
 }
