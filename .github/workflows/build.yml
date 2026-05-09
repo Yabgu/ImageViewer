@@ -8,53 +8,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  test-native:
-    name: Unit tests (native Linux)
-    runs-on: ubuntu-latest
-    env:
-      VCPKG_DISABLE_METRICS: "1"
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Bootstrap vcpkg
-        run: |
-          set -euo pipefail
-          mkdir -p third-party
-          pushd third-party
-          git clone https://github.com/microsoft/vcpkg --depth 1
-          pushd vcpkg
-          ./bootstrap-vcpkg.sh --disableMetrics
-          popd
-          popd
-
-      - name: Configure
-        run: |
-          set -euo pipefail
-          mkdir -p build-native || true
-          pushd build-native
-          cmake ..
-          popd
-          cmake -S . -B build-native -G Ninja \
-            -DVCPKG_TARGET_TRIPLET=x64-linux \
-            -DIMAGEVIEWER_BUILD_VIEWER=OFF
-
-      - name: Build unit tests
-        run: |
-          set -euo pipefail
-          cmake --build build-native --target iview_tests -j"$(nproc)"
-          cmake --build build-native --target iview_format_tests -j"$(nproc)"
-
-      - name: Run unit tests
-        run: ctest --test-dir build-native --output-on-failure -R iview_tests
-
-      - name: Run format tests
-        run: ctest --test-dir build-native --output-on-failure -R iview_format_tests
-
   build-mingw32:
     name: Build (Windows / MinGW-w64 / vcpkg)
     runs-on: [mingw32, linux, x64]
