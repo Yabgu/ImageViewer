@@ -20,18 +20,23 @@ RUN pacman -S --noconfirm --needed --ask 4  \
     ca-certificates \
     cmake \
     curl \
+    extra-cmake-modules \
     git \
     krb5 \
     libunwind \
     libxinerama \
     libxcursor \
+    libxkbcommon \
     mesa-libgl \
     ninja \
     openssl \
     pkgconf \
     python \
     tar \
+    wayland \
+    wayland-protocols \
     xorg-server \
+    xorgproto \
     zlib \
     unzip \
     zip \
