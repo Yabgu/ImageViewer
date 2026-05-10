@@ -88,17 +88,41 @@ else()
 endif()
 
 # ── pixman ────────────────────────────────────────────────────────────────────
-# vcpkg exports pixman via the unofficial-pixman CONFIG package.
-# Fall back to pkg-config (native system builds).
-find_package(unofficial-pixman CONFIG QUIET)
-if(unofficial-pixman_FOUND)
-    set(PIXMAN_TARGET unofficial::pixman::pixman)
+# The vcpkg pixman port ships only pkg-config files, not a CMake CONFIG package.
+# When cross-compiling, locate the library directly from vcpkg_installed like we
+# do for TIFF; on native builds fall back to system pkg-config.
+if(CMAKE_CROSSCOMPILING)
+    if(NOT DEFINED _VCPKG_INSTALLED_DIR)
+        if(DEFINED VCPKG_INSTALLED_DIR AND NOT "${VCPKG_INSTALLED_DIR}" STREQUAL "")
+            set(_VCPKG_INSTALLED_DIR "${VCPKG_INSTALLED_DIR}")
+        else()
+            set(_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed")
+        endif()
+    endif()
+    find_library(_PIXMAN_LIBRARY
+        NAMES pixman-1 libpixman-1
+        PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
+        NO_DEFAULT_PATH
+    )
+    if(_PIXMAN_LIBRARY)
+        add_library(pixman_vcpkg UNKNOWN IMPORTED)
+        set_target_properties(pixman_vcpkg PROPERTIES
+            IMPORTED_LOCATION "${_PIXMAN_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/pixman-1"
+        )
+        set(PIXMAN_TARGET pixman_vcpkg)
+    endif()
 else()
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(PIXMAN IMPORTED_TARGET pixman-1)
-        if(PIXMAN_FOUND)
-            set(PIXMAN_TARGET PkgConfig::PIXMAN)
+    find_package(unofficial-pixman CONFIG QUIET)
+    if(unofficial-pixman_FOUND)
+        set(PIXMAN_TARGET unofficial::pixman::pixman)
+    else()
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(PIXMAN IMPORTED_TARGET pixman-1)
+            if(PIXMAN_FOUND)
+                set(PIXMAN_TARGET PkgConfig::PIXMAN)
+            endif()
         endif()
     endif()
 endif()
