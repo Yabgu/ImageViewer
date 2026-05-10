@@ -34,15 +34,18 @@ RUN pacman -S --noconfirm --needed --ask 4  \
     openssl \
     pkgconf \
     python \
+    python-pytest \
     tar \
     wayland \
     wayland-protocols \
     xorg-server \
+    xorg-server-xvfb \
     xorgproto \
     zlib \
     unzip \
     zip \
     icu \
+    glfw-x11 \
     libjpeg-turbo \
     libpng \
     libwebp \

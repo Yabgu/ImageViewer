@@ -19,3 +19,5 @@ include(CTest)
 add_test(NAME iview_tests COMMAND iview_tests)
 
 add_subdirectory(format)
+add_subdirectory(dither)
+add_subdirectory(gui)
