@@ -19,20 +19,36 @@ RUN pacman -S --noconfirm --needed --ask 4  \
     base-devel \
     ca-certificates \
     cmake \
+    cmake-extras \
     curl \
+    doctest \
+    extra-cmake-modules \
     git \
     krb5 \
     libunwind \
-    mingw-w64-gcc \
+    libxinerama \
+    libxcursor \
+    libxkbcommon \
+    mesa-libgl \
     ninja \
     openssl \
     pkgconf \
     python \
     tar \
+    wayland \
+    wayland-protocols \
+    xorg-server \
+    xorgproto \
     zlib \
     unzip \
     zip \
-    icu
+    icu \
+    libjpeg-turbo \
+    libpng \
+    libwebp \
+    libtiff \
+    pixman \
+    protobuf
 
 COPY llvm-mingw-*.pkg.tar.zst /tmp/
 RUN pacman -U --noconfirm /tmp/llvm-mingw-*.pkg.tar.zst \

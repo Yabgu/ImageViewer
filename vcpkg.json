@@ -2,13 +2,45 @@
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "dependencies": [
     "doctest",
-    "glad",
-    "glfw3",
-    "libjpeg-turbo",
-    "libpng",
-    "libwebp",
-    "pixman",
-    "stb",
-    "tiff"
-  ]
+    "libpng"
+  ],
+  "features": {
+    "plugin-jpeg": {
+      "description": "JPEG image loader plugin (libjpeg-turbo)",
+      "dependencies": [
+        "libjpeg-turbo"
+      ]
+    },
+    "plugin-webp": {
+      "description": "WebP image loader plugin",
+      "dependencies": [
+        "libwebp"
+      ]
+    },
+    "plugin-tiff": {
+      "description": "TIFF image loader plugin",
+      "dependencies": [
+        "tiff"
+      ]
+    },
+    "plugin-stb": {
+      "description": "STB image loader plugin (BMP, TGA, GIF, HDR, PIC, PPM/PGM)",
+      "dependencies": [
+        "stb"
+      ]
+    },
+    "plugin-pixman": {
+      "description": "Pixman-based filter/dither plugin",
+      "dependencies": [
+        "pixman"
+      ]
+    },
+    "viewer": {
+      "description": "GUI image viewer (requires OpenGL + display server)",
+      "dependencies": [
+        "glad",
+        "glfw3"
+      ]
+    }
+  }
 }
