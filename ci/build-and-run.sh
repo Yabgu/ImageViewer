@@ -111,6 +111,6 @@ case "${CMD}" in
     ;;
 
   help|*)
-    echo "Usage: $0 {build|run|dev|stop|logs|restart}"
+    echo "Usage: $0 {build|run|dev|stop|dev|logs|restart}"
     ;;
 esac

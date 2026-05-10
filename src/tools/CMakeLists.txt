@@ -20,3 +20,10 @@ target_link_libraries(iwconv PRIVATE
     iw_format
     PNG::PNG
 )
+
+# Ensure iwconv can discover image loader plugins from the build tree without
+# requiring users/tests to set LD_LIBRARY_PATH manually.
+set_target_properties(iwconv PROPERTIES
+    BUILD_RPATH   "$<TARGET_FILE_DIR:ImageLoaderPng>"
+    INSTALL_RPATH "$<TARGET_FILE_DIR:ImageLoaderPng>"
+)

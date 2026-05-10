@@ -11,7 +11,7 @@ ENV RUNNER_VERSION=${RUNNER_VERSION} \
     RUNNER_HOME=/home/runner/actions-runner
 
 # Tooling needed for C++ builds, vcpkg bootstrap, and Windows cross-compilation.
-RUN pacman-key --init \
+RUN pacman-key --init  \
  && pacman-key --populate archlinux \
  && pacman -Syu --noconfirm --ask 4
 
@@ -45,7 +45,8 @@ RUN pacman -S --noconfirm --needed --ask 4  \
     unzip \
     zip \
     icu \
-    glfw-x11 \
+    glfw \
+    glad \
     libjpeg-turbo \
     libpng \
     libwebp \

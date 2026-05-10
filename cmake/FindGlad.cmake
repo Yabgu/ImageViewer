@@ -74,8 +74,10 @@ find_package_handle_standard_args(Glad
 if(Glad_FOUND AND NOT TARGET glad::glad)
     if(_GLAD_GENERATED)
         # Compile the generated source into a static library
-        add_library(_glad_generated STATIC "${_GLAD_SRC}")
-        target_include_directories(_glad_generated PUBLIC "${GLAD_INCLUDE_DIR}")
+        if(NOT TARGET _glad_generated)
+            add_library(_glad_generated STATIC "${_GLAD_SRC}")
+            target_include_directories(_glad_generated PUBLIC "${GLAD_INCLUDE_DIR}")
+        endif()
 
         add_library(glad::glad INTERFACE IMPORTED)
         target_include_directories(glad::glad INTERFACE "${GLAD_INCLUDE_DIR}")
