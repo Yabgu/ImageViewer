@@ -21,46 +21,19 @@ jobs:
 
       - name: Configure
         run: |
-          mkdir -p build-linux-native
-          cd build-linux-native
-          cmake .. -DIMAGEVIEWER_BUILD_VIEWER=OFF -G Ninja
-
-      - name: Build
-        run: cmake --build build-linux-native -j$(nproc)
-
-      - name: Run tests
-        run: ctest --test-dir build-linux-native --output-on-failure
-
-  test-viewer-linux:
-    name: Test (Linux / viewer + GUI E2E / SW render)
-    runs-on: [linux, x64]
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install GLFW and Xvfb
-        run: |
-          # On the Arch-Linux self-hosted runner image, install GLFW (X11 variant),
-          # Xvfb and pytest if they are not already present.
-          # --needed ensures this is a no-op when packages are already installed.
-          pacman -Sy --noconfirm --needed glfw-x11 xorg-server-xvfb python python-pytest
-
-      - name: Configure (viewer ON, system libs)
-        run: |
-          mkdir -p build-viewer
-          cd build-viewer
+          mkdir -p build
+          cd build
           cmake .. -DIMAGEVIEWER_BUILD_VIEWER=ON -G Ninja
 
       - name: Build
-        run: cmake --build build-viewer -j$(nproc)
+        run: cmake --build build -j$(nproc)
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
 
       - name: Run C++ tests (format + dither, no display needed)
         run: |
-          ctest --test-dir build-viewer \
+          ctest --test-dir build \
                 --output-on-failure \
                 --exclude-regex iview_gui_tests
 
@@ -72,7 +45,7 @@ jobs:
           sleep 1
 
           DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 \
-            ctest --test-dir build-viewer \
+            ctest --test-dir build \
                   --tests-regex iview_gui_tests \
                   --output-on-failure
 
@@ -80,7 +53,7 @@ jobs:
 
       - name: Run Python converter tests
         run: |
-          IWCONV_PATH="$(pwd)/build-viewer/src/tools/iwconv" \
+          IWCONV_PATH="$(pwd)/build/src/tools/iwconv" \
             python -m pytest tests/ -v --tb=short
 
   build-mingw32:
