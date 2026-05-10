@@ -13,3 +13,6 @@ compile_commands.json
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Never commit prebuilt llvm-mingw package archives.
+ci/*.pkg.tar.zst

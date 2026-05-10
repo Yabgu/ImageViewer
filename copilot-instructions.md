@@ -2,6 +2,7 @@
 
 Notes for contributors and Copilot:
 
+- Do not commit or push binary artifacts (especially prebuilt archives under `ci/`).
 - Running `ci/build-and-run.sh build` builds the dev image used by the GitHub Actions runner container (image name: `gh-actions-runner-mingw32`).
 - Building the image requires a prebuilt AUR package: `llvm-mingw`. Ensure a prebuilt `llvm-mingw` is available before building the image.
 - Currently a prebuilt `llvm-mingw` binary is present in the repository (user-provided). Add reproducible build instructions for `llvm-mingw` later (TODO).
