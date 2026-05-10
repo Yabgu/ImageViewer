@@ -10,7 +10,7 @@ on:
 jobs:
   build-linux-native:
     name: Build (Linux / system libraries, no vcpkg)
-    runs-on: [self-hosted, linux-native]
+    runs-on: [linux, x64]
     permissions:
       contents: read
     steps:
