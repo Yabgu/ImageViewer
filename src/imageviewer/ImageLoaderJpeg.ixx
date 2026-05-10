@@ -10,11 +10,15 @@ module;
 #include <format>
 #include "ImagePluginDef.h"
 
+namespace {
 struct my_error_mgr
 {
 	struct jpeg_error_mgr pub;
 	jmp_buf setjmp_buffer;
 };
+}
+
+export module ImageLoaderJpeg;
 
 EXTERN(void)
 my_error_exit(j_common_ptr cinfo)
@@ -23,8 +27,6 @@ my_error_exit(j_common_ptr cinfo)
 	(*cinfo->err->output_message)(cinfo);
 	longjmp(myerr->setjmp_buffer, 1);
 }
-
-export module ImageLoaderJpeg;
 
 static thread_local char lastError[256] = "";
 

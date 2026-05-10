@@ -1,0 +1,3 @@
+[submodule "third-party/gradient"]
+	path = third-party/gradient
+	url = https://github.com/jursonovicst/gradient

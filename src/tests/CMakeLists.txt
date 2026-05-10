@@ -17,3 +17,5 @@ target_link_libraries(iview_tests PRIVATE
 
 include(CTest)
 add_test(NAME iview_tests COMMAND iview_tests)
+
+add_subdirectory(format)

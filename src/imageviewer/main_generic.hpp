@@ -38,7 +38,11 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
 
 #pragma omp parallel num_threads(2)
     {
+#if defined(_OPENMP) && _OPENMP >= 202011
+#pragma omp masked
+#else
 #pragma omp master
+#endif
         {
 #pragma omp task
             try

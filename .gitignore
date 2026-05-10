@@ -1,5 +1,6 @@
 /install
-/third-party
+/third-party/*
+!/third-party/gradient
 /build*
 /out
 /vcpkg_installed
