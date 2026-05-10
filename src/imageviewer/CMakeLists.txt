@@ -18,8 +18,18 @@ if(NOT IMAGEVIEWER_BUILD_VIEWER)
     return()
 endif()
 
-find_package(glfw3 CONFIG REQUIRED)
-find_package(glad CONFIG REQUIRED)
+if(IMAGEVIEWER_USE_VCPKG)
+    find_package(glfw3 CONFIG REQUIRED)
+    find_package(glad CONFIG REQUIRED)
+    set(_GLFW_TARGET glfw)
+    set(_GLAD_TARGET glad::glad)
+else()
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+    find_package(GLFW3 REQUIRED)
+    find_package(Glad REQUIRED)
+    set(_GLFW_TARGET glfw3::glfw3)
+    set(_GLAD_TARGET glad::glad)
+endif()
 
 # ── Per-plugin optional dependencies (QUIET — skip plugin if not found) ────────
 
@@ -152,13 +162,13 @@ set_property(TARGET iview PROPERTY CXX_STANDARD 23)
 find_package(PNG REQUIRED)
 
 target_link_libraries(imageviewer PRIVATE
-    glfw
-    glad::glad
+    ${_GLFW_TARGET}
+    ${_GLAD_TARGET}
 )
 
 target_link_libraries(iview PRIVATE
-    glfw
-    glad::glad
+    ${_GLFW_TARGET}
+    ${_GLAD_TARGET}
     imageviewer
 )
 

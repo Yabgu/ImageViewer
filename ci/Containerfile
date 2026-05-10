@@ -19,6 +19,7 @@ RUN pacman -S --noconfirm --needed --ask 4  \
     base-devel \
     ca-certificates \
     cmake \
+    cmake-extras \
     curl \
     extra-cmake-modules \
     git \
@@ -40,7 +41,13 @@ RUN pacman -S --noconfirm --needed --ask 4  \
     zlib \
     unzip \
     zip \
-    icu
+    icu \
+    libjpeg-turbo \
+    libpng \
+    libwebp \
+    libtiff \
+    pixman \
+    protobuf
 
 COPY llvm-mingw-*.pkg.tar.zst /tmp/
 RUN pacman -U --noconfirm /tmp/llvm-mingw-*.pkg.tar.zst \

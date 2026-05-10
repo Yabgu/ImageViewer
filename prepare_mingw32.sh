@@ -28,6 +28,7 @@ export PATH="$LLVM_MINGW_BIN:$PATH"
 
 cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-mingw32" -G Ninja \
     -DCMAKE_SYSTEM_NAME=Windows \
+    -DIMAGEVIEWER_USE_VCPKG=ON \
     -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic \
     -DVCPKG_HOST_TRIPLET=x64-linux \
     -DZ_VCPKG_POWERSHELL_PATH=pwsh \

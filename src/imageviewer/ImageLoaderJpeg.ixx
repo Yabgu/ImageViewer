@@ -10,11 +10,13 @@ module;
 #include <format>
 #include "ImagePluginDef.h"
 
+namespace {
 struct my_error_mgr
 {
 	struct jpeg_error_mgr pub;
 	jmp_buf setjmp_buffer;
 };
+}
 
 export module ImageLoaderJpeg;
 

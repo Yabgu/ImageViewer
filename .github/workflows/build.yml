@@ -8,6 +8,29 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-linux-native:
+    name: Build (Linux / system libraries, no vcpkg)
+    runs-on: [self-hosted, linux-native]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: |
+          mkdir -p build-linux-native
+          cd build-linux-native
+          cmake .. -DIMAGEVIEWER_BUILD_VIEWER=OFF -G Ninja
+
+      - name: Build
+        run: cmake --build build-linux-native -j$(nproc)
+
+      - name: Run tests
+        run: ctest --test-dir build-linux-native --output-on-failure
+
   build-mingw32:
     name: Build (Windows / MinGW-w64 / vcpkg)
     runs-on: [mingw32, linux, x64]
