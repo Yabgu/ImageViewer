@@ -266,12 +266,8 @@ TEST_SUITE("GUI: screen info query")
 
 int main(int argc, char** argv)
 {
-    /* Hide every window created during the test run so CI stays headless.
-     * The hint persists until glfwDefaultWindowHints() or glfwTerminate(). */
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-
     try {
-        Window::Initialize();
+        Window::Initialize();  /* glfwInit() must be called before any hint */
     } catch (const std::exception& ex) {
         std::fprintf(stderr,
             "FATAL: glfwInit() failed — cannot run GUI tests.\n"
@@ -280,6 +276,12 @@ int main(int argc, char** argv)
             "  Error: %s\n", ex.what());
         return 1;
     }
+
+    /* Hide every window created during the test run so CI stays headless.
+     * GLFW window hints must be set after glfwInit() and apply to the next
+     * glfwCreateWindow() call.  Window::Initialize() calls only glfwInit(),
+     * not glfwCreateWindow(), so this ordering is correct.                  */
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
     doctest::Context ctx(argc, argv);
     const int result = ctx.run();

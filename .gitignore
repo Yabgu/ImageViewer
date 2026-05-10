@@ -8,3 +8,8 @@
 
 compile_commands.json
 .vscode/launch.json
+
+# Python test caches
+__pycache__/
+*.pyc
+.pytest_cache/

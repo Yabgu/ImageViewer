@@ -4,6 +4,10 @@ add_executable(iview_dither_tests
     test_filtercore_dither.cpp
 )
 
+# C++17 is intentional: FilterCore.hpp and its dependencies use only C++17
+# features (no modules, no C++23 extensions).  This allows the dither tests
+# to run without IMAGEVIEWER_BUILD_VIEWER and without a C++23-capable build.
+# The GUI tests (src/tests/gui) require C++23 for module imports.
 set_property(TARGET iview_dither_tests PROPERTY CXX_STANDARD 17)
 
 # FilterCore.hpp and ImagePluginDef.h live in the imageviewer source tree.
