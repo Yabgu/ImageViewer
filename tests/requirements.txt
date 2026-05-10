@@ -1,0 +1,12 @@
+# Runtime test dependencies for the ImageViewer Python test suite.
+# Install with:  pip install -r tests/requirements.txt
+#
+# Note: the converter tests (test_converter.py) use only the Python standard
+# library and do NOT require any packages listed here.  The requirements file
+# is provided so that additional tests using NumPy or Pillow can be added
+# without changes to the CI setup.
+
+# Optional: faster PNG I/O and pixel-comparison helpers.
+# Uncomment when tests that use these are added:
+# pillow>=10.0
+# numpy>=1.24

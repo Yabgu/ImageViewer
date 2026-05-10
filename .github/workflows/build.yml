@@ -21,15 +21,42 @@ jobs:
 
       - name: Configure
         run: |
-          mkdir -p build-linux-native
-          cd build-linux-native
-          cmake .. -DIMAGEVIEWER_BUILD_VIEWER=OFF -G Ninja
+          mkdir -p build
+          cd build
+          cmake .. -DIMAGEVIEWER_BUILD_VIEWER=ON -G Ninja
 
       - name: Build
-        run: cmake --build build-linux-native -j$(nproc)
+        run: cmake --build build -j$(nproc)
 
-      - name: Run tests
-        run: ctest --test-dir build-linux-native --output-on-failure
+      - name: Run C++ tests (format + dither, no display needed)
+        run: |
+          ctest --test-dir build \
+                --output-on-failure \
+                --exclude-regex iview_gui_tests
+
+      - name: Run GUI E2E tests (software render via Xvfb + Mesa)
+        run: |
+          # Some runners don't provide XDG_RUNTIME_DIR; GLFW may fail early.
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+          # Start a virtual framebuffer (headless X11 display).
+          Xvfb :99 -screen 0 1280x720x24 &
+          XVFB_PID=$!
+          sleep 1
+
+          DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+            ctest --test-dir build \
+                  --tests-regex iview_gui_tests \
+                  --output-on-failure
+
+          kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Run Python converter tests
+        run: |
+          IWCONV_PATH="$(pwd)/build/src/tools/iwconv" \
+            python -m pytest tests/ -v --tb=short
 
   build-mingw32:
     name: Build (Windows / MinGW-w64 / vcpkg)

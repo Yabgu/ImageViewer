@@ -67,6 +67,10 @@ static void WritePNG(const std::string& path, const iw::Image& iwi)
                  bw, color_type,
                  PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
 
+    // Keep emitted PNG rows unfiltered so the project's minimal PNG test parser
+    // (which intentionally supports only filter type 0) can validate exact samples.
+    png_set_filter(png, PNG_FILTER_TYPE_BASE, PNG_FILTER_NONE);
+
     if (iwi.colorSpace == IMAGE_COLOR_SPACE_SRGB)
         png_set_sRGB(png, info, PNG_sRGB_INTENT_PERCEPTUAL);
     else if (iwi.colorSpace == IMAGE_COLOR_SPACE_LINEAR)

@@ -8,3 +8,11 @@
 
 compile_commands.json
 .vscode/launch.json
+
+# Python test caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Never commit prebuilt llvm-mingw package archives.
+ci/*.pkg.tar.zst
