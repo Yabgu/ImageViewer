@@ -219,6 +219,8 @@ public:
 #  endif
 #elif defined(__APPLE__)
         return "libFilterPixman.dylib";
+#elif defined(__EMSCRIPTEN__)
+        return "FilterPixman.wasm";
 #else
         return "libFilterPixman.so";
 #endif

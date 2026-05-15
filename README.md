@@ -69,6 +69,8 @@ This mounts your workspace into the container at `/home/runner/work/<repo-name>`
 ### Build
 ImageViewer is designed with the C++23 standard in mind, requiring a fairly recent compiler (e.g., GCC 13+, Clang 16+, MSVC 19.38+).
 
+For Emscripten/WebAssembly builds, plugin support uses dynamic side modules (`*.wasm`). The main viewer is linked as an Emscripten main module and image/filter plugins are built as side modules.
+
 **Dependencies (using Vcpkg – Recommended):**
 
 - Windows: Run `prepare.bat` to automatically fetch and configure dependencies using Vcpkg.

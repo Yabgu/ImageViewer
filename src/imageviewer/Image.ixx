@@ -72,6 +72,8 @@ private:
 #  endif
 #elif defined(__APPLE__)
 		return std::format("lib{}.dylib", baseName);
+#elif defined(__EMSCRIPTEN__)
+		return std::format("{}.wasm", baseName);
 #else
 		return std::format("lib{}.so", baseName);
 #endif
