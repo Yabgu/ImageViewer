@@ -569,10 +569,10 @@ private:
 
 export class WasmPluginManager {
 public:
-    WasmPluginManager()
-        : runtime_(WasmRuntime::Load()) {}
+    WasmPluginManager() = default;
 
     std::unique_ptr<WasmImagePlugin> load(const std::filesystem::path& pluginPath) {
+        if (!runtime_) runtime_ = WasmRuntime::Load();
         auto resolved = resolve_plugin_path(pluginPath);
         return std::make_unique<WasmImagePlugin>(runtime_, resolved);
     }
