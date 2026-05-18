@@ -56,10 +56,7 @@ private:
 	                                             const std::filesystem::path& pluginPath,
 	                                             const std::filesystem::path& imagePath)
 	{
-		auto* entry = manager.getPlugin(pluginPath);
-		if (!entry || !entry->loadFunc)
-			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string());
-		return entry->loadFunc(imagePath.c_str());
+		return manager.LoadImage(pluginPath, imagePath);
 	}
 
 	static std::filesystem::path PluginFileName(const char* baseName)
@@ -72,8 +69,6 @@ private:
 #  endif
 #elif defined(__APPLE__)
 		return std::format("lib{}.dylib", baseName);
-#elif defined(__EMSCRIPTEN__)
-		return std::format("{}.wasm", baseName);
 #else
 		return std::format("lib{}.so", baseName);
 #endif
@@ -83,10 +78,7 @@ private:
 	                                      const std::filesystem::path& pluginPath,
 	                                      ImagePluginResult& result)
 	{
-		auto* entry = manager.getPlugin(pluginPath);
-		if (!entry || !entry->freeFunc)
-			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string());
-		entry->freeFunc(result.data);
+		manager.FreeImageData(pluginPath, result.data);
 		result.data = nullptr;
 	}
 

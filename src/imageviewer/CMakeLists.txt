@@ -150,6 +150,7 @@ target_sources(imageviewer PUBLIC
         TexturePool.ixx
         Image.ixx
         HotkeysHandler.ixx
+        WasmPluginManager.ixx
         PluginManager.ixx
         FilterPlugin.ixx
 )
@@ -195,20 +196,6 @@ target_link_libraries(iview PRIVATE
     ${_GLAD_TARGET}
     imageviewer
 )
-
-if(EMSCRIPTEN)
-    target_link_options(iview PRIVATE "-sMAIN_MODULE=2")
-endif()
-
-function(iw_configure_wasm_plugin target_name)
-    if(EMSCRIPTEN)
-        target_link_options(${target_name} PRIVATE "-sSIDE_MODULE=2")
-        set_target_properties(${target_name} PROPERTIES
-            PREFIX ""
-            SUFFIX ".wasm"
-        )
-    endif()
-endfunction()
 
 # vcpkg's applocal handles dependency DLLs from vcpkg, but not compiler runtime
 # DLLs such as libc++.dll/libunwind.dll used by llvm-mingw toolchains.
@@ -261,7 +248,6 @@ if(IMAGEVIEWER_JPEG_TARGET)
     target_link_libraries(ImageLoaderJpeg PRIVATE
         ${IMAGEVIEWER_JPEG_TARGET}
     )
-    iw_configure_wasm_plugin(ImageLoaderJpeg)
 endif()
 
 # PNG Plugin DLL — always built (libpng is a default vcpkg dep)
@@ -278,7 +264,6 @@ target_include_directories(ImageLoaderPng PRIVATE
 target_link_libraries(ImageLoaderPng PRIVATE
     PNG::PNG
 )
-iw_configure_wasm_plugin(ImageLoaderPng)
 
 # WebP Plugin DLL — only when libwebp is available
 if(WebP_FOUND)
@@ -293,7 +278,6 @@ if(WebP_FOUND)
         WebP::webp
         WebP::webpdecoder
     )
-    iw_configure_wasm_plugin(ImageLoaderWebp)
 endif()
 
 # TIFF Plugin DLL — only when libtiff is available
@@ -308,7 +292,6 @@ if(TIFF_FOUND)
     target_link_libraries(ImageLoaderTiff PRIVATE
         TIFF::TIFF
     )
-    iw_configure_wasm_plugin(ImageLoaderTiff)
 endif()
 
 # Stb Plugin DLL — only when stb is available
@@ -321,7 +304,6 @@ if(Stb_FOUND)
     )
     set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
     target_include_directories(ImageLoaderStb PRIVATE ${Stb_INCLUDE_DIR})
-    iw_configure_wasm_plugin(ImageLoaderStb)
 endif()
 
 # FilterPixman Plugin DLL — only when pixman is available
@@ -337,7 +319,6 @@ if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
         ${CMAKE_CURRENT_SOURCE_DIR}
     )
     target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET})
-    iw_configure_wasm_plugin(FilterPixman)
 
     # Copy FilterPixman DLL next to iview on Windows (same logic as runtime DLLs)
     if(WIN32)
