@@ -150,6 +150,7 @@ target_sources(imageviewer PUBLIC
         TexturePool.ixx
         Image.ixx
         HotkeysHandler.ixx
+        WasmPluginManager.ixx
         PluginManager.ixx
         FilterPlugin.ixx
 )

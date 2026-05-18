@@ -69,6 +69,9 @@ This mounts your workspace into the container at `/home/runner/work/<repo-name>`
 ### Build
 ImageViewer is designed with the C++23 standard in mind, requiring a fairly recent compiler (e.g., GCC 13+, Clang 16+, MSVC 19.38+).
 
+WebAssembly image plugins are hosted through Wasmtime at runtime. The viewer loads native shared-library plugins (`.dll/.so/.dylib`) and can also load `.wasm` image plugins through the wasm plugin manager, which dynamically loads the Wasmtime runtime library.  
+Wasm image plugins must export `memory`, `iw_alloc`, `iw_free`, `iw_load_image_from_file`, and `iw_free_image_result`.
+
 **Dependencies (using Vcpkg – Recommended):**
 
 - Windows: Run `prepare.bat` to automatically fetch and configure dependencies using Vcpkg.
