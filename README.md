@@ -67,26 +67,40 @@ For local debugging of the CI runner container, you can start an interactive she
 This mounts your workspace into the container at `/home/runner/work/<repo-name>` and opens a normal bash shell there.
 
 ### Build
-ImageViewer is designed with the C++23 standard in mind, requiring a fairly recent compiler (e.g., GCC 13+, Clang 16+, MSVC 19.38+).
+ImageViewer requires a C++23 compiler (GCC 13+, Clang 16+, MSVC 19.38+) and **Ninja** as the build-system generator (required by C++20 modules).
 
-**Dependencies (using Vcpkg – Recommended):**
-
-- Windows: Run `prepare.bat` to automatically fetch and configure dependencies using Vcpkg.
-- Linux: Run `prepare.sh` to automatically fetch and configure dependencies using Vcpkg.
-
-After running the prepare script, navigate into the newly created build directory:
+The project provides CMake presets (`CMakePresets.json`) so you can configure without specifying `-G Ninja`:
 
 ```sh
-cd build
+cmake --preset default    # full build (viewer + plugins + tests)
+cmake --preset no-viewer  # headless build (format lib + tests only, no GUI deps)
+cmake --build build -j$(nproc)
 ```
 
-Then, compile the project using CMake:
+**Linux (system libraries — default):**
 
 ```sh
-cmake --build . -j 4 # Or use -j with a higher number for more cores, e.g., -j 8
+cmake --preset default
+cmake --build build -j$(nproc)
+ctest --test-dir build --output-on-failure
 ```
 
-**Dependencies (using System Libraries):** If you prefer not to use Vcpkg, you can configure your build system to use system-wide libraries for dependencies. (Further instructions may be added here for specific system library configurations.)
+**Vcpkg (alternative dependency manager):**
+
+If system libraries aren't available, use vcpkg. First run the appropriate prepare script to bootstrap vcpkg:
+
+| Platform | Script |
+|---|---|
+| Windows | `prepare.bat` |
+| Linux | `./prepare.sh` |
+| Linux → Windows (llvm-mingw) | `./prepare_mingw32.sh` |
+
+Then configure with vcpkg enabled:
+
+```sh
+cmake --preset default -DIMAGEVIEWER_USE_VCPKG=ON
+cmake --build build -j$(nproc)
+```
 
 ### Run
 After building, simply execute the iview executable (or iview.exe on Windows) followed by the path to a supported image file.
