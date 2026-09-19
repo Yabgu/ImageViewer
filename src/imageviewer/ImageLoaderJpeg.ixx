@@ -4,6 +4,7 @@ module;
 #include <stdexcept>
 #include <cstring>
 #include <cstdint>
+#include <memory>
 #include <jpeglib.h>
 #include <setjmp.h>
 #include <filesystem>
@@ -15,6 +16,18 @@ struct my_error_mgr
 {
 	struct jpeg_error_mgr pub;
 	jmp_buf setjmp_buffer;
+};
+
+/* Owns everything the decode allocates: the pixel storage first, then the
+ * descriptor handed back to the caller on success.  libjpeg reports fatal
+ * errors by longjmp()ing out of the failing call, so this holder is created
+ * *before* setjmp() and never reassigned afterwards; an automatic variable
+ * written between setjmp() and longjmp() would be indeterminate on the error
+ * path and leak or double-free. */
+struct OwnedImagePluginData
+{
+	std::unique_ptr<uint8_t[]>       pixels;
+	std::unique_ptr<ImagePluginData> info;
 };
 }
 
@@ -54,13 +67,15 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     struct jpeg_decompress_struct cinfo = {
         .err = jpeg_std_error(&jerr.pub) };
 
+    const auto owned = std::make_unique<OwnedImagePluginData>();
+
     if (setjmp(jerr.setjmp_buffer))
     {
         jpeg_destroy_decompress(&cinfo);
         fclose(file);
         snprintf(lastError, sizeof(lastError), "JPEG decode failed");
         result.code = IMAGE_PLUGIN_DECODE_ERROR;
-        return result;
+        return result;   /* owned releases whatever was allocated so far */
     }
 
     jpeg_create_decompress(&cinfo);
@@ -87,23 +102,24 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
     }
 
-    ImagePluginData* data = new ImagePluginData{
+    owned->pixels = std::make_unique<uint8_t[]>(dataSize);
+    if (!owned->pixels) {
+        jpeg_destroy_decompress(&cinfo);
+        fclose(file);
+        snprintf(lastError, sizeof(lastError), "Failed to allocate image buffer");
+        result.code = IMAGE_PLUGIN_ALLOC_ERROR;
+        return result;
+    }
+
+    owned->info = std::make_unique<ImagePluginData>(ImagePluginData{
         .width      = static_cast<int>(cinfo.output_width),
         .height     = static_cast<int>(cinfo.output_height),
         .stride     = static_cast<int>(cinfo.output_width) * components,
         .colorSpace = IMAGE_COLOR_SPACE_SRGB,
         .size       = dataSize,
-        .data       = new uint8_t[dataSize],
+        .data       = owned->pixels.get(),
         .format     = fmt
-    };
-    if (!data->data) {
-        jpeg_destroy_decompress(&cinfo);
-        fclose(file);
-        delete data;
-        snprintf(lastError, sizeof(lastError), "Failed to allocate image buffer");
-        result.code = IMAGE_PLUGIN_ALLOC_ERROR;
-        return result;
-    }
+    });
 
     while (cinfo.output_scanline < cinfo.output_height)
     {
@@ -113,20 +129,22 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         {
             jpeg_destroy_decompress(&cinfo);
             fclose(file);
-            delete[] data->data;
-            delete data;
             snprintf(lastError, sizeof(lastError), "JPEG read error");
             result.code = IMAGE_PLUGIN_DECODE_ERROR;
             return result;
         }
-        std::memcpy(&data->data[current_scanline * row_stride], buffer[0], row_stride * readlines);
+        std::memcpy(owned->pixels.get() + current_scanline * row_stride, buffer[0], row_stride * readlines);
     }
 
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
     fclose(file);
+
+    /* Success: transfer ownership of the descriptor and its pixel buffer to
+     * the caller, which releases them through FreeImageData(). */
     result.code = IMAGE_PLUGIN_OK;
-    result.data = data;
+    result.data = owned->info.release();
+    owned->pixels.release();
     return result;
 }
 
