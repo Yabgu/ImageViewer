@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -36,32 +37,35 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
     std::unique_ptr<Window> window;
     std::unique_ptr<Image> image;
 
-#pragma omp parallel num_threads(2)
-    {
-#if defined(_OPENMP) && _OPENMP >= 202011
-#pragma omp masked
-#else
-#pragma omp master
-#endif
-        {
-#pragma omp task
-            try
-            {
-                Image imageLocal = ProcessInput(argc, argv);
-                image.reset(new Image(imageLocal));
-            }
-            catch (std::exception& ex)
-            {
-#ifdef _WIN32
-                MessageBoxA(NULL, ex.what(), "Error", MB_OK | MB_ICONERROR);
-#else
-                std::cerr << "Failed to process the request : " << ex.what() << std::endl;
-#endif
-            }
+    /* Decode the image on a worker thread so that file I/O and decoder work
+     * overlaps window creation on this (main) thread.  The future is the only
+     * hand-off between the two: the worker writes the shared state, and
+     * get() below publishes it to this thread, so `image` is never touched
+     * concurrently.  std::launch::async guarantees a real thread (the default
+     * launch policy would silently run ProcessInput inline on this thread). */
+    std::future<Image> imageFuture = std::async(std::launch::async, [argc, argv] {
+        return ProcessInput(argc, argv);
+    });
 
-            Window::Initialize();
-            window.reset(new Window(640, 640));
-        }
+    /* Window creation stays on the main thread: GLFW expects window and event
+     * handling on the thread that owns the context. */
+    Window::Initialize();
+    window = std::make_unique<Window>(640, 640);
+
+    /* Blocks until the worker has finished (or rethrows its exception).  This
+     * is the happens-before edge: everything the loader wrote is visible from
+     * here on, and the Image is moved out of the future's shared state. */
+    try
+    {
+        image = std::make_unique<Image>(imageFuture.get());
+    }
+    catch (std::exception& ex)
+    {
+#ifdef _WIN32
+        MessageBoxA(NULL, ex.what(), "Error", MB_OK | MB_ICONERROR);
+#else
+        std::cerr << "Failed to process the request : " << ex.what() << std::endl;
+#endif
     }
 
     if (image != nullptr)
