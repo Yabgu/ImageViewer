@@ -1,6 +1,5 @@
 module;
 
-#include <cassert>
 #include <cstdio>
 #include <stdexcept>
 #include <cstring>
@@ -66,7 +65,20 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     int height     = png_get_image_height(png_ptr, info_ptr);
     int color_type = png_get_color_type(png_ptr, info_ptr);
     int bit_depth  = png_get_bit_depth(png_ptr, info_ptr);
-    assert(width > 0 && height > 0 && bit_depth > 0);
+
+    /* libpng is fed untrusted files, so validate what it reports instead of
+     * asserting on it: assert() aborts a debug build and lets a release build
+     * continue with a zero-sized / bogus allocation. */
+    if (width <= 0 || height <= 0 || bit_depth <= 0)
+    {
+        png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+        fclose(file);
+        snprintf(lastError, sizeof(lastError),
+                 "Invalid PNG header: width=%d height=%d bit depth=%d",
+                 width, height, bit_depth);
+        result.code = IMAGE_PLUGIN_DECODE_ERROR;
+        return result;
+    }
 
     // Expand palette to RGB
     if (color_type == PNG_COLOR_TYPE_PALETTE)
