@@ -86,3 +86,44 @@ jobs:
           name: iview-mingw32
           path: iview-mingw32.zip
           if-no-files-found: error
+
+  build-windows-msvc:
+    name: Build (Windows / MSVC / vcpkg)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      VCPKG_DISABLE_METRICS: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          if (-not (Test-Path third-party/vcpkg/vcpkg.exe)) {
+            New-Item -ItemType Directory -Force -Path third-party | Out-Null
+            git clone https://github.com/microsoft/vcpkg --depth 1 third-party/vcpkg
+            & "${{ github.workspace }}/third-party/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          }
+
+      # No -G: CMake picks the newest installed Visual Studio generator, so the
+      # job keeps working when the runner image moves to a newer VS.  The same
+      # vcpkg manifest feeds this job, so the feature set (viewer + plugins) is
+      # identical to the MinGW build.
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build-msvc -A x64 `
+            -DIMAGEVIEWER_USE_VCPKG=ON `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/third-party/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build-msvc --config Release --parallel
+
+      - name: Run tests
+        shell: pwsh
+        run: ctest --test-dir build-msvc -C Release --output-on-failure
