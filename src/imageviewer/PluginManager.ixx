@@ -1,6 +1,7 @@
 module;
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <string>
 #include "ImagePluginDef.h"
 #ifdef _WIN32
@@ -28,24 +29,31 @@ public:
     ~PluginManager() {
         for (auto& [_, entry] : plugins) {
 #ifdef _WIN32
-            if (entry.handle) FreeLibrary(entry.handle);
+            if (entry->handle) FreeLibrary(entry->handle);
 #else
-            if (entry.handle) dlclose(entry.handle);
+            if (entry->handle) dlclose(entry->handle);
 #endif
         }
     }
 
-    PluginEntry* getPlugin(const std::filesystem::path& pluginPath) {
-        auto it = plugins.find(pluginPath.string());
-        if (it != plugins.end()) return &it->second;
+    /* Returns a handle that stays valid for as long as the caller holds it,
+     * independently of any later insertion into (or erasure from) the map.
+     * A PluginEntry* would instead point into the map itself. */
+    std::shared_ptr<PluginEntry> getPlugin(const std::filesystem::path& pluginPath) {
+        const std::string key = pluginPath.string();
+
+        auto it = plugins.find(key);
+        if (it != plugins.end()) return it->second;
 
         PluginHandle handle = findAndLoadModule(pluginPath);
         if (!handle) return nullptr;
 
-        if (!getLoadAndFreeProc(handle, pluginPath.string()))
+        auto entry = std::make_shared<PluginEntry>();
+        if (!getLoadAndFreeProc(handle, *entry))
             return nullptr;
 
-        return &plugins[pluginPath.string()];
+        plugins[key] = entry;
+        return entry;
     }
 
 private:
@@ -85,34 +93,35 @@ private:
 #endif
     }
 
-    bool getLoadAndFreeProc(PluginHandle handle, const std::string& key) {
+    /* Fills entry on success.  On failure the module is unloaded again before
+     * returning false, so nothing is left registered in plugins. */
+    bool getLoadAndFreeProc(PluginHandle handle, PluginEntry& entry) {
+        entry.handle = handle;
 #ifdef _WIN32
-        auto loadFunc = (LoadImageFromFileFunc)GetProcAddress(handle, "LoadImageFromFile");
-        if (!loadFunc) {
+        entry.loadFunc = (LoadImageFromFileFunc)GetProcAddress(handle, "LoadImageFromFile");
+        if (!entry.loadFunc) {
             FreeLibrary(handle);
             return false;
         }
-        auto freeFunc = (FreeImageDataFunc)GetProcAddress(handle, "FreeImageData");
-        if (!freeFunc) {
+        entry.freeFunc = (FreeImageDataFunc)GetProcAddress(handle, "FreeImageData");
+        if (!entry.freeFunc) {
             FreeLibrary(handle);
             return false;
         }
-        plugins[key] = { handle, loadFunc, freeFunc };
 #else
-        auto loadFunc = (LoadImageFromFileFunc)dlsym(handle, "LoadImageFromFile");
-        if (!loadFunc) {
+        entry.loadFunc = (LoadImageFromFileFunc)dlsym(handle, "LoadImageFromFile");
+        if (!entry.loadFunc) {
             dlclose(handle);
             return false;
         }
-        auto freeFunc = (FreeImageDataFunc)dlsym(handle, "FreeImageData");
-        if (!freeFunc) {
+        entry.freeFunc = (FreeImageDataFunc)dlsym(handle, "FreeImageData");
+        if (!entry.freeFunc) {
             dlclose(handle);
             return false;
         }
-        plugins[key] = { handle, loadFunc, freeFunc };
 #endif
         return true;
     }
 private:
-    std::map<std::string, PluginEntry> plugins;
+    std::map<std::string, std::shared_ptr<PluginEntry>> plugins;
 };
