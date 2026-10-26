@@ -696,6 +696,65 @@ static ImagePluginData* MakePngStyleRGB8Row(int w, uint8_t r, uint8_t g, uint8_t
     return pd;
 }
 
+/* Build a w×h 16-bit RGBA UNORM image with R=G=B=rgbVal and opaque alpha.
+ * 4×4 exercises every cell of the Bayer matrix. */
+static ImagePluginData* MakeRGBA16Grid(int w, int h, uint16_t rgbVal)
+{
+    IWImageFormat fmt = {};
+    fmt.componentCount = 4;
+    fmt.bitsPerPixel   = 64;
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
+    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
+    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
+    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 48, 16 };
+
+    const int stride = w * 8;
+    uint8_t* buf = static_cast<uint8_t*>(
+        std::malloc(static_cast<size_t>(stride) * static_cast<size_t>(h)));
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            uint16_t* p = reinterpret_cast<uint16_t*>(buf + y * stride + x * 8);
+            p[0] = rgbVal; p[1] = rgbVal; p[2] = rgbVal; p[3] = 0xFFFFu;
+        }
+    }
+
+    ImagePluginData* pd = static_cast<ImagePluginData*>(
+        std::malloc(sizeof(ImagePluginData)));
+    pd->width = w; pd->height = h; pd->stride = stride;
+    pd->colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+    pd->size = static_cast<size_t>(stride) * static_cast<size_t>(h);
+    pd->data = buf; pd->format = fmt;
+    return pd;
+}
+
+/* Build a w×1 16-bit RGBA UNORM row from per-pixel grey values. */
+static ImagePluginData* MakeGrey16Row(const uint16_t* vals, int w)
+{
+    IWImageFormat fmt = {};
+    fmt.componentCount = 4;
+    fmt.bitsPerPixel   = 64;
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
+    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
+    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
+    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 48, 16 };
+
+    const int stride = w * 8;
+    uint8_t* buf = static_cast<uint8_t*>(std::malloc(static_cast<size_t>(stride)));
+    for (int x = 0; x < w; ++x) {
+        uint16_t* p = reinterpret_cast<uint16_t*>(buf + x * 8);
+        p[0] = vals[x]; p[1] = vals[x]; p[2] = vals[x]; p[3] = 0xFFFFu;
+    }
+
+    ImagePluginData* pd = static_cast<ImagePluginData*>(
+        std::malloc(sizeof(ImagePluginData)));
+    pd->width = w; pd->height = 1; pd->stride = stride;
+    pd->colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+    pd->size = static_cast<size_t>(stride); pd->data = buf; pd->format = fmt;
+    return pd;
+}
+
 // ─── FilterCore::MakeTargetFormat ────────────────────────────────────────────
 
 TEST_SUITE("FilterCore::MakeTargetFormat")
@@ -1017,6 +1076,100 @@ TEST_SUITE("dithering mid-grey regression")
         FilterCore::FreeFrame(ordered);
         FilterCore::FreeFrame(none);
         FilterCore::FreeFrame(src);
+    }
+}
+
+// ─── Ordered dither: zero-mean / 1-LSB invariants ───────────────────────────
+//
+// These pin the properties the pixman fast path may not violate: a tile may
+// redistribute the quantisation decision inside one LSB, but it must never
+// shift the mean, never exceed the destination range, and never perturb a
+// value the destination can already represent.
+
+TEST_SUITE("ordered dither zero-mean invariant")
+{
+    TEST_CASE("4x4 Bayer tile of a half-LSB value averages back to the input")
+    {
+        /* 0x80FF = 33023 → 33023/65535*255 ≈ 128.496.  A correct ordered dither
+         * splits this into 128s and 129s; anything that biases the tile (like
+         * the old PIXMAN_OP_ADD of a 0..239 tile) shifts the mean badly. */
+        ImagePluginData* src = MakeRGBA16Grid(4, 4, 0x80FFu);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        const double expected = (33023.0 / 65535.0) * 255.0; /* ≈ 128.4959 */
+        int lo = 255, hi = 0;
+        double sum = 0.0;
+        for (int y = 0; y < 4; ++y) {
+            for (int x = 0; x < 4; ++x) {
+                const int v = out->data[y * out->stride + x * 4 + 0]; /* R */
+                sum += v;
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+        }
+        const double avg = sum / 16.0;
+
+        /* A real Bayer pattern: both neighbouring codes must appear. */
+        CHECK(lo == 128);
+        CHECK(hi == 129);
+        /* ...whose mean is the input, within one 8-bit code. */
+        CHECK(std::abs(avg - expected) <= 1.0);
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("horizontal 16-step grey ramp stays within one LSB of linear")
+    {
+        constexpr int kN = 16;
+        uint16_t vals[kN];
+        for (int i = 0; i < kN; ++i) vals[i] = static_cast<uint16_t>(i * 4096);
+
+        ImagePluginData* src = MakeGrey16Row(vals, kN);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        int prev = -1;
+        for (int i = 0; i < kN; ++i) {
+            const int v = out->data[i * 4 + 0]; /* R */
+            const double linear = (vals[i] / 65535.0) * 255.0;
+            CHECK(std::abs(v - linear) <= 1.0);
+            CHECK(v >= prev); /* never darkens on a rising ramp */
+            prev = v;
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("exactly representable values get no added noise")
+    {
+        /* 8-bit source → 8-bit destination has no fractional bits to dither, so
+         * black, mid-grey and white must all come back byte-identical. */
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+        const uint8_t samples[] = { 0u, 1u, 128u, 254u, 255u };
+
+        for (uint8_t s : samples) {
+            ImagePluginData* src = MakePngStyleRGB8Row(4, s, s, s,
+                                                       IW_COMPONENT_CLASS_UNORM);
+            ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+            REQUIRE(out != nullptr);
+
+            const int bpp = (out->format.bitsPerPixel + 7) / 8;
+            for (int x = 0; x < 4; ++x) {
+                CHECK(out->data[x * bpp + 0] == s);
+                CHECK(out->data[x * bpp + 1] == s);
+                CHECK(out->data[x * bpp + 2] == s);
+            }
+
+            FilterCore::FreeFrame(out);
+            FilterCore::FreeFrame(src);
+        }
     }
 }
 
