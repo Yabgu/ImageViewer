@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "ImagePluginDef.h"
+#include "FilterPluginDef.h"
 #include "Utils.hpp"
 
 #ifdef _WIN32
@@ -215,6 +216,77 @@ inline std::string DescriptorProblem(const ImagePluginData& d)
                ", got " + std::to_string(d.size) + ")";
 
     return {};
+}
+
+// ─── Filter plugin facade ───────────────────────────────────────────────────
+
+/*
+ * The three exports a filter plugin provides (see FilterPluginDef.h):
+ * FilterImage, FreeFilterImageSet and the optional FilterPluginGetLastError.
+ */
+class FilterPlugin
+{
+public:
+    explicit FilterPlugin(const std::filesystem::path& path)
+        : lib_(path)
+    {
+        filter_ = lib_.function<FilterImageFunc>("FilterImage");
+        free_   = lib_.function<FreeFilterImageSetFunc>("FreeFilterImageSet");
+        error_  = lib_.function<FilterPluginGetLastErrorFunc>("FilterPluginGetLastError");
+    }
+
+    IWFilterImageSet* Filter(const ImagePluginData* src,
+                             const IWScreenInfo*    screen,
+                             const IWFilterOptions* options) const
+    {
+        return filter_(src, screen, options);
+    }
+
+    void Free(IWFilterImageSet* set) const
+    {
+        if (set) free_(set);
+    }
+
+    std::string lastError() const
+    {
+        const char* s = error_ ? error_() : nullptr;
+        return s ? std::string(s) : std::string();
+    }
+
+private:
+    SharedLibrary               lib_;
+    FilterImageFunc             filter_ = nullptr;
+    FreeFilterImageSetFunc      free_   = nullptr;
+    FilterPluginGetLastErrorFunc error_ = nullptr;
+};
+
+// ─── Pixel access ──────────────────────────────────────────────────────────
+
+/*
+ * Read component `index` of the pixel at (x, y) as a fraction of that
+ * component's declared maximum, so 8-bit and 10-bit targets are comparable.
+ * Uses the descriptor's own bitOffset/bitWidth: the packed 10-bit formats this
+ * plugin emits do not align to byte boundaries.
+ */
+inline double ComponentFraction(const ImagePluginData& d, int index, int x, int y)
+{
+    const IWComponentDef& c = d.format.components[index];
+    const int bpp = static_cast<int>((d.format.bitsPerPixel + 7u) / 8u);
+    const uint8_t* pixel = d.data + static_cast<std::ptrdiff_t>(y) * d.stride +
+                           static_cast<std::ptrdiff_t>(x) * bpp;
+
+    const int byteStart = c.bitOffset / 8;
+    const int bitStart  = c.bitOffset % 8;
+    const int need      = (bitStart + c.bitWidth + 7) / 8;
+
+    uint64_t word = 0;
+    for (int i = 0; i < need && i < 5; ++i)
+        word |= static_cast<uint64_t>(pixel[byteStart + i]) << (i * 8);
+    word >>= bitStart;
+
+    const uint64_t mask = (c.bitWidth < 64u)
+                          ? ((uint64_t{1} << c.bitWidth) - 1u) : ~uint64_t{0};
+    return static_cast<double>(word & mask) / static_cast<double>(mask);
 }
 
 } // namespace iwabi

@@ -23,8 +23,7 @@
  * per pixel, so the K sample was dropped and the next pixel's red was misread.
  */
 
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
-#include <doctest/doctest.h>
+#include <doctest/doctest.h>   /* main() lives in main.cpp */
 
 #include <cstdint>
 #include <filesystem>

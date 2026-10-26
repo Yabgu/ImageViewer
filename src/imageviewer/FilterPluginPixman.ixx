@@ -135,6 +135,11 @@ static pixman_format_code_t GetPixmanFormat(const IWImageFormat& fmt) noexcept
 /* ── pixman-accelerated helpers ──────────────────────────────────────────── */
 
 /*
+ * TODO(stride-guard-follow-up): mode=none reaches this function without the
+ * 4-byte stride check that IsExactCodeMapping() applies to the ordered path;
+ * move the guard in here so both callers inherit it.
+ */
+/*
  * Use pixman_image_composite32(PIXMAN_OP_SRC) to copy / convert between two
  * compatible 8-bit packed-integer formats.
  *
