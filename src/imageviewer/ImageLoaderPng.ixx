@@ -133,22 +133,22 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
         switch (color_type) {
         case PNG_COLOR_TYPE_GRAY:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, bw };
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, bw };
             break;
         case PNG_COLOR_TYPE_GRAY_ALPHA:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0,  bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, bw, bw };
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0,  bw };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UNORM, bw, bw };
             break;
         case PNG_COLOR_TYPE_RGBA:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(0 * bw), bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(1 * bw), bw };
-            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(2 * bw), bw };
-            fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(3 * bw), bw };
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(0 * bw), bw };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(1 * bw), bw };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(2 * bw), bw };
+            fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(3 * bw), bw };
             break;
         default: /* PNG_COLOR_TYPE_RGB and palette-expanded RGB */
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(0 * bw), bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(1 * bw), bw };
-            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(2 * bw), bw };
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(0 * bw), bw };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(1 * bw), bw };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(2 * bw), bw };
             break;
         }
     }

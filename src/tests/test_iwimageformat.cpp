@@ -666,6 +666,36 @@ static ImagePluginData* MakeRGBA16Row(int w, uint16_t rgbVal)
     return pd;
 }
 
+/* Build a w×1 RGB8 row exactly the way ImageLoaderPng.ixx reports an 8-bit
+ * RGB PNG: three interleaved 8-bit components at bit offsets 0/8/16, every
+ * sample tagged with the loader's chosen component class. */
+static ImagePluginData* MakePngStyleRGB8Row(int w, uint8_t r, uint8_t g, uint8_t b,
+                                            IWComponentClass cls)
+{
+    IWImageFormat fmt = {};
+    fmt.componentCount = 3;
+    fmt.bitsPerPixel   = 24;
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, cls,  0, 8 };
+    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, cls,  8, 8 };
+    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, cls, 16, 8 };
+
+    const int stride = w * 3;
+    uint8_t* buf = static_cast<uint8_t*>(std::malloc(static_cast<size_t>(stride)));
+    for (int x = 0; x < w; ++x) {
+        buf[x * 3 + 0] = r;
+        buf[x * 3 + 1] = g;
+        buf[x * 3 + 2] = b;
+    }
+
+    ImagePluginData* pd = static_cast<ImagePluginData*>(
+        std::malloc(sizeof(ImagePluginData)));
+    pd->width = w; pd->height = 1; pd->stride = stride;
+    pd->colorSpace = IMAGE_COLOR_SPACE_SRGB;
+    pd->size = static_cast<size_t>(stride); pd->data = buf; pd->format = fmt;
+    return pd;
+}
+
 // ─── FilterCore::MakeTargetFormat ────────────────────────────────────────────
 
 TEST_SUITE("FilterCore::MakeTargetFormat")
@@ -850,6 +880,142 @@ TEST_SUITE("FilterCore::ApplyPWM")
             CHECK(set->frames[f]->data[3] == a0);
 
         FilterCore::FreeImageSet(set);
+        FilterCore::FreeFrame(src);
+    }
+}
+
+// ─── Dithering saturation regression (loader → FilterCore boundary) ──────────
+//
+// Regression: every image loader used to tag 8/16-bit display data as
+// IW_COMPONENT_CLASS_UINT.  ExtractComponent() returns raw integers for UINT,
+// and ExtractPixelF() clamped those raw values to [0, 1], so every non-zero
+// sample became 1.0 — ApplyNone/ApplyOrdered/ApplyPWM/ApplyFloydSteinberg all
+// rendered a white image.  The loaders now tag display data UNORM, and
+// ExtractPixelF additionally rescales UINT by its bit width.
+//
+// These cases sit exactly on the boundary the bug crossed: the pixel format is
+// built the way ImageLoaderPng.ixx builds it, and mid-grey has to stay grey.
+
+TEST_SUITE("dithering mid-grey regression")
+{
+    /* 128/255 ≈ 0.502 — visual mid-grey to within one 8-bit code. */
+    constexpr uint8_t kMid = 128u;
+    /* One 8-bit code == 1/255. */
+    constexpr int kTol = 1;
+
+    TEST_CASE("PNG-style UNORM RGB8 mid-grey: ApplyNone stays mid-grey, not white")
+    {
+        ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
+                                                   IW_COMPONENT_CLASS_UNORM);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* out = FilterCore::ApplyNone(*src, target);
+        REQUIRE(out != nullptr);
+
+        const int bpp = (out->format.bitsPerPixel + 7) / 8;
+        for (int x = 0; x < 4; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const int v = out->data[x * bpp + c];
+                CHECK(v >= kMid - kTol);
+                CHECK(v <= kMid + kTol);
+                CHECK(v != 255); /* the saturating-bug signature */
+            }
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("PNG-style UNORM RGB8 mid-grey: ApplyOrdered stays mid-grey, not white")
+    {
+        ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
+                                                   IW_COMPONENT_CLASS_UNORM);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        const int bpp = (out->format.bitsPerPixel + 7) / 8;
+        for (int x = 0; x < 4; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const int v = out->data[x * bpp + c];
+                CHECK(v >= kMid - kTol);
+                CHECK(v <= kMid + kTol);
+                CHECK(v != 255);
+            }
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("PNG-style UNORM RGB8 mid-grey: ApplyPWM stays mid-grey in every frame")
+    {
+        ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
+                                                   IW_COMPONENT_CLASS_UNORM);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 1u);
+        REQUIRE(set != nullptr);
+        REQUIRE(set->frameCount == 2u);
+
+        for (uint32_t f = 0; f < set->frameCount; ++f) {
+            REQUIRE(set->frames[f] != nullptr);
+            const int bpp = (set->frames[f]->format.bitsPerPixel + 7) / 8;
+            for (int x = 0; x < 4; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    const int v = set->frames[f]->data[x * bpp + c];
+                    CHECK(v >= kMid - kTol);
+                    CHECK(v <= kMid + kTol);
+                    CHECK(v != 255);
+                }
+            }
+        }
+
+        FilterCore::FreeImageSet(set);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("UINT-labelled RGB8 mid-grey is rescaled by bitWidth, not clamped")
+    {
+        /* Defence in depth: a plugin that still mislabels display data as UINT
+         * must render mid-grey, not white.  128 raw / (2^8 - 1) ≈ 0.502. */
+        ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
+                                                   IW_COMPONENT_CLASS_UINT);
+
+        float rgba[4] = {};
+        FilterCore::ExtractPixelF(*src, 0, 0, rgba);
+        CHECK(rgba[0] == doctest::Approx(128.0f / 255.0f));
+        CHECK(rgba[1] == doctest::Approx(128.0f / 255.0f));
+        CHECK(rgba[2] == doctest::Approx(128.0f / 255.0f));
+        CHECK(rgba[3] == doctest::Approx(1.0f));
+
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* none = FilterCore::ApplyNone(*src, target);
+        REQUIRE(none != nullptr);
+        CHECK(static_cast<int>(none->data[0]) == kMid);
+
+        ImagePluginData* ordered = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(ordered != nullptr);
+        const int obpp = (ordered->format.bitsPerPixel + 7) / 8;
+        for (int x = 0; x < 4; ++x) {
+            const int v = ordered->data[x * obpp + 0];
+            CHECK(v >= kMid - kTol);
+            CHECK(v <= kMid + kTol);
+        }
+
+        IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 1u);
+        REQUIRE(set != nullptr);
+        for (uint32_t f = 0; f < set->frameCount; ++f) {
+            const int v = set->frames[f]->data[0];
+            CHECK(v >= kMid - kTol);
+            CHECK(v <= kMid + kTol);
+        }
+
+        FilterCore::FreeImageSet(set);
+        FilterCore::FreeFrame(ordered);
+        FilterCore::FreeFrame(none);
         FilterCore::FreeFrame(src);
     }
 }
