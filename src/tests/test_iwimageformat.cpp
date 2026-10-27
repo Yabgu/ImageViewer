@@ -3,10 +3,14 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
+#include <string>
+#include <vector>
 #include "ImagePluginDef.h"
 #include "Utils.hpp"
 #include "FilterPluginDef.h"
 #include "FilterCore.hpp"
+#include "Args.hpp"
 
 // ─── Format-builder helpers ───────────────────────────────────────────────────
 
@@ -1909,5 +1913,181 @@ TEST_SUITE("HalfToFloat normalised values")
         /* 0x3555 ≈ 0.3333 in half precision. */
         const float v = HalfToFloat(0x3555u);
         CHECK(v == doctest::Approx(1.0f / 3.0f).epsilon(0.001));
+    }
+}
+
+// ─── ViewerArgs command-line parser ─────────────────────────────────────────
+//
+// ParseViewerArgs() is pure — no I/O, no exceptions — so the whole CLI surface
+// is exercised here without a display.  These cases are the contract the
+// shipped binary relies on to make dithering modes reachable: before this,
+// main built IWFilterOptions with argc = 0 and no mode was selectable at all.
+
+static ViewerArgs ParseCli(std::initializer_list<const char*> args)
+{
+    std::vector<const char*> ptrs(args.begin(), args.end());
+    return ParseViewerArgs(static_cast<int>(ptrs.size()), ptrs.data());
+}
+
+TEST_SUITE("ViewerArgs parser")
+{
+    TEST_CASE("single positional path, no flags — backward compatible defaults")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "photo.jpg" });
+        CHECK(a.parseError.empty());
+        CHECK(a.imagePath == "photo.jpg");
+        CHECK(a.mode == kModeNone);
+        CHECK(a.pwmBits == 0u);
+        CHECK_FALSE(a.helpRequested);
+    }
+
+    TEST_CASE("every --filter value maps to its enumerator")
+    {
+        struct Case { const char* arg; IWFilterMode mode; };
+        const Case cases[] = {
+            { "--filter=none",    kModeNone },
+            { "--filter=ordered", kModeOrdered },
+            { "--filter=floyd",   kModeFloydSteinberg },
+            { "--filter=pwm",     kModePWM },
+        };
+        for (const Case& c : cases) {
+            const ViewerArgs a = ParseCli({ "iview", c.arg, "photo.jpg" });
+            CHECK(a.parseError.empty());
+            CHECK(a.imagePath == "photo.jpg");
+            CHECK(a.mode == c.mode);
+            /* pwmBits stays 0 (plugin default) unless explicitly requested. */
+            CHECK(a.pwmBits == 0u);
+        }
+    }
+
+    TEST_CASE("--filter=pwm with --pwm-bits sets both fields")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--filter=pwm", "--pwm-bits=3", "photo.jpg" });
+        CHECK(a.parseError.empty());
+        CHECK(a.mode == kModePWM);
+        CHECK(a.pwmBits == 3u);
+        CHECK(a.imagePath == "photo.jpg");
+    }
+
+    TEST_CASE("flags may appear before or after the image path")
+    {
+        const ViewerArgs before = ParseCli({ "iview", "--filter=ordered", "photo.jpg" });
+        const ViewerArgs after  = ParseCli({ "iview", "photo.jpg", "--filter=ordered" });
+        CHECK(before.parseError.empty());
+        CHECK(after.parseError.empty());
+        CHECK(before.mode == kModeOrdered);
+        CHECK(after.mode == kModeOrdered);
+        CHECK(before.imagePath == "photo.jpg");
+        CHECK(after.imagePath == "photo.jpg");
+    }
+
+    TEST_CASE("--pwm-bits without --filter=pwm is rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--pwm-bits=3", "photo.jpg" });
+        CHECK(a.parseError == "--pwm-bits is only valid with --filter=pwm");
+        /* Also reject for every other explicit non-pwm mode. */
+        for (const char* m : { "--filter=none", "--filter=ordered", "--filter=floyd" }) {
+            const ViewerArgs b = ParseCli({ "iview", m, "--pwm-bits=2", "photo.jpg" });
+            CHECK(b.parseError == "--pwm-bits is only valid with --filter=pwm");
+        }
+    }
+
+    TEST_CASE("unknown filter mode is rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--filter=bogus", "photo.jpg" });
+        CHECK(a.parseError ==
+              "unknown filter mode: 'bogus' (expected none, ordered, floyd or pwm)");
+    }
+
+    TEST_CASE("--pwm-bits outside [1, 8] is rejected — zero, nine, negative, non-numeric")
+    {
+        for (const char* bad : { "--pwm-bits=0", "--pwm-bits=9", "--pwm-bits=-1",
+                                 "--pwm-bits=abc", "--pwm-bits=", "--pwm-bits=2x",
+                                 "--pwm-bits=99999999999999" }) {
+            const ViewerArgs a = ParseCli({ "iview", "--filter=pwm", bad, "photo.jpg" });
+            CHECK(a.parseError == "--pwm-bits must be an integer in [1, 8]");
+        }
+        /* The boundaries themselves are accepted. */
+        for (const char* good : { "--pwm-bits=1", "--pwm-bits=8" }) {
+            const ViewerArgs a = ParseCli({ "iview", "--filter=pwm", good, "photo.jpg" });
+            CHECK(a.parseError.empty());
+        }
+    }
+
+    TEST_CASE("--help requests help and needs no image path")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--help" });
+        CHECK(a.helpRequested);
+        CHECK(a.parseError.empty());
+        CHECK(a.imagePath.empty());
+    }
+
+    TEST_CASE("--help wins even when other arguments are invalid")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--filter=bogus", "--help" });
+        CHECK(a.helpRequested);
+        CHECK(a.parseError.empty());
+    }
+
+    TEST_CASE("multiple image paths are rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "a.jpg", "b.jpg" });
+        CHECK(a.parseError == "more than one image path given: 'a.jpg' and 'b.jpg'");
+    }
+
+    TEST_CASE("-- makes every later argument a file name")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--", "--filter=pwm" });
+        CHECK(a.parseError.empty());
+        CHECK(a.imagePath == "--filter=pwm");
+        CHECK(a.mode == kModeNone);   /* not parsed as a flag */
+        CHECK(a.pwmBits == 0u);
+    }
+
+    TEST_CASE("-- with two later arguments is still two image paths")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--", "a.jpg", "b.jpg" });
+        CHECK(a.parseError == "more than one image path given: 'a.jpg' and 'b.jpg'");
+    }
+
+    TEST_CASE("an unknown option is rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--nope", "photo.jpg" });
+        CHECK(a.parseError == "unknown option: --nope");
+    }
+
+    TEST_CASE("a missing image path is rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview" });
+        CHECK(a.parseError == "no image path given");
+        CHECK_FALSE(a.helpRequested);
+
+        const ViewerArgs b = ParseCli({ "iview", "--filter=pwm", "--pwm-bits=2" });
+        CHECK(b.parseError == "no image path given");
+    }
+
+    TEST_CASE("flag values are case sensitive")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--filter=PWM", "photo.jpg" });
+        CHECK(a.parseError ==
+              "unknown filter mode: 'PWM' (expected none, ordered, floyd or pwm)");
+    }
+
+    TEST_CASE("NarrowArgv converts wide arguments to UTF-8 for the parser")
+    {
+        /* Exercise the Windows entry path on Linux: wWinMain hands over a
+         * wchar_t argv, which is narrowed before parsing. */
+        const wchar_t* wide[] = { L"iview", L"--filter=pwm", L"photo.jpg" };
+        const std::vector<std::string> narrowed = NarrowArgv(3, wide);
+        REQUIRE(narrowed.size() == 3u);
+        CHECK(narrowed[0] == "iview");
+        CHECK(narrowed[1] == "--filter=pwm");
+        CHECK(narrowed[2] == "photo.jpg");
+
+        /* Non-ASCII survives: 'é' (U+00E9) must become the 2-byte UTF-8 form. */
+        const wchar_t* accented[] = { L"iview", L"caf\u00e9.jpg" };
+        const std::vector<std::string> n2 = NarrowArgv(2, accented);
+        REQUIRE(n2.size() == 2u);
+        CHECK(n2[1] == std::string("caf\xC3\xA9.jpg"));
     }
 }

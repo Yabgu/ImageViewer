@@ -1,25 +1,22 @@
 #pragma once
 
+#include <cstring>
 #include <filesystem>
 #include <future>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <vector>
+#include "Args.hpp"
 #include "FilterPluginDef.h"
 
 import Image;
 import UserInterface;
 
-template <typename T>
-Image ProcessInput(int argc, T* argv[])
+inline Image ProcessInput(const std::filesystem::path& path)
 {
-    if (argc <= 0)
-    {
-        [[unlikely]] throw std::runtime_error("Argc cannot be less than zero");
-    }
-
-    std::filesystem::path path(argv[argc - 1]);
-
     return Image::FromFile(path);
 }
 
@@ -31,9 +28,52 @@ Image ProcessInput(int argc, T* argv[])
 #define IVIEW_FORCEINLINE inline
 #endif
 
+/*
+ * Build the IWFilterOptions handed to the filter plugin from the parsed
+ * command line.  `mode` is always sent explicitly so that mode=none is a
+ * deliberate request rather than an absent argument, and pwm_bits is only sent
+ * for PWM because the plugin treats it as PWM-specific.
+ */
+inline IWFilterOptions MakeFilterOptions(const ViewerArgs& parsed,
+                                         IWFilterArg (&storage)[2]) noexcept
+{
+    std::memset(storage, 0, sizeof(IWFilterArg) * 2u);
+    uint32_t count = 0;
+
+    std::strncpy(storage[count].name, "mode", IW_FILTER_ARG_NAME_MAX - 1u);
+    storage[count].type      = IW_FILTER_ARG_UINT32;
+    storage[count].value.u32 = static_cast<uint32_t>(parsed.mode);
+    ++count;
+
+    if (parsed.mode == kModePWM && parsed.pwmBits != 0u) {
+        std::strncpy(storage[count].name, "pwm_bits", IW_FILTER_ARG_NAME_MAX - 1u);
+        storage[count].type      = IW_FILTER_ARG_UINT32;
+        storage[count].value.u32 = parsed.pwmBits;
+        ++count;
+    }
+
+    IWFilterOptions opts{};
+    opts.version = IW_FILTER_OPTIONS_VERSION;
+    opts.argc    = count;
+    opts.argv    = storage;
+    return opts;
+}
+
 template <typename T>
 IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
 {
+    const ViewerArgs parsed = ParseArgs(argc, argv);
+
+    if (parsed.helpRequested) {
+        std::cout << UsageText();
+        return 0;
+    }
+
+    if (!parsed.parseError.empty()) {
+        std::cerr << "iview: " << parsed.parseError << "\n\n" << UsageText();
+        return 2;
+    }
+
     std::unique_ptr<Window> window;
     std::unique_ptr<Image> image;
 
@@ -42,9 +82,11 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
      * hand-off between the two: the worker writes the shared state, and
      * get() below publishes it to this thread, so `image` is never touched
      * concurrently.  std::launch::async guarantees a real thread (the default
-     * launch policy would silently run ProcessInput inline on this thread). */
-    std::future<Image> imageFuture = std::async(std::launch::async, [argc, argv] {
-        return ProcessInput(argc, argv);
+     * launch policy would silently run ProcessInput inline on this thread).
+     * The path is captured by value because `parsed` is not shared. */
+    const std::filesystem::path imagePath = PathFromUtf8(parsed.imagePath);
+    std::future<Image> imageFuture = std::async(std::launch::async, [imagePath] {
+        return ProcessInput(imagePath);
     });
 
     /* Window creation stays on the main thread: GLFW expects window and event
@@ -74,24 +116,18 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
         static constexpr int PreferredTextureHeight = 256;
         static constexpr int PreferredRedundantBorder = 2;
 
-        /* Default filter options: no arguments → plugin uses its built-in
-         * defaults (typically a pass-through conversion to screen precision).
-         * To configure dithering, pass named IWFilterArg entries, e.g.:
-         *   IWFilterArg modeArg{ "mode", IW_FILTER_ARG_UINT32, {.u32=3} }; // PWM
-         *   IWFilterArg bitsArg{ "pwm_bits", IW_FILTER_ARG_UINT32, {.u32=1} };
-         *   IWFilterOptions opts{ IW_FILTER_OPTIONS_VERSION, 2, args }; */
-        static constexpr IWFilterOptions kDefaultFilterOpts = {
-            IW_FILTER_OPTIONS_VERSION,
-            0u,
-            nullptr
-        };
+        /* Filter options come from the command line, so dithering modes are
+         * reachable from the shipped binary: `iview --filter=pwm photo.jpg`.
+         * See ParseViewerArgs() in Args.hpp for the accepted flags. */
+        IWFilterArg filterArgs[2];
+        const IWFilterOptions filterOpts = MakeFilterOptions(parsed, filterArgs);
 
         window->LoadTextures(
             *image,
             PreferredTextureWidth,
             PreferredTextureHeight,
             PreferredRedundantBorder,
-            kDefaultFilterOpts);
+            filterOpts);
 
         image.reset();
     }

@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "plugin_abi.hpp"
+#include "Args.hpp"   /* host-side IWFilterMode: the values the CLI sends */
 
 #ifndef IW_FILTERPIXMAN_PLUGIN_PATH
 #  error "IW_FILTERPIXMAN_PLUGIN_PATH must be defined by the build system"
@@ -45,19 +46,20 @@ iwabi::FilterPlugin& Plugin()
     return plugin;
 }
 
-constexpr int kModeNone    = 0;
-constexpr int kModeOrdered = 1;
-constexpr int kModeFloyd   = 2;
-constexpr int kModePwm     = 3;
-
-const char* ModeName(int mode)
+/*
+ * The modes are named with the host's own enumerators (Args.hpp) rather than
+ * private copies, so this suite verifies the mapping the CLI actually sends.
+ * If the plugin's internal mode numbering ever changed, these cases would fail:
+ * the assertions below all check behaviour, not just that a call succeeded.
+ */
+const char* ModeName(IWFilterMode mode)
 {
     switch (mode) {
-    case kModeNone:    return "none";
-    case kModeOrdered: return "ordered";
-    case kModeFloyd:   return "floyd";
-    case kModePwm:     return "pwm";
-    default:           return "?";
+    case kModeNone:           return "none";
+    case kModeOrdered:        return "ordered";
+    case kModeFloydSteinberg: return "floyd";
+    case kModePWM:            return "pwm";
+    default:                  return "?";
     }
 }
 
@@ -139,7 +141,7 @@ TEST_SUITE("FilterPixman ABI: dithering matrix keeps mid-grey mid-grey")
     TEST_CASE("every mode x screen depth x input class keeps mid-grey mid-grey")
     {
     /* mode × screen depth × input component class, RGB8 4x4 flat mid-grey. */
-    for (int mode : { kModeNone, kModeOrdered, kModeFloyd, kModePwm }) {
+    for (IWFilterMode mode : { kModeNone, kModeOrdered, kModeFloydSteinberg, kModePWM }) {
         for (int depth : { 8, 10 }) {
             for (int clsIdx : { 0, 1 }) {
                 const IWComponentClass cls = clsIdx == 0 ? IW_COMPONENT_CLASS_UNORM
@@ -164,7 +166,7 @@ TEST_SUITE("FilterPixman ABI: dithering matrix keeps mid-grey mid-grey")
                     REQUIRE(set->frames != nullptr);
 
                     /* PWM is the only multi-frame mode at pwm_bits=1. */
-                    CHECK(set->frameCount == (mode == kModePwm ? 2u : 1u));
+                    CHECK(set->frameCount == (mode == kModePWM ? 2u : 1u));
 
                     for (uint32_t f = 0; f < set->frameCount; ++f) {
                         REQUIRE(set->frames[f] != nullptr);
@@ -205,7 +207,7 @@ TEST_SUITE("FilterPixman ABI: exactly representable values get no added noise")
     /* 8-bit in → 8-bit out has no fractional bits to dither, so a flat field
      * must survive every mode untouched.  The old additive tile failed this:
      * white stayed white but mid-grey and every other code were lifted. */
-    for (int mode : { kModeNone, kModeOrdered, kModeFloyd, kModePwm }) {
+    for (IWFilterMode mode : { kModeNone, kModeOrdered, kModeFloydSteinberg, kModePWM }) {
         for (uint8_t value : { uint8_t{0}, uint8_t{255} }) {
             const std::string label = std::string("mode=") + ModeName(mode) +
                                       " value=" + std::to_string(value);
