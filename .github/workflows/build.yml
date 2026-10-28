@@ -96,13 +96,24 @@ jobs:
       # No -G: CMake picks the newest installed Visual Studio generator, so the
       # job keeps working when the runner image moves to a newer VS.  The same
       # vcpkg manifest feeds this job, so the feature set (viewer + plugins) is
-      # identical to the MinGW build.
+      # identical to the MSYS2 build.
+      #
+      # VCPKG_MANIFEST_FEATURES must be passed here, on the command line.  The
+      # toolchain file is processed during compiler detection, i.e. before the
+      # project's CMakeLists.txt body runs, and that is where vcpkg performs its
+      # manifest install.  Setting the variable in CMakeLists.txt (as this
+      # repository also does for the non-toolchain include path) is therefore
+      # too late: vcpkg installs only vcpkg.json's default dependencies
+      # (doctest, libpng) and find_package(glfw3 CONFIG REQUIRED) then fails.
+      # Keep this list in sync with the `viewer`/`plugin-*` features in
+      # vcpkg.json and with prepare_mingw32.sh.
       - name: Configure
         shell: pwsh
         run: |
           cmake -S . -B build-msvc -A x64 `
             -DIMAGEVIEWER_USE_VCPKG=ON `
             -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DVCPKG_MANIFEST_FEATURES="viewer;plugin-jpeg;plugin-webp;plugin-tiff;plugin-stb;plugin-pixman" `
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/third-party/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build
