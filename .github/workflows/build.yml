@@ -123,3 +123,28 @@ jobs:
       - name: Run tests
         shell: pwsh
         run: ctest --test-dir build-msvc -C Release --output-on-failure
+
+      # The ABI harness loads the plugin DLLs with LoadLibrary, and a missing
+      # import shows up only as GetLastError=126 (ERROR_MOD_NOT_FOUND), which
+      # does not say which module is missing.  Dump the actual import tables
+      # when anything fails so the next diagnosis does not have to guess.
+      - name: Diagnose plugin dependencies
+        if: failure()
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'build-msvc\src\imageviewer\Release'
+          Write-Host "--- $dir ---"
+          if (Test-Path $dir) {
+            Get-ChildItem $dir | Sort-Object Name |
+              Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
+          } else {
+            Write-Host 'directory does not exist'
+          }
+          $dumpbin = Get-ChildItem `
+            "$env:ProgramFiles\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $dumpbin) { Write-Host 'dumpbin not found'; exit 0 }
+          Write-Host '--- ImageLoaderJpeg.dll dependents ---'
+          & $dumpbin.FullName /nologo /dependents (Join-Path $dir 'ImageLoaderJpeg.dll')
+          Write-Host '--- iview.exe dependents ---'
+          & $dumpbin.FullName /nologo /dependents (Join-Path $dir 'iview.exe')
