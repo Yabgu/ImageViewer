@@ -40,6 +40,51 @@ namespace iwabi {
 
 // ─── Shared-library loader ───────────────────────────────────────────────────
 
+#ifdef _WIN32
+/*
+ * Directory of the running executable.
+ *
+ * A Windows build ships the plugin DLLs next to iview.exe, and the loader
+ * resolves a plugin's own imports (jpeg62.dll, libwebp.dll, ...) from the
+ * executable's directory.  The tests therefore load their plugins from beside
+ * the test binary once the build has copied them there.
+ */
+inline std::filesystem::path ExecutableDirectory()
+{
+    std::wstring buf(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD n = GetModuleFileNameW(nullptr, buf.data(),
+                                           static_cast<DWORD>(buf.size()));
+        if (n == 0)
+            throw std::runtime_error("GetModuleFileNameW failed");
+        if (n < buf.size()) {
+            buf.resize(n);
+            break;
+        }
+        buf.resize(buf.size() * 2);
+    }
+    return std::filesystem::path{ buf }.parent_path();
+}
+#endif
+
+/*
+ * Resolve the plugin path baked in by the build system.
+ *
+ * With IW_ABI_PLUGINS_DEPLOYED (Windows build that copies the plugins next to
+ * this executable) the plugin is taken from the executable's own directory:
+ * that is the shipped layout, and it is what lets the plain LoadLibraryW below
+ * find the plugin's runtime DLLs.  Otherwise the built artefact is loaded in
+ * place.
+ */
+inline std::filesystem::path DeployedPluginPath(const std::filesystem::path& built)
+{
+#if defined(_WIN32) && defined(IW_ABI_PLUGINS_DEPLOYED)
+    return ExecutableDirectory() / built.filename();
+#else
+    return built;
+#endif
+}
+
 /*
  * Minimal RAII wrapper around dlopen/LoadLibrary.  Errors are thrown with the
  * library path included, because "the plugin test failed" is useless without
@@ -57,14 +102,15 @@ public:
     explicit SharedLibrary(const std::filesystem::path& path)
     {
 #ifdef _WIN32
-        // LOAD_WITH_ALTERED_SEARCH_PATH, not plain LoadLibraryW: the plugins
-        // import runtime DLLs that sit next to them (vcpkg's applocal step
-        // deploys jpeg62.dll, libpng16.dll, ... into the same directory), and
-        // LoadLibraryW given an absolute path searches the *executable's*
-        // directory, the system directories and PATH -- but not the directory
-        // of the module being loaded.
-        handle_ = LoadLibraryExW(path.wstring().c_str(), nullptr,
-                                 LOAD_WITH_ALTERED_SEARCH_PATH);
+        // Plain LoadLibraryW, the same call PluginManager and FilterPlugin use.
+        // The loader searches the *executable's* directory for the imports of
+        // the module being loaded (jpeg62.dll, libwebp.dll, ...), so the build
+        // copies the plugins and their runtime DLLs next to this test binary.
+        // Do not substitute LOAD_WITH_ALTERED_SEARCH_PATH: CMake bakes in a
+        // path with '/' separators, and that flag derives the module's
+        // directory only from a path that uses '\', so it silently falls back
+        // to the plain search order.
+        handle_ = LoadLibraryW(path.c_str());
         if (!handle_) {
             // Capture the code immediately.  Building the message below
             // allocates and may call Win32 functions that overwrite the

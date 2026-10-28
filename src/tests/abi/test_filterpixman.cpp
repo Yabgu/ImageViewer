@@ -36,7 +36,8 @@
 
 namespace {
 
-const std::filesystem::path kPluginPath{ IW_FILTERPIXMAN_PLUGIN_PATH };
+const std::filesystem::path kPluginPath =
+    iwabi::DeployedPluginPath(std::filesystem::path{ IW_FILTERPIXMAN_PLUGIN_PATH });
 
 /* Loaded once per binary; see the note in test_imageloader_jpeg.cpp about the
  * DSO's static-initialisation allocations that dlclose cannot reclaim. */

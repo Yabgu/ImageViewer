@@ -94,6 +94,32 @@ endif()
 # genexes, which do not themselves create an ordering edge).
 add_dependencies(iview_abi_tests ${_abi_plugin_targets})
 
+# Windows ships iview.exe with the plugin DLLs beside it, and PluginManager
+# loads them with a plain LoadLibraryW, which resolves a plugin's own imports
+# (jpeg62.dll, libwebp.dll, ...) from the executable's directory.  This test
+# binary lives in a different output directory from the plugins, so copy the
+# plugins and their runtime DLLs next to it and load them from there: the tests
+# then exercise the shipped layout and the shipped loader call.
+#
+# Gated on IMAGEVIEWER_COPY_RUNTIME_DLLS because the LinSYS2/MSYS2 build sets
+# it OFF: a POST_BUILD command there runs through Wine's cmd, which cannot run
+# the nested command the Ninja generator emits.  That build resolves the
+# plugins' imports from the MSYS2 prefix instead, so it keeps loading the
+# build-tree artefacts in place.
+if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
+    foreach(_plugin IN LISTS _abi_plugin_targets)
+        add_custom_command(TARGET iview_abi_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:${_plugin}>
+                $<TARGET_RUNTIME_DLLS:${_plugin}>
+                $<TARGET_FILE_DIR:iview_abi_tests>
+            COMMAND_EXPAND_LISTS
+            VERBATIM
+        )
+    endforeach()
+    target_compile_definitions(iview_abi_tests PRIVATE IW_ABI_PLUGINS_DEPLOYED=1)
+endif()
+
 target_link_libraries(iview_abi_tests PRIVATE doctest::doctest)
 
 # dlopen lives in libdl on Linux; macOS and Windows need nothing extra.

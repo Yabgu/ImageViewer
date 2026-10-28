@@ -40,7 +40,8 @@
 
 namespace {
 
-const std::filesystem::path kPluginPath{ IW_JPEG_PLUGIN_PATH };
+const std::filesystem::path kPluginPath =
+    iwabi::DeployedPluginPath(std::filesystem::path{ IW_JPEG_PLUGIN_PATH });
 
 std::filesystem::path Fixture(const char* name)
 {
