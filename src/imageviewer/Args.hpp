@@ -296,13 +296,20 @@ inline ViewerArgs ParseArgs(int argc, T* argv[])
  *
  * On Windows a path constructed from a narrow string is interpreted in the
  * active ANSI code page, not UTF-8, so non-ASCII file names would be mangled.
- * Constructing from u8string is the explicit-UTF-8 form.  On POSIX the bytes are
- * passed through unchanged, as required.
+ * The explicit-UTF-8 form must therefore be used.  Which form that is depends
+ * on the standard the including translation unit is compiled as: this header
+ * is used both by the C++23 application and by the C++17 test targets, and
+ * std::u8string does not exist before C++20.  On POSIX the bytes are passed
+ * through unchanged, as required.
  */
 inline std::filesystem::path PathFromUtf8(const std::string& s)
 {
 #ifdef _WIN32
+#  if defined(__cpp_lib_char8_t)
     return std::filesystem::path(std::u8string(s.begin(), s.end()));
+#  else
+    return std::filesystem::u8path(s);   /* C++17 spelling of the same thing */
+#  endif
 #else
     return std::filesystem::path(s);
 #endif
