@@ -196,9 +196,20 @@ target_link_libraries(iview PRIVATE
     imageviewer
 )
 
+# Copying runtime DLLs next to iview is a convenience for launching the binary
+# directly on a Windows desktop; the build itself does not need it, because the
+# tests and the app are run with the toolchain's own bin directory on PATH.
+# It is also not always possible: CMake's Ninja generator implements POST_BUILD
+# by nesting `cmd.exe /C` inside another `cmd.exe /C`, and Wine's cmd cannot
+# parse that, so the link step of a target carrying a POST_BUILD command fails
+# under LinSYS2 even though the binary itself linked correctly.  CI therefore
+# sets this to OFF and packages DLLs explicitly.
+option(IMAGEVIEWER_COPY_RUNTIME_DLLS
+    "Copy compiler/runtime DLLs next to iview after linking (Windows desktop convenience)" ON)
+
 # vcpkg's applocal handles dependency DLLs from vcpkg, but not compiler runtime
 # DLLs such as libc++.dll/libunwind.dll used by llvm-mingw toolchains.
-if(WIN32)
+if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
     get_filename_component(_CXX_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
     set(_MINGW_RUNTIME_DLL_CANDIDATES
         "${_CXX_COMPILER_DIR}/libc++.dll"
@@ -320,7 +331,7 @@ if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
     target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET})
 
     # Copy FilterPixman DLL next to iview on Windows (same logic as runtime DLLs)
-    if(WIN32)
+    if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
         add_custom_command(TARGET iview POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_FILE:FilterPixman>

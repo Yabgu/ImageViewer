@@ -1,0 +1,196 @@
+# syntax=docker/dockerfile:1
+#
+# ci/Containerfile.linsys2 — self-hosted GitHub Actions runner image that can
+# build ImageViewer for Windows using the *real* MSYS2 toolchain via LinSYS2,
+# instead of a Linux port of MinGW (llvm-mingw) plus vcpkg.
+#
+# Why LinSYS2: https://github.com/wszqkzqk/LinSYS2 installs the actual Windows
+# MSYS2 packages and runs the Windows compiler under Wine.  That removes two
+# failure modes from the old path — a cross-compiler whose defaults differ from
+# Windows, and vcpkg building every dependency from source for a cross target.
+#
+# Base: Arch Linux (latest).  LinSYS2 is distributed as an AUR package and its
+# dependencies are Arch package names, so Arch is the lowest-friction host.  The
+# base is not otherwise special: nothing here is Arch-specific beyond how
+# LinSYS2 is installed.
+#
+# The runner provides BOTH self-hosted labels the workflow needs:
+#   [linux, x64]           -> build-linux-native
+#   [mingw32, linux, x64]  -> build-mingw32
+# so one runner serves both jobs (the MSVC job runs on windows-latest).
+#
+# Build:
+#   podman build -t gh-actions-runner-linsys2 -f ci/Containerfile.linsys2 ci/
+#
+# Run: see the `run` case in ci/build-and-run.sh (USE_LINSYS2=1).
+
+FROM docker.io/library/archlinux:latest
+
+ARG RUNNER_VERSION=2.338.2
+ARG RUNNER_ARCH=x64
+ARG MSYS_ENV=clang64
+
+ENV RUNNER_HOME=/home/runner/actions-runner \
+    RUNNER_ARCH=${RUNNER_ARCH} \
+    LINSYS2_ENV=${MSYS_ENV} \
+    # Wine writes a lot of noise; and suppressing the mono/gecko install
+    # dialogs keeps `wineboot` non-interactive inside a container.
+    WINEDEBUG=-all \
+    WINEDLLOVERRIDES=mscoree,mshtml= \
+    # MSYS2 binaries live outside the Linux linker's view; they are executed
+    # through Wine, so no LD_LIBRARY_PATH juggling is needed or wanted.
+    LC_ALL=C.UTF-8
+
+# ── Base system ──────────────────────────────────────────────────────────────
+RUN pacman-key --init \
+ && pacman-key --populate archlinux \
+ && pacman -Syu --noconfirm
+
+# base-devel: makepkg needs gcc/meson/patch to build LinSYS2 itself.
+# wine + bubblewrap + gpgme + libarchive: LinSYS2 runtime dependencies.
+# icu/krb5/openssl/libunwind/zlib: the GitHub Actions runner's own dependencies.
+RUN pacman -S --noconfirm --needed \
+    base-devel \
+    git meson cmake ninja python \
+    ca-certificates curl wget which gawk gettext \
+    bzip2 xz zstd libarchive openssl gnupg gpgme \
+    icu krb5 libunwind zlib \
+    wine bubblewrap
+
+# ── LinSYS2 itself ───────────────────────────────────────────────────────────
+# AUR-only, so build from source.  makepkg refuses to run as root, hence the
+# build user; the resulting package is installed as root afterwards.
+RUN useradd -m -s /bin/bash runner
+
+USER runner
+WORKDIR /home/runner
+
+RUN git clone --recursive https://github.com/wszqkzqk/LinSYS2.git linsys2-src \
+ && cd linsys2-src \
+ && makepkg --noconfirm
+
+USER root
+RUN pacman -U --noconfirm /home/runner/linsys2-src/linsys2-*.pkg.tar.zst \
+ && rm -rf /home/runner/linsys2-src /var/cache/pacman/pkg/*
+
+# ── MSYS2 Windows toolchain (clang64) ────────────────────────────────────────
+# clang64, not the default ucrt64: the project builds with Clang and libc++,
+# while ucrt64 is GCC + libstdc++.  See docs/build-msys2.md.
+#
+# Order matters.  `linsys2 init` registers the environment's bin directory into
+# the Wine prefix PATH only if that directory already exists, so packages must
+# be installed before it runs.
+USER runner
+WORKDIR /home/runner
+
+RUN linsys2-pacman --env ${MSYS_ENV} init \
+ && sed -i 's/^ParallelDownloads = .*/ParallelDownloads = 2/' \
+      /home/runner/.config/linsys2/${MSYS_ENV}.conf \
+ && for attempt in 1 2 3 4 5; do \
+      echo "-- sysupgrade attempt ${attempt}"; \
+      if linsys2-pacman --env ${MSYS_ENV} -Syu --noconfirm; then break; fi; \
+      if [ "${attempt}" = 5 ]; then exit 1; fi; \
+      echo "-- mirror throttled; sleeping before retry"; sleep 20; \
+    done
+
+# clang + clang-scan-deps are required for the project's C++20 module targets;
+# python-glad supplies glad.exe for FindGlad.cmake's generate-at-configure path.
+#
+# Retries matter here: MSYS2 mirrors answer 429 when hit with a burst of
+# parallel requests, which is exactly what happened with the default
+# ParallelDownloads = 8.  Downloads are cached, so a retry resumes rather than
+# restarting, and the connection is throttled to 2 above.
+RUN for attempt in 1 2 3 4 5; do \
+      echo "-- package install attempt ${attempt}"; \
+      if linsys2-pacman --env ${MSYS_ENV} -S --noconfirm \
+           mingw-w64-clang-x86_64-clang \
+           mingw-w64-clang-x86_64-cmake \
+           mingw-w64-clang-x86_64-ninja \
+           mingw-w64-clang-x86_64-make \
+           mingw-w64-clang-x86_64-pkgconf \
+           mingw-w64-clang-x86_64-glfw \
+           mingw-w64-clang-x86_64-libpng \
+           mingw-w64-clang-x86_64-libjpeg-turbo \
+           mingw-w64-clang-x86_64-libtiff \
+           mingw-w64-clang-x86_64-libwebp \
+           mingw-w64-clang-x86_64-pixman \
+           mingw-w64-clang-x86_64-doctest \
+           mingw-w64-clang-x86_64-stb \
+           mingw-w64-clang-x86_64-zlib \
+           mingw-w64-clang-x86_64-python-glad; then break; fi; \
+      if [ "${attempt}" = 5 ]; then exit 1; fi; \
+      echo "-- mirror throttled; sleeping before retry"; sleep 20; \
+    done
+
+RUN linsys2 init --env ${MSYS_ENV}
+
+# ── glad (pre-generated on Linux) ────────────────────────────────────────────
+# MSYS2 has no glad package, so cmake/FindGlad.cmake falls back to running
+# glad.exe under Wine.  That fallback does not work: Windows Python's ssl module
+# cannot initialise inside the Wine prefix, and glad fetches the OpenGL registry
+# over HTTPS at generation time.
+#
+#     ssl.SSLError: [SSL] unknown error (0xa080024)
+#
+# Generate the loader with the native Linux generator instead and compile it
+# with the MSYS2 compiler.  The generated sources are platform-independent C, so
+# this is equivalent to generating on Windows, minus the network dependency at
+# build time.  GLAD_INCLUDE_DIR / GLAD_LIBRARY below are what the build passes to
+# CMake to short-circuit FindGlad's search.
+#
+# Note: generation still fetches the Khronos registry, so the image build needs
+# network access.  Pin the registry with --spec if that ever becomes a problem.
+# pacman needs root; the generator and compiler run as runner.  (sudo is not
+# used anywhere: container builds run with no-new-privileges, which blocks it.)
+USER root
+RUN pacman -S --noconfirm --needed glad \
+ && mkdir -p /opt/glad \
+ && chown runner:runner /opt/glad
+
+USER runner
+RUN glad --api gl:compatibility --out-path /opt/glad c \
+ && printf '%s\n' \
+      '/* Auto-generated glad 0.x compatibility wrapper (matches cmake/FindGlad.cmake) */' \
+      '#ifndef GLAD_COMPAT_H_' \
+      '#define GLAD_COMPAT_H_' \
+      '#include "gl.h"' \
+      'typedef GLADloadfunc GLADloadproc;' \
+      'static inline int gladLoadGLLoader(GLADloadfunc load) {' \
+      '    return gladLoadGL(load) != 0;' \
+      '}' \
+      '#endif /* GLAD_COMPAT_H_ */' \
+      > /opt/glad/include/glad/glad.h \
+ && mkdir -p /opt/glad/lib \
+ && linsys2 run --env ${MSYS_ENV} -- clang -O2 -c Z:/opt/glad/src/gl.c \
+      -IZ:/opt/glad/include -o Z:/opt/glad/lib/gl.o \
+ && linsys2 run --env ${MSYS_ENV} -- llvm-ar rcs Z:/opt/glad/lib/libglad.a Z:/opt/glad/lib/gl.o \
+ && rm -f /opt/glad/lib/gl.o
+
+# Paths the Windows CMake must be given explicitly (env vars are not CMake
+# cache entries; the build script forwards them with -D).
+ENV GLAD_INCLUDE_DIR=Z:/opt/glad/include \
+    GLAD_LIBRARY=Z:/opt/glad/lib/libglad.a
+
+# Smoke-test the toolchain at build time.  If these fail the image is broken and
+# should not be published; failing here is far cheaper than failing in CI.
+RUN linsys2 run --env ${MSYS_ENV} -- clang --version \
+ && linsys2 run --env ${MSYS_ENV} -- cmake --version \
+ && linsys2 run --env ${MSYS_ENV} -- ninja --version \
+ && linsys2 env --env ${MSYS_ENV}
+
+# ── GitHub Actions runner ────────────────────────────────────────────────────
+RUN mkdir -p ${RUNNER_HOME} \
+ && cd ${RUNNER_HOME} \
+ && curl -fsSL -o runner.tar.gz \
+      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
+ && tar xzf runner.tar.gz \
+ && rm runner.tar.gz
+
+USER root
+COPY --chown=runner:runner entrypoint.sh /home/runner/entrypoint.sh
+RUN chmod +x /home/runner/entrypoint.sh
+
+USER runner
+WORKDIR /home/runner
+
+ENTRYPOINT ["/home/runner/entrypoint.sh"]
