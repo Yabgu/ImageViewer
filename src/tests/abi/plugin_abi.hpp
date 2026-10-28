@@ -57,7 +57,17 @@ public:
     explicit SharedLibrary(const std::filesystem::path& path)
     {
 #ifdef _WIN32
-        handle_ = LoadLibraryW(path.wstring().c_str());
+        // LOAD_WITH_ALTERED_SEARCH_PATH, not plain LoadLibraryW: the plugins
+        // import runtime DLLs that sit next to them (vcpkg's applocal step
+        // deploys jpeg62.dll, libpng16.dll, ... into the same directory), and
+        // LoadLibraryW given an absolute path searches the *executable's*
+        // directory, the system directories and PATH -- but not the directory
+        // of the module being loaded.  Without this flag the harness fails with
+        // GetLastError=126 (ERROR_MOD_NOT_FOUND) on MSVC even though every
+        // dependency was deployed correctly, and it only works when something
+        // else happens to put that directory on PATH.
+        handle_ = LoadLibraryExW(path.wstring().c_str(), nullptr,
+                                 LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!handle_) {
             throw std::runtime_error(
                 "cannot load plugin library: " + path.string() +
