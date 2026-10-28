@@ -148,3 +148,31 @@ jobs:
           & $dumpbin.FullName /nologo /dependents (Join-Path $dir 'ImageLoaderJpeg.dll')
           Write-Host '--- iview.exe dependents ---'
           & $dumpbin.FullName /nologo /dependents (Join-Path $dir 'iview.exe')
+
+          # Independent probe: does the DLL load at all outside the harness,
+          # and does the answer change with the search-path flag or with
+          # backslash-normalised paths?  This separates "a real dependency is
+          # missing" from "the harness passes something the loader rejects".
+          # (Built as a concatenation rather than a here-string: a PowerShell
+          # here-string's terminator must start at column 0, which would end
+          # this YAML block scalar.)
+          $sig = 'using System;' + "`n" +
+                 'using System.Runtime.InteropServices;' + "`n" +
+                 'public static class NativeLoad {' + "`n" +
+                 '  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]' + "`n" +
+                 '  public static extern IntPtr LoadLibraryExW(string path, IntPtr hFile, uint flags);' + "`n" +
+                 '}'
+          Add-Type -TypeDefinition $sig
+
+          $plugin = Join-Path $dir 'ImageLoaderJpeg.dll'
+          $variants = @(
+            @{ Label = 'forward, altered';   Path = $plugin;                      Flags = 0x00000008 },
+            @{ Label = 'backslash, altered'; Path = ($plugin -replace '/', '\');  Flags = 0x00000008 },
+            @{ Label = 'backslash, plain';   Path = ($plugin -replace '/', '\');  Flags = 0 }
+          )
+          foreach ($v in $variants) {
+            $h = [NativeLoad]::LoadLibraryExW($v.Path, [IntPtr]::Zero, [uint32]$v.Flags)
+            $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            Write-Host ("{0,-22} exists={1} flags={2} handle={3} err={4}" -f
+              $v.Label, (Test-Path $v.Path), $v.Flags, $h, $err)
+          }

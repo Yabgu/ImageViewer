@@ -62,16 +62,18 @@ public:
         // deploys jpeg62.dll, libpng16.dll, ... into the same directory), and
         // LoadLibraryW given an absolute path searches the *executable's*
         // directory, the system directories and PATH -- but not the directory
-        // of the module being loaded.  Without this flag the harness fails with
-        // GetLastError=126 (ERROR_MOD_NOT_FOUND) on MSVC even though every
-        // dependency was deployed correctly, and it only works when something
-        // else happens to put that directory on PATH.
+        // of the module being loaded.
         handle_ = LoadLibraryExW(path.wstring().c_str(), nullptr,
                                  LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!handle_) {
+            // Capture the code immediately.  Building the message below
+            // allocates and may call Win32 functions that overwrite the
+            // thread's last-error value, which makes the reported code
+            // unreliable if it is read inside the concatenation.
+            const unsigned long err = GetLastError();
             throw std::runtime_error(
                 "cannot load plugin library: " + path.string() +
-                " (GetLastError=" + std::to_string(GetLastError()) + ")");
+                " (GetLastError=" + std::to_string(err) + ")");
         }
 #else
         // RTLD_NOW so a missing symbol fails here, not at first call.
