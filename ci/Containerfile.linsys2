@@ -49,12 +49,18 @@ RUN pacman-key --init \
 # base-devel: makepkg needs gcc/meson/patch to build LinSYS2 itself.
 # wine + bubblewrap + gpgme + libarchive: LinSYS2 runtime dependencies.
 # icu/krb5/openssl/libunwind/zlib: the GitHub Actions runner's own dependencies.
+# doctest: this runner also serves the [linux, x64] job, which builds the host
+#   toolchain with -DIMAGEVIEWER_BUILD_VIEWER=OFF; src/tests/CMakeLists.txt
+#   does find_package(doctest REQUIRED) even in that configuration, so without
+#   the Linux package the job fails at configure.  (The Windows build gets its
+#   own doctest from the MSYS2 clang64 packages installed further down.)
 RUN pacman -S --noconfirm --needed \
     base-devel \
     git meson cmake ninja python \
     ca-certificates curl wget which gawk gettext \
     bzip2 xz zstd libarchive openssl gnupg gpgme \
     icu krb5 libunwind zlib \
+    doctest \
     wine bubblewrap
 
 # ── LinSYS2 itself ───────────────────────────────────────────────────────────

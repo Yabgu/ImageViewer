@@ -20,8 +20,8 @@
 # libraries, no vcpkg)" -- which configures with -DIMAGEVIEWER_BUILD_VIEWER=OFF.
 #
 # The cases that DO run are those built by the jobs that enable the viewer:
-#   * build-mingw32      (Windows / MinGW-w64 / vcpkg)
-#   * build-windows-msvc (Windows / MSVC / vcpkg)
+#   * build-windows-msys2 (Windows / MSYS2 clang64 / LinSYS2)
+#   * build-windows-msvc  (Windows / MSVC / vcpkg)
 # and any local build configured with -DIMAGEVIEWER_BUILD_VIEWER=ON.
 #
 # Each plugin's cases are added independently: a build with only some plugins

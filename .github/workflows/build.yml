@@ -31,60 +31,45 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build-linux-native --output-on-failure
 
-  build-mingw32:
-    name: Build (Windows / MinGW-w64 / vcpkg)
-    runs-on: [mingw32, linux, x64]
+  # Windows build with the *real* MSYS2 toolchain, run through LinSYS2
+  # (https://github.com/wszqkzqk/LinSYS2: MSYS2 packages executed under Wine).
+  #
+  # This replaces the previous llvm-mingw + vcpkg cross-build.  There is no
+  # Linux cross-compiler and no vcpkg here: clang, cmake, ninja and every
+  # library are the clang64 MSYS2 packages, so compiler defaults, header layout
+  # and runtime DLL layout match a Windows install instead of approximating it.
+  # The job also *runs* the test binaries (under Wine) rather than only linking
+  # them, which the cross-build could not do.
+  #
+  # The `mingw32` label is served by the self-hosted runner built from
+  # ci/Containerfile.linsys2, which carries a prepared clang64 environment.
+  # prepare_mingw32.sh and ci/Containerfile are left in the tree untouched: the
+  # old path still works for anyone with llvm-mingw installed locally.
+  build-windows-msys2:
+    name: Build (Windows / MSYS2 clang64 / LinSYS2)
+    runs-on: [self-hosted, mingw32, linux, x64]
+    timeout-minutes: 60
     env:
-      VCPKG_DISABLE_METRICS: "1"
+      LINSYS2_ENV: clang64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Bootstrap vcpkg
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -x third-party/vcpkg/vcpkg ]; then
-            mkdir -p third-party
-            pushd third-party
-            git clone https://github.com/microsoft/vcpkg --depth 1
-            pushd vcpkg
-            ./bootstrap-vcpkg.sh --disableMetrics
-            popd
-            popd
-          fi
-
-      - name: Configure
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./prepare_mingw32.sh
-
-      - name: Build
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake --build build-mingw32 -j"$(nproc)"
+      # Configure + build + run all three suites.  The script lives in the repo
+      # (ci/build-msys2.sh) so this job and a local run are the same code path.
+      - name: Configure, build, and test (MSYS2 under Wine)
+        run: ./ci/build-msys2.sh
 
       - name: Package runtime artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f iview-mingw32.zip
-
-          # Zip only executable + runtime DLLs from the target output directory.
-          (
-            cd build-mingw32/src/imageviewer
-            find . -maxdepth 1 -type f \( -name 'iview.exe' -o -name '*.dll' \) -print | sort | zip -9 -@ "$GITHUB_WORKSPACE/iview-mingw32.zip"
-          )
+        run: ./ci/package-msys2.sh build-msys2 iview-msys2.zip
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: iview-mingw32
-          path: iview-mingw32.zip
+          name: iview-msys2
+          path: iview-msys2.zip
           if-no-files-found: error
 
   build-windows-msvc:
