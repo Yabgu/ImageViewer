@@ -101,6 +101,12 @@ add_dependencies(iview_abi_tests ${_abi_plugin_targets})
 # plugins and their runtime DLLs next to it and load them from there: the tests
 # then exercise the shipped layout and the shipped loader call.
 #
+# The DLL list comes from the plugin's own output directory rather than from
+# $<TARGET_RUNTIME_DLLS>: that genex only follows SHARED imported targets, and
+# this project's JPEG, PNG and TIFF dependencies are UNKNOWN imported targets,
+# so it yields no jpeg62.dll and the load fails with 126.  See
+# copy_plugin_dlls.cmake.
+#
 # Gated on IMAGEVIEWER_COPY_RUNTIME_DLLS because the LinSYS2/MSYS2 build sets
 # it OFF: a POST_BUILD command there runs through Wine's cmd, which cannot run
 # the nested command the Ninja generator emits.  That build resolves the
@@ -109,11 +115,10 @@ add_dependencies(iview_abi_tests ${_abi_plugin_targets})
 if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
     foreach(_plugin IN LISTS _abi_plugin_targets)
         add_custom_command(TARGET iview_abi_tests POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:${_plugin}>
-                $<TARGET_RUNTIME_DLLS:${_plugin}>
-                $<TARGET_FILE_DIR:iview_abi_tests>
-            COMMAND_EXPAND_LISTS
+            COMMAND ${CMAKE_COMMAND}
+                "-DPLUGIN_DIR=$<TARGET_FILE_DIR:${_plugin}>"
+                "-DDEST_DIR=$<TARGET_FILE_DIR:iview_abi_tests>"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/copy_plugin_dlls.cmake"
             VERBATIM
         )
     endforeach()
