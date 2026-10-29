@@ -1996,7 +1996,7 @@ TEST_SUITE("ViewerArgs parser")
     {
         const ViewerArgs a = ParseCli({ "iview", "--filter=bogus", "photo.jpg" });
         CHECK(a.parseError ==
-              "unknown filter mode: 'bogus' (expected none, ordered, floyd or pwm)");
+              "unknown filter mode: 'bogus' (expected none, ordered, floyd, pwm, bayer4x4, bayer8x8, bluenoise or spatial_temporal)");
     }
 
     TEST_CASE("--pwm-bits outside [1, 8] is rejected — zero, nine, negative, non-numeric")
@@ -2070,7 +2070,7 @@ TEST_SUITE("ViewerArgs parser")
     {
         const ViewerArgs a = ParseCli({ "iview", "--filter=PWM", "photo.jpg" });
         CHECK(a.parseError ==
-              "unknown filter mode: 'PWM' (expected none, ordered, floyd or pwm)");
+              "unknown filter mode: 'PWM' (expected none, ordered, floyd, pwm, bayer4x4, bayer8x8, bluenoise or spatial_temporal)");
     }
 
     TEST_CASE("NarrowArgv converts wide arguments to UTF-8 for the parser")

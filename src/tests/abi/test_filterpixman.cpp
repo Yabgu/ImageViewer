@@ -60,6 +60,10 @@ const char* ModeName(IWFilterMode mode)
     case kModeOrdered:        return "ordered";
     case kModeFloydSteinberg: return "floyd";
     case kModePWM:            return "pwm";
+    case kModeBayer4x4:       return "bayer4x4";
+    case kModeBayer8x8:       return "bayer8x8";
+    case kModeBlueNoise:      return "bluenoise";
+    case kModeSpatialTemporal: return "spatial_temporal";
     default:                  return "?";
     }
 }
@@ -117,6 +121,41 @@ struct FilterArgs
     }
 };
 
+/* 16-bit RGB16 (UNORM) source: R = G = B = a horizontal ramp, so every 16-bit
+ * code appears once across the row and the dither has fractional input to
+ * resolve everywhere. */
+struct Rgb16Source
+{
+    std::vector<uint16_t> pixels;
+    ImagePluginData       data{};
+
+    explicit Rgb16Source(int w, int h)
+        : pixels(static_cast<size_t>(w) * static_cast<size_t>(h) * 3u, 0u)
+    {
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const uint16_t v = static_cast<uint16_t>(
+                    (static_cast<uint32_t>(x) * 65535u) / static_cast<uint32_t>(w - 1));
+                for (int c = 0; c < 3; ++c)
+                    pixels[(static_cast<size_t>(y) * w + x) * 3u + c] = v;
+            }
+        }
+        data.width      = w;
+        data.height     = h;
+        data.stride     = w * 3 * 2;
+        data.colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+        data.size       = pixels.size() * sizeof(uint16_t);
+        data.data       = reinterpret_cast<uint8_t*>(pixels.data());
+
+        data.format = IWImageFormat{};
+        data.format.componentCount = 3;
+        data.format.bitsPerPixel   = 48;
+        data.format.storageLayout  = IW_STORAGE_INTERLEAVED;
+        data.format.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
+        data.format.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
+        data.format.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
+    }
+};
 /* Min / max / mean of one channel across every pixel of every frame. */
 struct ChannelStats
 {
@@ -142,7 +181,7 @@ TEST_SUITE("FilterPixman ABI: dithering matrix keeps mid-grey mid-grey")
     TEST_CASE("every mode x screen depth x input class keeps mid-grey mid-grey")
     {
     /* mode × screen depth × input component class, RGB8 4x4 flat mid-grey. */
-    for (IWFilterMode mode : { kModeNone, kModeOrdered, kModeFloydSteinberg, kModePWM }) {
+    for (IWFilterMode mode : { kModeNone, kModeOrdered, kModeFloydSteinberg, kModePWM,   kModeBayer4x4, kModeBayer8x8, kModeBlueNoise, kModeSpatialTemporal }) {
         for (int depth : { 8, 10 }) {
             for (int clsIdx : { 0, 1 }) {
                 const IWComponentClass cls = clsIdx == 0 ? IW_COMPONENT_CLASS_UNORM
@@ -208,7 +247,7 @@ TEST_SUITE("FilterPixman ABI: exactly representable values get no added noise")
     /* 8-bit in → 8-bit out has no fractional bits to dither, so a flat field
      * must survive every mode untouched.  The old additive tile failed this:
      * white stayed white but mid-grey and every other code were lifted. */
-    for (IWFilterMode mode : { kModeNone, kModeOrdered, kModeFloydSteinberg, kModePWM }) {
+    for (IWFilterMode mode : { kModeNone, kModeOrdered, kModeFloydSteinberg, kModePWM,   kModeBayer4x4, kModeBayer8x8, kModeBlueNoise, kModeSpatialTemporal }) {
         for (uint8_t value : { uint8_t{0}, uint8_t{255} }) {
             const std::string label = std::string("mode=") + ModeName(mode) +
                                       " value=" + std::to_string(value);
@@ -254,7 +293,7 @@ TEST_SUITE("FilterPixman ABI: unknown mode is reported, not silently ignored")
 {
     TEST_CASE("out-of-range mode returns nullptr and names the mode")
     {
-    for (uint32_t mode : { 7u, 4294967295u }) {
+    for (uint32_t mode : { 8u, 4294967295u }) {
         const std::string label = "mode=" + std::to_string(mode);
 
         {
@@ -278,5 +317,95 @@ TEST_SUITE("FilterPixman ABI: unknown mode is reported, not silently ignored")
             plugin.Free(set);   /* must tolerate nullptr */
         }
     }
+    }
+}
+
+TEST_SUITE("FilterPixman ABI: spatial modes on a 16-bit source")
+{
+    TEST_CASE("frame average matches the source within the dither budget")
+    {
+    const int W = 64, H = 64;
+    Rgb16Source  src(W, H);
+    IWScreenInfo screen{ 8, 3 };
+
+    for (IWFilterMode mode : { kModeBayer4x4, kModeBayer8x8, kModeBlueNoise,
+                               kModeFloydSteinberg, kModeSpatialTemporal }) {
+        CAPTURE(ModeName(mode));
+        FilterArgs opts(static_cast<uint32_t>(mode));
+        iwabi::FilterPlugin& plugin = Plugin();
+        IWFilterImageSet* set = plugin.Filter(&src.data, &screen, &opts.options);
+        INFO("plugin error: " << plugin.lastError());
+        REQUIRE(set != nullptr);
+        REQUIRE(set->frames != nullptr);
+
+        double maxErr = 0.0;
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                double sum = 0.0;
+                for (uint32_t f = 0; f < set->frameCount; ++f)
+                    sum += iwabi::ComponentFraction(*set->frames[f], 0, x, y);
+                const double avg8 = (sum / set->frameCount) * 255.0;
+                const double ref8 =
+                    src.pixels[(static_cast<size_t>(y) * W + x) * 3u] / 65535.0 * 255.0;
+                const double err = std::fabs(avg8 - ref8);
+                if (err > maxErr) maxErr = err;
+            }
+        }
+        INFO("max |average - reference| = " << maxErr << " codes");
+        CHECK(maxErr <= 1.5);
+        plugin.Free(set);
+    }
+    }
+
+    TEST_CASE("spatio-temporal average carries no residual lattice")
+    {
+    const int W = 64, H = 64;
+    Rgb16Source  src(W, H);
+    IWScreenInfo screen{ 8, 3 };
+
+    auto runMode = [&](IWFilterMode mode, std::vector<double>& avg) -> bool {
+        FilterArgs opts(static_cast<uint32_t>(mode));
+        iwabi::FilterPlugin& plugin = Plugin();
+        IWFilterImageSet* set = plugin.Filter(&src.data, &screen, &opts.options);
+        if (set == nullptr) return false;
+        avg.assign(static_cast<size_t>(W) * H, 0.0);
+        for (uint32_t f = 0; f < set->frameCount; ++f)
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x)
+                    avg[static_cast<size_t>(y) * W + x] +=
+                        iwabi::ComponentFraction(*set->frames[f], 0, x, y) * 255.0 /
+                        static_cast<double>(set->frameCount);
+        plugin.Free(set);
+        return true;
+    };
+
+    auto residualVariance = [&](const std::vector<double>& img) {
+        double sum = 0.0, sum2 = 0.0;
+        size_t n = 0;
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                const double ref =
+                    src.pixels[(static_cast<size_t>(y) * W + x) * 3u] / 65535.0 * 255.0;
+                const double r = img[static_cast<size_t>(y) * W + x] - ref;
+                sum += r; sum2 += r * r; ++n;
+            }
+        }
+        const double mean = sum / static_cast<double>(n);
+        return sum2 / static_cast<double>(n) - mean * mean;
+    };
+
+    std::vector<double> avgST, avgBN;
+    REQUIRE(runMode(kModeSpatialTemporal, avgST));
+    REQUIRE(runMode(kModeBlueNoise, avgBN));
+
+    const double varST = residualVariance(avgST);
+    const double varBN = residualVariance(avgBN);
+    INFO("residual variance: spatial_temporal=" << varST << " bluenoise=" << varBN);
+
+    /* The complementary pair averages to the smooth 9-bit value, so the residual
+     * is only the 9-bit rounding (uniform in +-0.25 code, variance ~0.021).  A
+     * fixed single-frame dither leaves a one-code lattice (variance ~0.083). */
+    CHECK(varST < 0.03);
+    CHECK(varBN > 0.05);
     }
 }
