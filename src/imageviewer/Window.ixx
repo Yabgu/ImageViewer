@@ -196,6 +196,7 @@ private:
 	 * uploaded on the main thread. */
 	std::future<FilterFrameSet> filter_future_;
 	bool                        filter_running_ = false;
+	uint32_t                    appliedMode_    = 0;   /* mode in the textures */
 	std::chrono::steady_clock::time_point filterStartTime_{};
 	bool                        filter_failed_  = false;
 	std::string                 filter_error_;
@@ -823,6 +824,7 @@ public:
 		try
 		{
 			UploadFrameSet(ComputeFilteredFrames(image, opts));
+			appliedMode_ = 0;          /* LoadTextures always uploads mode=none */
 			CenterImage();
 			return true;
 		}
@@ -833,8 +835,10 @@ public:
 		}
 	}
 
-	/* Filter options from the command line.  The argument array is copied into
-	 * the Window, so the caller's storage does not have to outlive Main(). */
+	/* Filter options, already merged with the config file by real_main().  The
+	 * argument array is copied into the Window, so the caller's storage does not
+	 * have to outlive Main().  At start-up this runs before Main(), i.e. before
+	 * any image exists; it never computes anything itself. */
 	void SetFilterOptions(const IWFilterOptions& opts)
 	{
 		const uint32_t count = std::min<uint32_t>(opts.argc, 5u);
@@ -842,6 +846,8 @@ public:
 		filterOptions_.version = opts.version;
 		filterOptions_.argc    = count;
 		filterOptions_.argv    = (count != 0u) ? filterArgStorage_ : nullptr;
+
+		const uint32_t previousMode = filterMode_;
 
 		/* Remember the scalars, so a later radio-button change can rebuild the
 		 * argument list without losing what the command line said. */
@@ -856,6 +862,14 @@ public:
 				if (std::strcmp(arg.name, "seed") == 0)           seed_ = arg.value.u64;
 			}
 		}
+
+		/* Safety net: if this is ever called again once an image is on screen,
+		 * a changed mode must go through the background compute.  SetFilterOptions
+		 * must never compute synchronously.  Unreachable at start-up, where it
+		 * runs before Main() and source_image_ is still empty. */
+		if (source_image_ && !filter_running_ && filterMode_ != previousMode &&
+		    filterMode_ != appliedMode_)
+			StartFilterCompute();
 	}
 
 	void CenterImage()
@@ -1004,6 +1018,7 @@ public:
 					FilterFrameSet fs = filter_future_.get();
 					const auto uploadStart = Clock::now();
 					UploadFrameSet(fs);
+					appliedMode_ = filterMode_;
 					const double uploadMs = std::chrono::duration<double, std::milli>(
 						Clock::now() - uploadStart).count();
 
