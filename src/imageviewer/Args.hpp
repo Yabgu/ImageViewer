@@ -59,6 +59,8 @@ struct ViewerArgs
     uint32_t     pwmBits     = 0u; /* 0 = do not send pwm_bits, use plugin default */
     uint32_t     spatialBits = 0u; /* 0 = matrix maximum (plugin default)     */
     uint64_t     seed        = 0u; /* blue-noise tile offset                  */
+    bool         filterSpecified = false; /* --filter given: CLI beats config */
+    std::string  configPath;       /* --config=<path>; empty = search order   */
     bool         helpRequested = false;
     std::string  parseError;       /* empty on success                       */
 };
@@ -77,6 +79,8 @@ inline const char* UsageText() noexcept
         "                  only N=1 (9-bit, two phases) is implemented in this build\n"
         "  --spatial-bits=N  Bits the spatial stage may spend (0 = matrix maximum)\n"
         "  --seed=N        Offset the blue-noise tile (unsigned, default 0)\n"
+        "  --config=<path> Settings file to load (save goes here too); default\n"
+        "                  %APPDATA%/ImageViewer/iview.conf or <exe_dir>/iview.conf\n"
         "  --help          Show this help and exit\n"
         "  --              Treat every remaining argument as a file name\n"
         "\n"
@@ -200,6 +204,12 @@ inline ViewerArgs ParseViewerArgs(int argc, const char* const* argv)
                                  "bayer8x8, bluenoise or spatial_temporal)";
                 return out;
             }
+            out.filterSpecified = true;
+            continue;
+        }
+
+        if (arg.rfind("--config=", 0) == 0) {
+            out.configPath = arg.substr(9);
             continue;
         }
 

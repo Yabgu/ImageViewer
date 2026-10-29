@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstring>
+#include <cstdio>
+#include <chrono>
 #include <filesystem>
 #include <future>
 #include <iostream>
@@ -10,6 +12,7 @@
 #include <type_traits>
 #include <vector>
 #include "Args.hpp"
+#include "Config.hpp"
 #include "FilterPluginDef.h"
 
 import Image;
@@ -120,10 +123,37 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
     });
     IviewTrace("async decode launched");
 
+    /* Settings are read *after* the decode is running, so file I/O for the
+     * config cannot delay the image.  Resolution order and validation live in
+     * Config.hpp; this must stay well under a millisecond. */
+    const auto configStart = std::chrono::steady_clock::now();
+    Config::Settings settings = Config::Load(parsed.configPath, false);
+    const double configMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - configStart).count();
+    {
+        char line[512];
+        std::snprintf(line, sizeof(line), "config loaded in %.3f ms (%s)",
+                      configMs,
+                      settings.loadPath.empty() ? "builtin defaults" : settings.loadPath.c_str());
+        IviewTrace(line);
+    }
+
+    /* Merge order: builtin defaults < config file < CLI flags. */
+    if (parsed.filterSpecified) settings.filterMode = static_cast<uint32_t>(parsed.mode);
+    if (parsed.pwmBits != 0u)   settings.pwmBits    = parsed.pwmBits;
+
+    /* The same refusal as above, now covering a pwm_bits that came from the
+     * config file. */
+    if (settings.pwmBits > 1u) {
+        std::cerr << "iview: pwm_bits > 1 (" << settings.pwmBits
+                  << "-phase) is not implemented in this build\n";
+        return 2;
+    }
+
     /* Window creation stays on the main thread: GLFW expects window and event
      * handling on the thread that owns the context. */
     Window::Initialize();
-    window = std::make_unique<Window>(640, 640);
+    window = std::make_unique<Window>(settings.windowWidth, settings.windowHeight, settings);
     IviewTrace("window + renderer constructed");
 
     /* The decode keeps running on its worker thread: Main polls the future
@@ -131,8 +161,11 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
      * window, so the first frame ever presented is the decoded image.  The
      * filter options are copied into the Window, so `filterArgs` here does not
      * have to outlive Main(). */
+    ViewerArgs effective = parsed;                    /* CLI, for spatial args */
+    effective.mode    = static_cast<IWFilterMode>(settings.filterMode);
+    effective.pwmBits = settings.pwmBits;
     IWFilterArg filterArgs[5];
-    const IWFilterOptions filterOpts = MakeFilterOptions(parsed, filterArgs);
+    const IWFilterOptions filterOpts = MakeFilterOptions(effective, filterArgs);
     window->SetFilterOptions(filterOpts);
 
     window->Main(std::move(imageFuture), imagePath);

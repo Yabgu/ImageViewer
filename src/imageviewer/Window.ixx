@@ -36,6 +36,7 @@ module;
 
 #include "FilterPluginDef.h"
 #include "FilterCore.hpp"
+#include "Config.hpp"
 
 export module UserInterface;
 
@@ -90,6 +91,16 @@ struct WindowImGuiState
 	float alpha             = 0.0f;
 	std::string readout;              /* "1920x1080 . 3.2 MB", filled once on upload */
 	std::chrono::steady_clock::time_point lastMouseActivity{};
+};
+
+/* Two pre-quantised 8-bit frames as the filter plugin produced them.  Built on a
+ * worker thread (no GL involved), uploaded on the main thread. */
+struct FilterFrameSet
+{
+	std::vector<uint8_t> phaseA;
+	std::vector<uint8_t> phaseB;
+	int width  = 0;
+	int height = 0;
 };
 
 export class Window
@@ -173,6 +184,36 @@ private:
 	/* Owned copy of the filter options from the command line. */
 	IWFilterOptions filterOptions_{ IW_FILTER_OPTIONS_VERSION, 0u, nullptr };
 	IWFilterArg filterArgStorage_[5]{};
+
+	/* Source pixels of the file currently shown, retained so a filter change can
+	 * be recomputed without decoding again.  This costs the decoded image for
+	 * the lifetime of the file — ~75 MB for a 4K 16-bit image, ~38 MB for 4K
+	 * RGB8 — which is the accepted price of live filter switching. */
+	std::unique_ptr<Image> source_image_;
+
+	/* Async filter re-run.  Only one compute may be in flight: the plugin is a
+	 * single DLL handle with no documented reentrancy, and its result is
+	 * uploaded on the main thread. */
+	std::future<FilterFrameSet> filter_future_;
+	bool                        filter_running_ = false;
+	std::chrono::steady_clock::time_point filterStartTime_{};
+	bool                        filter_failed_  = false;
+	std::string                 filter_error_;
+
+	/* Settings: builtin defaults < config file < CLI (merged in main_generic). */
+	Config::Settings settings_;
+	int      fadeDelayMs_   = 1500;
+	float    fadeMinAlpha_  = 0.15f;
+	float    canvasBg_[3]   = { 128.0f / 255.0f, 128.0f / 255.0f, 128.0f / 255.0f };
+	uint32_t filterMode_    = 0;   /* current selection (radio state)        */
+	uint32_t pwmBits_       = 1;   /* temporal bits for PWM                  */
+	uint32_t spatialBits_   = 0;   /* preserved from the CLI, unused by PWM  */
+	uint64_t seed_          = 0;   /* preserved from the CLI                 */
+	bool     filter_panel_open_ = false;
+	/* One-shot UI rect logs, used by the automated strip/panel check. */
+	bool     stripRectsLogged_  = false;
+	bool     panelRectsLogged_  = false;
+	int      chromeFrames_      = 0;
 
 	/* ── GL resources ──────────────────────────────────────────────────────── */
 	struct Texture
@@ -304,7 +345,7 @@ private:
 	HotkeysHandler hotkeysHandler;
 
 public:
-	Window(int width, int height)
+	Window(int width, int height, const Config::Settings& settings)
 		: glfwWindow(InitializeWindow(width, height, this)),
 		  width(width),
 		  height(height),
@@ -313,6 +354,27 @@ public:
 		/* Diagnostics must interleave truthfully with the driver's own stderr. */
 		std::setvbuf(stderr, nullptr, _IONBF, 0);
 		IviewTrace("window created");
+
+		settings_     = settings;
+		fadeDelayMs_  = settings.fadeDelayMs;
+		fadeMinAlpha_ = settings.fadeMinAlpha;
+		canvasBg_[0]  = settings.canvasBg[0] / 255.0f;
+		canvasBg_[1]  = settings.canvasBg[1] / 255.0f;
+		canvasBg_[2]  = settings.canvasBg[2] / 255.0f;
+		filterMode_   = settings.filterMode;
+		pwmBits_      = settings.pwmBits;
+		{
+			char line[192];
+			std::snprintf(line, sizeof(line),
+			              "settings: filter_mode=%u pwm_bits=%u window=%dx%d fade=%dms "
+			              "min_alpha=%.2f bg=%d,%d,%d chrome=%d config=%s",
+			              filterMode_, pwmBits_, settings.windowWidth, settings.windowHeight,
+			              settings.fadeDelayMs, settings.fadeMinAlpha,
+			              settings.canvasBg[0], settings.canvasBg[1], settings.canvasBg[2],
+			              (int)settings.chromeVisible,
+			              settings.loadPath.empty() ? "(builtin)" : settings.loadPath.c_str());
+			IviewTrace(line);
+		}
 
 		glfwMakeContextCurrent(glfwWindow);
 		/* Vertical sync is the loop's only pacer: glfwSwapBuffers blocks until the
@@ -329,6 +391,7 @@ public:
 
 		CreateQuadResources();
 		InitImGui();
+		imgui_->chromeEnabled = settings.chromeVisible;
 		IviewTrace("ImGui initialized (opengl3 backend)");
 
 		hotkeysHandler.setZoomCallback([this](int zoomDelta) { adjustZoom(zoomDelta); });
@@ -593,10 +656,116 @@ private:
 		textureCount_ = phaseB.empty() ? 1 : 2;
 	}
 
+	/* ── Filter pipeline: compute (any thread) / upload (main thread) ──────── */
+
+	/* Runs the plugin and converts at most two frames to packed RGBA8.
+	 *
+	 * PURITY: only the image pixels and the plugin DLL are touched — no GL, no
+	 * ImGui, no window.  That is what makes the async re-run in
+	 * RequestFilterChange() safe.  Callers must guarantee that only one compute
+	 * is in flight at a time: the plugin is a single DLL instance with no
+	 * documented reentrancy.
+	 *
+	 * Throws on failure so the caller can keep the previous textures. */
+	FilterFrameSet ComputeFilteredFrames(const Image& image, const IWFilterOptions& opts)
+	{
+		FilterFrameSet fs;
+		fs.width  = image.width;
+		fs.height = image.height;
+		if (image.width <= 0 || image.height <= 0)
+			throw std::runtime_error("the image is empty");
+
+		if (filterPlugin_.IsLoaded()) {
+			const ImagePluginData pd = MakePluginDataView(image);
+			/* 8 bits per channel, 4 channels: what the default framebuffer offers. */
+			const IWScreenInfo screen{ 8u, 4u };
+
+			IWFilterImageSet* set = filterPlugin_.Filter(&pd, &screen, &opts);
+			if (set == nullptr)
+				throw std::runtime_error("the filter plugin returned no frame set");
+
+			if (set->frameCount > 2u) {
+				const uint32_t frames = set->frameCount;
+				filterPlugin_.Free(set);
+				throw std::runtime_error("pwm_bits > 1 is not implemented in this build (" +
+				                         std::to_string(frames) + " phase frames)");
+			}
+			for (uint32_t i = 0; i < set->frameCount; ++i) {
+				if (set->frames == nullptr || set->frames[i] == nullptr) continue;
+				if (i == 0) ToRgba8(*set->frames[i], fs.phaseA);
+				else        ToRgba8(*set->frames[i], fs.phaseB);
+			}
+			filterPlugin_.Free(set);
+		}
+
+		if (fs.phaseA.empty()) {
+			/* No plugin (or it returned nothing): use the image directly. */
+			ToRgba8(MakePluginDataView(image), fs.phaseA);
+		}
+		return fs;
+	}
+
+	/* Main thread only: GL upload of an already computed frame set. */
+	void UploadFrameSet(const FilterFrameSet& fs)
+	{
+		UploadTextures(fs.phaseA, fs.phaseB, fs.width, fs.height);
+		imageWidth_  = fs.width;
+		imageHeight_ = fs.height;
+		if (IviewTraceEnabled())
+		{
+			char line[128];
+			std::snprintf(line, sizeof(line), "uploaded %d phase frame(s), %dx%d",
+			              fs.phaseB.empty() ? 1 : 2, fs.width, fs.height);
+			IviewTrace(line);
+		}
+	}
+
+	/* Selection changed in the panel.  Kicks a worker compute; the textures and
+	 * the picture on screen stay untouched until the result arrives in Main. */
+	void RequestFilterChange(uint32_t mode)
+	{
+		if (!source_image_ || filter_running_) return;   /* selector is disabled */
+		if (mode == filterMode_) return;
+
+		filterMode_    = mode;      /* the radio reflects the click immediately */
+		filter_failed_ = false;
+		filter_error_.clear();
+		RebuildFilterOptions();
+
+		filter_running_  = true;
+		filterStartTime_ = std::chrono::steady_clock::now();
+		const Image* const src = source_image_.get();
+		const IWFilterOptions opts = filterOptions_;     /* argv -> filterArgStorage_ */
+		filter_future_ = std::async(std::launch::async, [this, src, opts] {
+			return ComputeFilteredFrames(*src, opts);
+		});
+		IviewTrace("filter re-run started");
+	}
+
+	/* Rebuilds the plugin argument list from the current scalars. */
+	void RebuildFilterOptions()
+	{
+		std::memset(filterArgStorage_, 0, sizeof(filterArgStorage_));
+		uint32_t count = 0;
+		auto addU32 = [&](const char* name, uint32_t value) {
+			std::strncpy(filterArgStorage_[count].name, name, IW_FILTER_ARG_NAME_MAX - 1u);
+			filterArgStorage_[count].type      = IW_FILTER_ARG_UINT32;
+			filterArgStorage_[count].value.u32 = value;
+			++count;
+		};
+		addU32("mode", filterMode_);
+		if (filterMode_ == 3u) {                        /* PWM */
+			addU32("temporal_bits", pwmBits_);
+			addU32("pwm_bits",      pwmBits_);          /* legacy name */
+		}
+		filterOptions_.version = IW_FILTER_OPTIONS_VERSION;
+		filterOptions_.argc    = count;
+		filterOptions_.argv    = (count != 0u) ? filterArgStorage_ : nullptr;
+	}
+
 public:
-	/* Kept under its OpenGL name.  Runs the filter plugin (which does the actual
-	 * temporal quantisation) and uploads at most two phase frames; returns false
-	 * when the plugin produced more than two frames — N-phase is out of scope. */
+	/* Initial load and file drop: compute here, upload here.  Kept under its
+	 * OpenGL name so the call sites do not change. */
 	bool LoadTextures(
 		const Image& image,
 		const int /*segmentWidth*/,
@@ -605,53 +774,17 @@ public:
 		const IWFilterOptions& opts = IWFilterOptions{
 			IW_FILTER_OPTIONS_VERSION, 0u, nullptr })
 	{
-		if (image.width <= 0 || image.height <= 0)
+		try
+		{
+			UploadFrameSet(ComputeFilteredFrames(image, opts));
+			CenterImage();
+			return true;
+		}
+		catch (const std::exception& ex)
+		{
+			std::fprintf(stderr, "iview: %s\n", ex.what());
 			return false;
-
-		std::vector<uint8_t> phaseA;
-		std::vector<uint8_t> phaseB;
-
-		if (filterPlugin_.IsLoaded()) {
-			const ImagePluginData pd = MakePluginDataView(image);
-			/* 8 bits per channel, 4 channels: what the default framebuffer offers. */
-			const IWScreenInfo screen{ 8u, 4u };
-
-			IWFilterImageSet* set = nullptr;
-			try { set = filterPlugin_.Filter(&pd, &screen, &opts); }
-			catch (...) { set = nullptr; }
-
-			if (set && set->frameCount > 0 && set->frames) {
-				if (set->frameCount > 2u) {
-					std::fprintf(stderr,
-						"iview: pwm_bits > 1 (%u phase frames) is not implemented in this build\n",
-						set->frameCount);
-					filterPlugin_.Free(set);
-					return false;
-				}
-				for (uint32_t i = 0; i < set->frameCount; ++i) {
-					if (!set->frames[i]) continue;
-					try {
-						if (i == 0) ToRgba8(*set->frames[i], phaseA);
-						else        ToRgba8(*set->frames[i], phaseB);
-					} catch (...) { /* skip a frame that fails to convert */ }
-				}
-				filterPlugin_.Free(set);
-			} else if (set) {
-				filterPlugin_.Free(set);
-			}
 		}
-
-		if (phaseA.empty()) {
-			/* No filter (or it returned nothing): use the image directly. */
-			ToRgba8(MakePluginDataView(image), phaseA);
-		}
-
-		UploadTextures(phaseA, phaseB, image.width, image.height);
-
-		imageWidth_  = image.width;
-		imageHeight_ = image.height;
-		CenterImage();
-		return true;
 	}
 
 	/* Filter options from the command line.  The argument array is copied into
@@ -663,16 +796,30 @@ public:
 		filterOptions_.version = opts.version;
 		filterOptions_.argc    = count;
 		filterOptions_.argv    = (count != 0u) ? filterArgStorage_ : nullptr;
+
+		/* Remember the scalars, so a later radio-button change can rebuild the
+		 * argument list without losing what the command line said. */
+		for (uint32_t i = 0; i < count; ++i) {
+			const IWFilterArg& arg = filterArgStorage_[i];
+			if (arg.type == IW_FILTER_ARG_UINT32) {
+				if (std::strcmp(arg.name, "mode") == 0)          filterMode_  = arg.value.u32;
+				else if (std::strcmp(arg.name, "temporal_bits") == 0) pwmBits_ = arg.value.u32;
+				else if (std::strcmp(arg.name, "pwm_bits") == 0)  pwmBits_    = arg.value.u32;
+				else if (std::strcmp(arg.name, "spatial_bits") == 0) spatialBits_ = arg.value.u32;
+			} else if (arg.type == IW_FILTER_ARG_UINT64) {
+				if (std::strcmp(arg.name, "seed") == 0)           seed_ = arg.value.u64;
+			}
+		}
 	}
 
 	void CenterImage()
 	{
 		setPanning(0.0, 0.0);
-		if (HasImage()) {
-			const double minRatio = std::min<double>((double)width / imageWidth_,
-			                                         (double)height / imageHeight_);
-			this->scroll = static_cast<int>(minRatio * 100.0 - 100);
-		}
+		if (!HasImage()) return;
+		if (!settings_.initialZoomFit) { scroll = 0; return; }   /* 100 % */
+		const double minRatio = std::min<double>((double)width / imageWidth_,
+		                                         (double)height / imageHeight_);
+		this->scroll = static_cast<int>(minRatio * 100.0 - 100);
 	}
 
 	/* ── Main loop ─────────────────────────────────────────────────────────── */
@@ -684,7 +831,7 @@ public:
 	{
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		glViewport(0, 0, width, height);
-		glClearColor(kCanvasBg[0], kCanvasBg[1], kCanvasBg[2], 1.0f);
+		glClearColor(canvasBg_[0], canvasBg_[1], canvasBg_[2], 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
 
 		if (!HasImage()) return;
@@ -765,11 +912,14 @@ public:
 				IviewTrace("future ready");
 				try
 				{
-					const Image image = imageFuture.get();
-					if (!LoadTextures(image, 0, 0, 0, filterOptions_))
+					/* Retained for the lifetime of this file so the filter can be
+					 * re-run without decoding again (see source_image_). */
+					auto image = std::make_unique<Image>(imageFuture.get());
+					if (!LoadTextures(*image, 0, 0, 0, filterOptions_))
 						throw std::runtime_error("the filter produced an unsupported frame count");
 					SetWindowTitle(imagePath);
-					ComputeReadout(image, imagePath);
+					ComputeReadout(*image, imagePath);
+					source_image_ = std::move(image);
 					uploaded = true;
 					IviewTrace("image uploaded to the GPU");
 				}
@@ -782,6 +932,42 @@ public:
 #endif
 					break;
 				}
+			}
+
+			/* (1b) A filter re-run finished: upload it on this thread.  The old
+			 * textures kept rendering until this moment, so the picture never
+			 * blanked and the phase alternation never stopped. */
+			if (filter_running_ && filter_future_.valid() &&
+			    filter_future_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
+			{
+				const double computeMs = std::chrono::duration<double, std::milli>(
+					Clock::now() - filterStartTime_).count();
+				try
+				{
+					FilterFrameSet fs = filter_future_.get();
+					const auto uploadStart = Clock::now();
+					UploadFrameSet(fs);
+					const double uploadMs = std::chrono::duration<double, std::milli>(
+						Clock::now() - uploadStart).count();
+
+					filter_failed_ = false;
+					filter_error_.clear();
+					if (trace)
+					{
+						std::fprintf(stderr, "IVIEW_FILTER compute=%.1f ms upload=%.1f ms\n",
+						             computeMs, uploadMs);
+						std::fflush(stderr);
+					}
+				}
+				catch (const std::exception& ex)
+				{
+					/* Keep the previous textures; the panel shows the error. */
+					filter_failed_ = true;
+					filter_error_  = ex.what();
+					std::fprintf(stderr, "iview: filter failed: %s\n", ex.what());
+					std::fflush(stderr);
+				}
+				filter_running_ = false;
 			}
 
 			/* (2) The whole visible path: no dirty flag, no FBO, redraw every
@@ -802,7 +988,7 @@ public:
 			{
 				glBindFramebuffer(GL_FRAMEBUFFER, 0);
 				glViewport(0, 0, width, height);
-				glClearColor(kCanvasBg[0], kCanvasBg[1], kCanvasBg[2], 1.0f);
+				glClearColor(canvasBg_[0], canvasBg_[1], canvasBg_[2], 1.0f);
 				glClear(GL_COLOR_BUFFER_BIT);
 			}
 
@@ -858,21 +1044,12 @@ public:
 			}
 		}
 
+		/* Persist the panel's state (spec: save on close). */
+		SaveSettings();
 		ShutdownImGui();
 	}
 
 private:
-	/* True while the chrome alpha still has to move towards its target. */
-	bool ChromeNeedsFrame() const
-	{
-		if (!imgui_) return false;
-		using Clock = std::chrono::steady_clock;
-		const auto now = Clock::now();
-		const bool idle = (now - imgui_->lastMouseActivity) > std::chrono::milliseconds(1500);
-		const float target = !imgui_->chromeEnabled ? 0.0f : (idle ? 0.15f : 1.0f);
-		return std::fabs(imgui_->alpha - target) > 0.0001f;
-	}
-
 	void SetWindowTitle(const std::filesystem::path& path)
 	{
 		const std::string title = "ImageViewer \xE2\x80\x94 " + Utf8Filename(path);
@@ -907,6 +1084,7 @@ private:
 	{
 		using Clock = std::chrono::steady_clock;
 		const auto now = Clock::now();
+		++chromeFrames_;
 
 		if (!imgui_->frameClockStarted)
 		{
@@ -918,8 +1096,8 @@ private:
 		if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)
 			imgui_->lastMouseActivity = now;
 
-		const bool idle = (now - imgui_->lastMouseActivity) > std::chrono::milliseconds(1500);
-		float target = 0.15f;
+		const bool idle = (now - imgui_->lastMouseActivity) > std::chrono::milliseconds(fadeDelayMs_);
+		float target = fadeMinAlpha_;
 		if (!imgui_->chromeEnabled)      target = 0.0f;
 		else if (!idle)                  target = 1.0f;
 
@@ -959,12 +1137,16 @@ private:
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 6.0f));
 		if (ImGui::Begin("##controls", nullptr, kChromeFlags))
 		{
+			ImVec2 r[5][2];
 			if (ImGui::Button("Fit")) fitToWindow();
+			r[0][0] = ImGui::GetItemRectMin(); r[0][1] = ImGui::GetItemRectMax();
 			ImGui::SameLine();
 			if (ImGui::Button("1:1")) setZoom(1.0);
+			r[1][0] = ImGui::GetItemRectMin(); r[1][1] = ImGui::GetItemRectMax();
 
 			ImGui::SameLine(0.0f, 14.0f);
 			if (ImGui::Button("-")) adjustZoom(-10);
+			r[2][0] = ImGui::GetItemRectMin(); r[2][1] = ImGui::GetItemRectMax();
 			ImGui::SameLine();
 			char zoomLabel[16];
 			std::snprintf(zoomLabel, sizeof(zoomLabel), "%3d%%", getZoomPercent());
@@ -972,17 +1154,156 @@ private:
 			ImGui::TextUnformatted(zoomLabel);
 			ImGui::SameLine();
 			if (ImGui::Button("+")) adjustZoom(10);
+			r[3][0] = ImGui::GetItemRectMin(); r[3][1] = ImGui::GetItemRectMax();
 
 			ImGui::SameLine(0.0f, 14.0f);
-			if (ImGui::Button("Filter")) ImGui::OpenPopup("##filters");
-			if (ImGui::BeginPopup("##filters"))
+			if (ImGui::Button("Filter"))
 			{
-				ImGui::TextDisabled("No filters yet");
-				ImGui::EndPopup();
+				filter_panel_open_ = !filter_panel_open_;
+				IviewTrace(filter_panel_open_ ? "action: filter panel open"
+				                              : "action: filter panel closed");
+			}
+			r[4][0] = ImGui::GetItemRectMin(); r[4][1] = ImGui::GetItemRectMax();
+
+			/* One-shot: where the strip buttons landed, so a harness can click
+			 * them without a screenshot.  Trace only. */
+			if (IviewTraceEnabled() && !stripRectsLogged_ && chromeFrames_ > 20)
+			{
+				stripRectsLogged_ = true;
+				char line[256];
+				std::snprintf(line, sizeof(line),
+					"rects: fit=%.0f,%.0f one=%.0f,%.0f minus=%.0f,%.0f plus=%.0f,%.0f filter=%.0f,%.0f",
+					(r[0][0].x + r[0][1].x) * 0.5f, (r[0][0].y + r[0][1].y) * 0.5f,
+					(r[1][0].x + r[1][1].x) * 0.5f, (r[1][0].y + r[1][1].y) * 0.5f,
+					(r[2][0].x + r[2][1].x) * 0.5f, (r[2][0].y + r[2][1].y) * 0.5f,
+					(r[3][0].x + r[3][1].x) * 0.5f, (r[3][0].y + r[3][1].y) * 0.5f,
+					(r[4][0].x + r[4][1].x) * 0.5f, (r[4][0].y + r[4][1].y) * 0.5f);
+				IviewTrace(line);
+				const ImGuiIO& ioNow = ImGui::GetIO();
+				int fbw = 0, fbh = 0;
+				glfwGetFramebufferSize(glfwWindow, &fbw, &fbh);
+				std::snprintf(line, sizeof(line), "viewport: display=%.0fx%.0f fb=%dx%d",
+				              ioNow.DisplaySize.x, ioNow.DisplaySize.y, fbw, fbh);
+				IviewTrace(line);
 			}
 		}
 		ImGui::End();
 		ImGui::PopStyleVar(2);
+
+		if (filter_panel_open_) BuildOptionsPanel();
+	}
+
+	/* Filter + viewing settings, opened by the strip's Filter button. */
+	void BuildOptionsPanel()
+	{
+		if (!ImGui::Begin("Options", &filter_panel_open_,
+		                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse))
+		{
+			ImGui::End();
+			return;
+		}
+
+		/* ── Filter ─────────────────────────────────────────────────────────── */
+		ImGui::TextUnformatted("Filter");
+		ImGui::Separator();
+
+		if (filter_running_)
+		{
+			ImGui::TextUnformatted("processing...");
+			ImGui::BeginDisabled();
+		}
+		else if (!source_image_)
+		{
+			ImGui::BeginDisabled();          /* nothing to re-filter yet */
+		}
+
+		int mode = static_cast<int>(filterMode_);
+		if (ImGui::RadioButton("None", &mode, 0))           RequestFilterChange(0u);
+		ImVec2 noneMin = ImGui::GetItemRectMin(), noneMax = ImGui::GetItemRectMax();
+		if (ImGui::RadioButton("PWM (temporal)", &mode, 3)) RequestFilterChange(3u);
+		ImVec2 pwmMin = ImGui::GetItemRectMin(), pwmMax = ImGui::GetItemRectMax();
+		/* One-shot rect log for the automated check (trace only). */
+		if (IviewTraceEnabled() && !panelRectsLogged_ && chromeFrames_ > 20)
+		{
+			panelRectsLogged_ = true;
+			char line[128];
+			std::snprintf(line, sizeof(line), "panel rects: none=%.0f,%.0f pwm=%.0f,%.0f",
+			              (noneMin.x + noneMax.x) * 0.5f, (noneMin.y + noneMax.y) * 0.5f,
+			              (pwmMin.x + pwmMax.x) * 0.5f, (pwmMin.y + pwmMax.y) * 0.5f);
+			IviewTrace(line);
+		}
+		/* TODO(side-by-side): original next to the filtered result — deferred. */
+
+		if (filter_running_ || !source_image_) ImGui::EndDisabled();
+
+		if (filter_failed_ && !filter_error_.empty())
+		{
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
+			ImGui::TextWrapped("filter failed: %s", filter_error_.c_str());
+			ImGui::PopStyleColor();
+		}
+		else if (!source_image_)
+		{
+			ImGui::TextDisabled("no image loaded yet");
+		}
+
+		ImGui::Separator();
+		/* ── Viewing settings ───────────────────────────────────────────────── */
+		ImGui::TextUnformatted("Viewing");
+
+		float bg[3] = { canvasBg_[0], canvasBg_[1], canvasBg_[2] };
+		if (ImGui::ColorEdit3("Canvas background", bg, ImGuiColorEditFlags_NoInputs))
+			SetCanvasBackground(bg);
+
+		ImGui::SliderInt("Fade delay", &fadeDelayMs_, 200, 5000, "%d ms");
+		ImGui::SliderFloat("Min alpha", &fadeMinAlpha_, 0.0f, 1.0f, "%.2f");
+
+		ImGui::Separator();
+		if (ImGui::Button("Reset to defaults")) LoadBuiltinDefaults();
+		ImGui::SameLine();
+		if (ImGui::Button("Save")) SaveSettings();
+
+		ImGui::End();
+	}
+
+	/* The clear colour is consumed every frame by DrawImage, so this only has to
+	 * update the members — no re-upload, no render-path change. */
+	void SetCanvasBackground(const float rgb[3])
+	{
+		for (int i = 0; i < 3; ++i)
+			canvasBg_[i] = std::clamp(rgb[i], 0.0f, 1.0f);
+		for (int i = 0; i < 3; ++i)
+			settings_.canvasBg[i] = static_cast<int>(std::lround(canvasBg_[i] * 255.0f));
+	}
+
+	/* Panel-only reset: the filter mode and the live viewing knobs.  Window size
+	 * is start-up state and is left alone. */
+	void LoadBuiltinDefaults()
+	{
+		const Config::Settings defaults{};
+		fadeDelayMs_  = defaults.fadeDelayMs;
+		fadeMinAlpha_ = defaults.fadeMinAlpha;
+		for (int i = 0; i < 3; ++i)
+		{
+			canvasBg_[i]          = defaults.canvasBg[i] / 255.0f;
+			settings_.canvasBg[i] = defaults.canvasBg[i];
+		}
+		settings_.fadeDelayMs  = fadeDelayMs_;
+		settings_.fadeMinAlpha = fadeMinAlpha_;
+		settings_.initialZoomFit = defaults.initialZoomFit;
+		if (filterMode_ != defaults.filterMode) RequestFilterChange(defaults.filterMode);
+	}
+
+	void SaveSettings()
+	{
+		settings_.fadeDelayMs  = fadeDelayMs_;
+		settings_.fadeMinAlpha = fadeMinAlpha_;
+		settings_.filterMode   = filterMode_;
+		settings_.pwmBits      = pwmBits_;
+		if (imgui_) settings_.chromeVisible = imgui_->chromeEnabled;
+		for (int i = 0; i < 3; ++i)
+			settings_.canvasBg[i] = static_cast<int>(std::lround(canvasBg_[i] * 255.0f));
+		Config::Save(settings_);
 	}
 
 	/* File drop: phase 1 reuses the same decode + upload path on the main
@@ -990,6 +1311,10 @@ private:
 	void HandleDrop(int count, const char** paths)
 	{
 		if (count <= 0 || paths == nullptr || !imgui_) return;
+		/* One plugin call at a time: a drop while a re-run is computing would
+		 * enter the plugin from two threads.  Dropped files are simply ignored
+		 * for the ~100 ms a compute takes. */
+		if (filter_running_) return;
 
 		for (int i = 0; i < count; ++i)
 		{
@@ -997,11 +1322,12 @@ private:
 			try
 			{
 				const std::filesystem::path path(reinterpret_cast<const char8_t*>(paths[i]));
-				const Image image = Image::FromFile(path);
-				if (!LoadTextures(image, 0, 0, 0, filterOptions_))
+				auto image = std::make_unique<Image>(Image::FromFile(path));
+				if (!LoadTextures(*image, 0, 0, 0, filterOptions_))
 					continue;
 				SetWindowTitle(path);
-				ComputeReadout(image, path);
+				ComputeReadout(*image, path);
+				source_image_ = std::move(image);
 				imgui_->chromeEnabled     = true;
 				imgui_->lastMouseActivity = std::chrono::steady_clock::now();
 				return;
@@ -1019,6 +1345,7 @@ public:
 	}
 
 	void setZoom(double zoomLevel, double cursorX, double cursorY) {
+		IviewTrace("action: set_zoom");
 		const double currentZoom = getZoom();
 		const double newScroll = (zoomLevel * 100.0) - 100.0;
 		scroll = std::clamp(static_cast<int>(newScroll), -90, 400);
@@ -1045,6 +1372,7 @@ public:
 	}
 
 	void adjustZoom(int zoomDelta) {
+		IviewTrace("action: adjust_zoom");
 		const double currentZoom = getZoom();
 		scroll = std::clamp(scroll + zoomDelta, -90, 400);
 
@@ -1076,6 +1404,7 @@ public:
 	}
 
 	void fitToWindow() {
+		IviewTrace("action: fit");
 		setPanning(0.0, 0.0);
 		if (HasImage()) {
 			const double minRatio = std::min(static_cast<double>(width) / imageWidth_,
