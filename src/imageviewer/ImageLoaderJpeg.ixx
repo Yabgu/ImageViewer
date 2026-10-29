@@ -4,6 +4,7 @@ module;
 #include <stdexcept>
 #include <cstring>
 #include <cstdint>
+#include <memory>
 #include <jpeglib.h>
 #include <setjmp.h>
 #include <filesystem>
@@ -15,6 +16,18 @@ struct my_error_mgr
 {
 	struct jpeg_error_mgr pub;
 	jmp_buf setjmp_buffer;
+};
+
+/* Owns everything the decode allocates: the pixel storage first, then the
+ * descriptor handed back to the caller on success.  libjpeg reports fatal
+ * errors by longjmp()ing out of the failing call, so this holder is created
+ * *before* setjmp() and never reassigned afterwards; an automatic variable
+ * written between setjmp() and longjmp() would be indeterminate on the error
+ * path and leak or double-free. */
+struct OwnedImagePluginData
+{
+	std::unique_ptr<uint8_t[]>       pixels;
+	std::unique_ptr<ImagePluginData> info;
 };
 }
 
@@ -54,56 +67,116 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     struct jpeg_decompress_struct cinfo = {
         .err = jpeg_std_error(&jerr.pub) };
 
+    const auto owned = std::make_unique<OwnedImagePluginData>();
+
     if (setjmp(jerr.setjmp_buffer))
     {
         jpeg_destroy_decompress(&cinfo);
         fclose(file);
         snprintf(lastError, sizeof(lastError), "JPEG decode failed");
         result.code = IMAGE_PLUGIN_DECODE_ERROR;
-        return result;
+        return result;   /* owned releases whatever was allocated so far */
     }
 
     jpeg_create_decompress(&cinfo);
     jpeg_stdio_src(&cinfo, file);
     jpeg_read_header(&cinfo, TRUE);
-    jpeg_start_decompress(&cinfo);
 
-    int row_stride = cinfo.output_width * cinfo.output_components;
-    constexpr int MaxLinesToRead = 1;
-
-    JSAMPARRAY buffer = (*cinfo.mem->alloc_sarray)((j_common_ptr)&cinfo, JPOOL_IMAGE, row_stride, MaxLinesToRead);
-
-    int components = cinfo.output_components;
-    size_t dataSize = static_cast<size_t>(cinfo.output_width) * cinfo.output_height * components;
-
-    IWImageFormat fmt = {};
-    fmt.componentCount = static_cast<uint16_t>(components);
-    fmt.bitsPerPixel   = static_cast<uint16_t>(components * 8);
-    if (components == 1) {
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 8 };
-    } else {
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
-    }
-
-    ImagePluginData* data = new ImagePluginData{
-        .width      = static_cast<int>(cinfo.output_width),
-        .height     = static_cast<int>(cinfo.output_height),
-        .stride     = static_cast<int>(cinfo.output_width) * components,
-        .colorSpace = IMAGE_COLOR_SPACE_SRGB,
-        .size       = dataSize,
-        .data       = new uint8_t[dataSize],
-        .format     = fmt
-    };
-    if (!data->data) {
+    /* ── Component-count policy ──────────────────────────────────────────
+     * The number of components is a property of the file, not a preference,
+     * so it decides everything below.  Exactly two shapes are supported:
+     *   1 component  -- grayscale, decoded as JCS_GRAYSCALE
+     *   3 components -- YCbCr or RGB, decoded as JCS_RGB
+     * Anything else is rejected instead of described.  The previous code
+     * assumed three components unconditionally: a four-component CMYK/YCCK
+     * file got componentCount = 4 and bitsPerPixel = 32 with only three
+     * component definitions filled, leaving components[3] at bitWidth 0, so
+     * ValidateImageFormat() rejected the descriptor while the buffer held
+     * four bytes per pixel and the K sample went undescribed.  A
+     * two-component file passed validation but was described as R+G.
+     *
+     * TODO(cmyk): accept 4-component files as a follow-up by setting
+     * JCS_CMYK and converting to RGB here.  Adobe CMYK JPEGs store inverted
+     * samples, so the conversion has to detect the Adobe APP14 marker and
+     * un-invert before converting; getting that wrong is worse than
+     * rejecting, which is why it is deferred rather than guessed at. */
+    const int numComponents = cinfo.num_components;
+    if (numComponents != 1 && numComponents != 3)
+    {
         jpeg_destroy_decompress(&cinfo);
         fclose(file);
-        delete data;
+        snprintf(lastError, sizeof(lastError),
+                 "JPEG has %d components; only grayscale and YCbCr are supported.",
+                 numComponents);
+        result.code = IMAGE_PLUGIN_DECODE_ERROR;
+        return result;
+    }
+
+    /* Ask libjpeg for exactly the layout decided above.  Without this the
+     * default output space for some files is not RGB (a 4-component file
+     * defaults to JCS_CMYK), so the decoded buffer would not match the
+     * descriptor built below. */
+    cinfo.out_color_space = (numComponents == 1) ? JCS_GRAYSCALE : JCS_RGB;
+
+    jpeg_start_decompress(&cinfo);
+
+    /* Single source of truth for the decoded buffer's shape.  componentCount,
+     * bitsPerPixel, stride and pixelDataSize are all derived from this one
+     * value, so the descriptor and the buffer cannot drift apart. */
+    const int channelCount = (numComponents == 1) ? 1 : 3;
+
+    /* libjpeg must have honoured the out_color_space request.  If it did not,
+     * the buffer would not match the descriptor about to be built, so fail
+     * rather than hand the caller a self-inconsistent image. */
+    if (cinfo.output_components != channelCount)
+    {
+        jpeg_destroy_decompress(&cinfo);
+        fclose(file);
+        snprintf(lastError, sizeof(lastError),
+                 "JPEG output component mismatch: expected %d, got %d",
+                 channelCount, cinfo.output_components);
+        result.code = IMAGE_PLUGIN_DECODE_ERROR;
+        return result;
+    }
+
+    constexpr int kBitsPerComponent = 8;
+    const int bytesPerPixel = channelCount * (kBitsPerComponent / 8);
+    const int rowStride     = static_cast<int>(cinfo.output_width) * bytesPerPixel;
+    const size_t dataSize   = static_cast<size_t>(rowStride) * cinfo.output_height;
+
+    constexpr int MaxLinesToRead = 1;
+
+    JSAMPARRAY buffer = (*cinfo.mem->alloc_sarray)((j_common_ptr)&cinfo, JPOOL_IMAGE, rowStride, MaxLinesToRead);
+
+    IWImageFormat fmt = {};
+    fmt.componentCount = static_cast<uint16_t>(channelCount);
+    fmt.bitsPerPixel   = static_cast<uint16_t>(channelCount * kBitsPerComponent);
+    if (channelCount == 1) {
+        fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, kBitsPerComponent };
+    } else {
+        fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, kBitsPerComponent };
+        fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, kBitsPerComponent };
+        fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, kBitsPerComponent };
+    }
+
+    owned->pixels = std::make_unique<uint8_t[]>(dataSize);
+    if (!owned->pixels) {
+        jpeg_destroy_decompress(&cinfo);
+        fclose(file);
         snprintf(lastError, sizeof(lastError), "Failed to allocate image buffer");
         result.code = IMAGE_PLUGIN_ALLOC_ERROR;
         return result;
     }
+
+    owned->info = std::make_unique<ImagePluginData>(ImagePluginData{
+        .width      = static_cast<int>(cinfo.output_width),
+        .height     = static_cast<int>(cinfo.output_height),
+        .stride     = rowStride,
+        .colorSpace = IMAGE_COLOR_SPACE_SRGB,
+        .size       = dataSize,
+        .data       = owned->pixels.get(),
+        .format     = fmt
+    });
 
     while (cinfo.output_scanline < cinfo.output_height)
     {
@@ -113,20 +186,22 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         {
             jpeg_destroy_decompress(&cinfo);
             fclose(file);
-            delete[] data->data;
-            delete data;
             snprintf(lastError, sizeof(lastError), "JPEG read error");
             result.code = IMAGE_PLUGIN_DECODE_ERROR;
             return result;
         }
-        std::memcpy(&data->data[current_scanline * row_stride], buffer[0], row_stride * readlines);
+        std::memcpy(owned->pixels.get() + current_scanline * rowStride, buffer[0], rowStride * readlines);
     }
 
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
     fclose(file);
+
+    /* Success: transfer ownership of the descriptor and its pixel buffer to
+     * the caller, which releases them through FreeImageData(). */
     result.code = IMAGE_PLUGIN_OK;
-    result.data = data;
+    result.data = owned->info.release();
+    owned->pixels.release();
     return result;
 }
 

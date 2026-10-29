@@ -72,7 +72,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         IWImageFormat fmt = {};
         {
             const uint16_t bw  = static_cast<uint16_t>(bytesPerChannel * 8);
-            const IWComponentClass cls = isHdr ? IW_COMPONENT_CLASS_FLOAT : IW_COMPONENT_CLASS_UINT;
+            const IWComponentClass cls = isHdr ? IW_COMPONENT_CLASS_FLOAT : IW_COMPONENT_CLASS_UNORM;
             fmt.componentCount = static_cast<uint16_t>(componentsPerPixel);
             fmt.bitsPerPixel   = static_cast<uint16_t>(componentsPerPixel) * bw;
             switch (componentsPerPixel) {

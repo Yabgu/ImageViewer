@@ -86,7 +86,14 @@ if(Glad_FOUND AND NOT TARGET glad::glad)
             INTERFACE_INCLUDE_DIRECTORIES "${GLAD_INCLUDE_DIR}"
         )
         if(GLAD_LIBRARY)
-            set_target_properties(glad::glad PROPERTIES IMPORTED_LOCATION "${GLAD_LIBRARY}")
+            # An IMPORTED INTERFACE target has no location of its own; its
+            # libraries are propagated with INTERFACE_LINK_LIBRARIES.  Setting
+            # IMPORTED_LOCATION here is silently ignored by CMake, which leaves
+            # every glad_gl* symbol undefined at link time when a prebuilt
+            # glad library is supplied via -DGLAD_LIBRARY=...
+            set_target_properties(glad::glad PROPERTIES
+                INTERFACE_LINK_LIBRARIES "${GLAD_LIBRARY}"
+            )
         endif()
     endif()
 endif()

@@ -20,16 +20,37 @@ case "${_raw_arch}" in
     ;;
 esac
 
-IMAGE_NAME="gh-actions-runner-mingw32"
-CONTAINER_NAME="gh-runner-mingw32"
-VOLUME_NAME="gh-runner-data-mingw32"
+# -- Runner flavour -------------------------------------------------------------
+# linsys2 (default): Windows build uses the real MSYS2 toolchain through Wine.
+#                    Image + script: ci/Containerfile.linsys2, ci/build-msys2.sh.
+# mingw32 (legacy):  llvm-mingw cross-compiler plus vcpkg, via prepare_mingw32.sh.
+# Override with RUNNER_KIND=mingw32 to keep the old image.
+RUNNER_KIND="${RUNNER_KIND:-linsys2}"
+case "${RUNNER_KIND}" in
+  linsys2)
+    IMAGE_NAME="gh-actions-runner-linsys2"
+    CONTAINER_NAME="gh-runner-linsys2"
+    VOLUME_NAME="gh-runner-data-linsys2"
+    _DEFAULT_RUNNER_NAME="podman-runner-linsys2"
+    ;;
+  mingw32)
+    IMAGE_NAME="gh-actions-runner-mingw32"
+    CONTAINER_NAME="gh-runner-mingw32"
+    VOLUME_NAME="gh-runner-data-mingw32"
+    _DEFAULT_RUNNER_NAME="podman-runner-mingw32"
+    ;;
+  *)
+    echo "ERROR: RUNNER_KIND must be 'linsys2' or 'mingw32' (got '${RUNNER_KIND}')" >&2
+    exit 1
+    ;;
+esac
 WORKSPACE_ROOT="$(realpath ..)"
 WORKSPACE_BASENAME="$(basename "${WORKSPACE_ROOT}")"
 DEV_MOUNT_PATH="/home/runner/work/${WORKSPACE_BASENAME}"
 # -- EDIT THESE ----------------------------------------------------------------
 GITHUB_URL="https://github.com/Yabgu/ImageViewer"
 RUNNER_TOKEN=""   # Only used ONCE during first registration
-RUNNER_NAME="podman-runner-mingw32"
+RUNNER_NAME="${_DEFAULT_RUNNER_NAME}"
 RUNNER_LABELS="self-hosted,mingw32,linux,${RUNNER_ARCH}"
 
 # -------------------------------------------------------------------------------
@@ -39,11 +60,25 @@ CMD="${1:-help}"
 case "${CMD}" in
 
   build)
-    echo "Building image: ${IMAGE_NAME} (RUNNER_ARCH=${RUNNER_ARCH}) ..."
-    podman build \
-      --build-arg RUNNER_ARCH="${RUNNER_ARCH}" \
-      -t "${IMAGE_NAME}" \
-      .
+    echo "Building image: ${IMAGE_NAME} (RUNNER_KIND=${RUNNER_KIND}, RUNNER_ARCH=${RUNNER_ARCH}) ..."
+    # The legacy mingw32 image expects an llvm-mingw package in the build
+    # context; the linsys2 image builds its toolchain from MSYS2 packages and
+    # needs only the Containerfile and entrypoint.sh.
+    case "${RUNNER_KIND}" in
+      linsys2)
+        podman build \
+          --build-arg RUNNER_ARCH="${RUNNER_ARCH}" \
+          -f Containerfile.linsys2 \
+          -t "${IMAGE_NAME}" \
+          .
+        ;;
+      mingw32)
+        podman build \
+          --build-arg RUNNER_ARCH="${RUNNER_ARCH}" \
+          -t "${IMAGE_NAME}" \
+          .
+        ;;
+    esac
     echo "Done."
     ;;
 

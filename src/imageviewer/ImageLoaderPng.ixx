@@ -1,6 +1,5 @@
 module;
 
-#include <cassert>
 #include <cstdio>
 #include <stdexcept>
 #include <cstring>
@@ -66,7 +65,20 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     int height     = png_get_image_height(png_ptr, info_ptr);
     int color_type = png_get_color_type(png_ptr, info_ptr);
     int bit_depth  = png_get_bit_depth(png_ptr, info_ptr);
-    assert(width > 0 && height > 0 && bit_depth > 0);
+
+    /* libpng is fed untrusted files, so validate what it reports instead of
+     * asserting on it: assert() aborts a debug build and lets a release build
+     * continue with a zero-sized / bogus allocation. */
+    if (width <= 0 || height <= 0 || bit_depth <= 0)
+    {
+        png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+        fclose(file);
+        snprintf(lastError, sizeof(lastError),
+                 "Invalid PNG header: width=%d height=%d bit depth=%d",
+                 width, height, bit_depth);
+        result.code = IMAGE_PLUGIN_DECODE_ERROR;
+        return result;
+    }
 
     // Expand palette to RGB
     if (color_type == PNG_COLOR_TYPE_PALETTE)
@@ -121,22 +133,22 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
         switch (color_type) {
         case PNG_COLOR_TYPE_GRAY:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, bw };
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, bw };
             break;
         case PNG_COLOR_TYPE_GRAY_ALPHA:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0,  bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, bw, bw };
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0,  bw };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UNORM, bw, bw };
             break;
         case PNG_COLOR_TYPE_RGBA:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(0 * bw), bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(1 * bw), bw };
-            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(2 * bw), bw };
-            fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(3 * bw), bw };
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(0 * bw), bw };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(1 * bw), bw };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(2 * bw), bw };
+            fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(3 * bw), bw };
             break;
         default: /* PNG_COLOR_TYPE_RGB and palette-expanded RGB */
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(0 * bw), bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(1 * bw), bw };
-            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, static_cast<uint16_t>(2 * bw), bw };
+            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(0 * bw), bw };
+            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(1 * bw), bw };
+            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(2 * bw), bw };
             break;
         }
     }

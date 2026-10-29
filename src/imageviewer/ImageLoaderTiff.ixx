@@ -65,10 +65,10 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             componentClass    = IW_COMPONENT_CLASS_FLOAT;
             componentBitWidth = 32;
         } else if (bitsPerSample == 16) {
-            componentClass    = IW_COMPONENT_CLASS_UINT;
+            componentClass    = IW_COMPONENT_CLASS_UNORM;
             componentBitWidth = 16;
         } else {
-            componentClass    = IW_COMPONENT_CLASS_UINT;
+            componentClass    = IW_COMPONENT_CLASS_UNORM;
             componentBitWidth = 8;
         }
 
@@ -145,10 +145,10 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             IWImageFormat tiledFmt = {};
             tiledFmt.componentCount = components;
             tiledFmt.bitsPerPixel   = components * 8;
-            tiledFmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
-            tiledFmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-            tiledFmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
-            tiledFmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, 24, 8 };
+            tiledFmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
+            tiledFmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
+            tiledFmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
+            tiledFmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 };
 
             ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
             if (!data)

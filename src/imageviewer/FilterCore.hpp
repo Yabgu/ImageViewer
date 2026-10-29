@@ -71,8 +71,35 @@ static inline int BytesPerPixel(const IWImageFormat& fmt) noexcept
 }
 
 /*
+ * Read one component already scaled to its class's normalised range.
+ *
+ * ExtractComponent() deliberately returns *raw integers* for
+ * IW_COMPONENT_CLASS_UINT, so that unpacked integers (RGB565 fields, bit
+ * masks, …) keep their numeric value.  A pipeline that consumes normalised
+ * floats has to divide by the component's own maximum; otherwise every UINT
+ * sample >= 1 collapses to 1.0 as soon as ExtractPixelF() clamps to [0, 1],
+ * which turns a whole image white.
+ *
+ * A no-op for UNORM / SNORM / FLOAT components: only UINT is rescaled.
+ */
+static inline float ExtractComponentNormalised(const uint8_t* pixel,
+                                                const IWComponentDef& comp) noexcept
+{
+    const float v = ExtractComponent(pixel, comp);
+    if (comp.componentClass != IW_COMPONENT_CLASS_UINT || comp.bitWidth == 0u)
+        return v;
+
+    const uint64_t maxVal = (comp.bitWidth < 64u)
+                            ? ((uint64_t{1} << comp.bitWidth) - 1u)
+                            : ~uint64_t{0};
+    return v / static_cast<float>(maxVal);
+}
+
+/*
  * Extract one pixel at (x, y) from src as normalised RGBA floats.
  * Missing channels default to 0 (RGB) or 1 (A).
+ * UINT components are scaled by their declared bit width (see
+ * ExtractComponentNormalised) so mislabelled input cannot saturate to 1.0.
  */
 static inline void ExtractPixelF(const ImagePluginData& src,
                                   int x, int y, float rgba[4]) noexcept
@@ -84,7 +111,7 @@ static inline void ExtractPixelF(const ImagePluginData& src,
                          + static_cast<ptrdiff_t>(y) * src.stride
                          + x * bpp;
     for (int c = 0; c < static_cast<int>(fmt.componentCount); ++c) {
-        const float v = ExtractComponent(pixel, fmt.components[c]);
+        const float v = ExtractComponentNormalised(pixel, fmt.components[c]);
         switch (fmt.components[c].semantic) {
         case IW_COMPONENT_SEMANTIC_R:    rgba[0] = v;                    break;
         case IW_COMPONENT_SEMANTIC_G:    rgba[1] = v;                    break;
