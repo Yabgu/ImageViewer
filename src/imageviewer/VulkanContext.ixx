@@ -291,7 +291,12 @@ private:
 	void CreateInstance()
 	{
 		uint32_t count = 0;
+		/* This is the process's first real loader call: it walks the registry and
+		 * the ICD manifests and loads every installed driver DLL, so it is timed
+		 * separately from vkCreateInstance — it is often the larger half. */
+		IviewTrace("glfwGetRequiredInstanceExtensions begin");
 		const char** required = glfwGetRequiredInstanceExtensions(&count);
+		IviewTrace("glfwGetRequiredInstanceExtensions done");
 		if (required == nullptr || count == 0)
 			throw std::runtime_error("Vulkan: GLFW could not determine the required instance extensions");
 
