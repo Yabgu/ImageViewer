@@ -146,37 +146,19 @@ else()
     message(STATUS "Plugin: FilterPixman skipped (pixman not found)")
 endif()
 
-# ── Vulkan headers + volk (third-party/volk submodule) ───────────────────────
-# volk is the only Vulkan binding: every entry point is a function pointer loaded
-# from the platform loader at runtime, so nothing links against vulkan-1.lib and
-# no GL loader (glad) is needed any more.
-find_path(VULKAN_INCLUDE_DIR
-    NAMES vulkan/vulkan.h
-    HINTS ENV VULKAN_SDK
-    PATH_SUFFIXES Include include
-)
-if(NOT VULKAN_INCLUDE_DIR)
-    message(FATAL_ERROR
-        "Vulkan headers not found (<vulkan/vulkan.h>). Install the Vulkan SDK and "
-        "set VULKAN_SDK, or add the vcpkg 'vulkan-headers' port to the viewer feature.")
+# ── GL loader (glad) ────────────────────────────────────────────────────────
+# Exactly one GL loader in the process: glad.  ImGui's OpenGL3 backend is built
+# with IMGUI_IMPL_OPENGL_LOADER_CUSTOM and force-includes glad/glad.h, so it
+# resolves the same symbols the Window module uses.
+if(IMAGEVIEWER_USE_VCPKG)
+    find_package(glad CONFIG REQUIRED)
+    set(_GLAD_TARGET glad::glad)
+else()
+    find_package(Glad REQUIRED)
+    set(_GLAD_TARGET glad::glad)
 endif()
-message(STATUS "Vulkan headers: ${VULKAN_INCLUDE_DIR}")
-
-set(VOLK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/volk")
-if(NOT EXISTS "${VOLK_DIR}/volk.c")
-    message(FATAL_ERROR
-        "third-party/volk is missing. Run: git submodule update --init --recursive")
-endif()
-
-add_library(volk STATIC ${VOLK_DIR}/volk.c)
-target_include_directories(volk PUBLIC ${VOLK_DIR} ${VULKAN_INCLUDE_DIR})
-target_compile_definitions(volk PUBLIC VK_NO_PROTOTYPES)
 
 # ── Dear ImGui (third-party/imgui submodule, pinned at v1.93.0) ──────────────
-# ImGui is compiled as its own static library and linked into the viewer.  The
-# OpenGL3 backend is replaced by the Vulkan backend, built with
-# IMGUI_IMPL_VULKAN_USE_VOLK so it shares volk's function pointers with the rest
-# of the executable: exactly one Vulkan loader, and no GL loader at all.
 set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/imgui")
 
 add_library(imgui STATIC
@@ -185,7 +167,7 @@ add_library(imgui STATIC
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
 target_include_directories(imgui PUBLIC
     ${IMGUI_DIR}
@@ -193,15 +175,21 @@ target_include_directories(imgui PUBLIC
 )
 target_compile_definitions(imgui PRIVATE
     GLFW_INCLUDE_NONE
-)
-target_compile_definitions(imgui PUBLIC
-    IMGUI_IMPL_VULKAN_USE_VOLK
+    IMGUI_IMPL_OPENGL_LOADER_CUSTOM
 )
 target_link_libraries(imgui PUBLIC
     ${_GLFW_TARGET}
-    volk
+    ${_GLAD_TARGET}
 )
 set_property(TARGET imgui PROPERTY CXX_STANDARD 17)
+
+if(MSVC)
+    set_source_files_properties(${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+        PROPERTIES COMPILE_OPTIONS "/FIglad/glad.h")
+else()
+    set_source_files_properties(${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+        PROPERTIES COMPILE_OPTIONS "-include;glad/glad.h")
+endif()
 
 # Main executable
 if(WIN32)
@@ -217,8 +205,6 @@ target_sources(imageviewer PUBLIC
     FILE_SET imageviewer TYPE CXX_MODULES
     FILES
         Window.ixx
-        VulkanContext.ixx
-        VulkanRenderer.ixx
         Image.ixx
         HotkeysHandler.ixx
         PluginManager.ixx
@@ -258,11 +244,13 @@ find_package(PNG REQUIRED)
 
 target_link_libraries(imageviewer PRIVATE
     ${_GLFW_TARGET}
+    ${_GLAD_TARGET}
     imgui
 )
 
 target_link_libraries(iview PRIVATE
     ${_GLFW_TARGET}
+    ${_GLAD_TARGET}
     imageviewer
 )
 

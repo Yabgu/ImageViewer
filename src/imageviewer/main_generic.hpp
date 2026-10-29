@@ -14,9 +14,6 @@
 
 import Image;
 import UserInterface;
-/* VulkanContext is imported for IviewTrace() only: the trace marks are the only
- * thing this file knows about the renderer. */
-import VulkanContext;
 
 inline Image ProcessInput(const std::filesystem::path& path)
 {

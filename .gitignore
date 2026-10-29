@@ -2,7 +2,6 @@
 /third-party/*
 !/third-party/gradient
 !/third-party/imgui
-!/third-party/volk
 /build*
 /out
 /vcpkg_installed

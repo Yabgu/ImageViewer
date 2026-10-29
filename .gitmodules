@@ -4,6 +4,3 @@
 [submodule "third-party/imgui"]
 	path = third-party/imgui
 	url = https://github.com/ocornut/imgui
-[submodule "third-party/volk"]
-	path = third-party/volk
-	url = https://github.com/zeux/volk
