@@ -319,6 +319,7 @@ endif()
 # JPEG Plugin DLL — only when libjpeg-turbo is available
 if(IMAGEVIEWER_JPEG_TARGET)
     add_library(ImageLoaderJpeg SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderJpeg)
     target_sources(ImageLoaderJpeg PUBLIC
         FILE_SET jpegloader TYPE CXX_MODULES
         FILES
@@ -332,6 +333,7 @@ endif()
 
 # PNG Plugin DLL — always built (libpng is a default vcpkg dep)
 add_library(ImageLoaderPng SHARED)
+list(APPEND _PLUGIN_TARGETS ImageLoaderPng)
 target_sources(ImageLoaderPng PUBLIC
     FILE_SET pngloader TYPE CXX_MODULES
     FILES
@@ -348,6 +350,7 @@ target_link_libraries(ImageLoaderPng PRIVATE
 # WebP Plugin DLL — only when libwebp is available
 if(WebP_FOUND)
     add_library(ImageLoaderWebp SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderWebp)
     target_sources(ImageLoaderWebp PUBLIC
         FILE_SET webploader TYPE CXX_MODULES
         FILES
@@ -363,6 +366,7 @@ endif()
 # TIFF Plugin DLL — only when libtiff is available
 if(TIFF_FOUND)
     add_library(ImageLoaderTiff SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderTiff)
     target_sources(ImageLoaderTiff PUBLIC
         FILE_SET tiffloader TYPE CXX_MODULES
         FILES
@@ -377,6 +381,7 @@ endif()
 # Stb Plugin DLL — only when stb is available
 if(Stb_FOUND)
     add_library(ImageLoaderStb SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderStb)
     target_sources(ImageLoaderStb PUBLIC
         FILE_SET stbloader TYPE CXX_MODULES
         FILES
@@ -389,6 +394,7 @@ endif()
 # FilterPixman Plugin DLL — only when pixman is available
 if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
     add_library(FilterPixman SHARED)
+    list(APPEND _PLUGIN_TARGETS FilterPixman)
     target_sources(FilterPixman PUBLIC
         FILE_SET filterpixman TYPE CXX_MODULES
         FILES
@@ -400,13 +406,34 @@ if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
     )
     target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET})
 
-    # Copy FilterPixman DLL next to iview on Windows (same logic as runtime DLLs)
-    if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
-        add_custom_command(TARGET iview POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:FilterPixman>
-                $<TARGET_FILE_DIR:iview>
-            VERBATIM
-        )
-    endif()
+endif()
+# ── Ship the plugins with the viewer ────────────────────────────────────────
+# The plugin libraries are built into the same directory as iview by default, but
+# nothing in the target graph said so: building only the iview target skipped the
+# plugins entirely, which left a Release folder with no loadable image loaders or
+# filter.  Make the dependency explicit and copy every plugin next to the
+# executable, so any build (single- or multi-config) ships a runnable viewer.
+if(_PLUGIN_TARGETS)
+    add_dependencies(iview ${_PLUGIN_TARGETS})
+    set(_PLUGIN_FILES "")
+    foreach(_plugin IN LISTS _PLUGIN_TARGETS)
+        if(TARGET ${_plugin})
+            list(APPEND _PLUGIN_FILES "$<TARGET_FILE:${_plugin}>")
+        endif()
+    endforeach()
+    add_custom_command(TARGET iview POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${_PLUGIN_FILES}
+            $<TARGET_FILE_DIR:iview>
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
+    message(STATUS "Plugins shipped with iview: ${_PLUGIN_TARGETS}")
+endif()
+
+# Packaging path: `cmake --install` produces a folder containing iview.exe and
+# every plugin (the runtime DLLs beside them come from vcpkg's applocal step).
+install(TARGETS iview RUNTIME DESTINATION .)
+if(_PLUGIN_TARGETS)
+    install(TARGETS ${_PLUGIN_TARGETS} RUNTIME DESTINATION .)
 endif()
