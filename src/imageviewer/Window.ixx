@@ -210,6 +210,9 @@ private:
 	uint32_t spatialBits_   = 0;   /* preserved from the CLI, unused by PWM  */
 	uint64_t seed_          = 0;   /* preserved from the CLI                 */
 	bool     filter_panel_open_ = false;
+	/* Set when an image was uploaded in mode=none and the requested mode still
+	 * has to be computed; consumed once the window is visible. */
+	bool     pendingDeferredFilter_ = false;
 	/* One-shot UI rect logs, used by the automated strip/panel check. */
 	bool     stripRectsLogged_  = false;
 	bool     panelRectsLogged_  = false;
@@ -720,6 +723,57 @@ private:
 		}
 	}
 
+	/* Options list carrying only the mode.  Used for the immediate mode=none
+	 * pass, which must not depend on what the command line or config asked for. */
+	static IWFilterOptions ModeOnlyOptions(uint32_t mode, IWFilterArg (&storage)[1]) noexcept
+	{
+		std::memset(storage, 0, sizeof(IWFilterArg));
+		std::strncpy(storage[0].name, "mode", IW_FILTER_ARG_NAME_MAX - 1u);
+		storage[0].type      = IW_FILTER_ARG_UINT32;
+		storage[0].value.u32 = mode;
+		return IWFilterOptions{ IW_FILTER_OPTIONS_VERSION, 1u, storage };
+	}
+
+	/* Highest bit width among the active source components.  A source that already
+	 * fits the 8-bit display has nothing for the temporal stage to dither, so the
+	 * deferred compute is skipped for it. */
+	static unsigned SourceBits(const Image& image) noexcept
+	{
+		unsigned bits = 0;
+		const uint32_t count = std::min<uint32_t>(image.format.componentCount, IW_MAX_COMPONENTS);
+		for (uint32_t c = 0; c < count; ++c)
+			if (image.format.components[c].bitWidth > bits)
+				bits = image.format.components[c].bitWidth;
+		return bits;
+	}
+
+	/* Starts the worker compute for the current filterOptions_.  The caller
+	 * guarantees source_image_ is set and that no compute is in flight. */
+	void StartFilterCompute()
+	{
+		filter_running_  = true;
+		filterStartTime_ = std::chrono::steady_clock::now();
+		const Image* const src = source_image_.get();
+		const IWFilterOptions opts = filterOptions_;     /* argv -> filterArgStorage_ */
+		filter_future_ = std::async(std::launch::async, [this, src, opts] {
+			return ComputeFilteredFrames(*src, opts);
+		});
+		IviewTrace("filter compute started");
+	}
+
+	/* Called once an image is on screen in mode=none: queue the requested mode in
+	 * the background so the window never waits on it. */
+	void MaybeStartDeferredFilter()
+	{
+		if (!source_image_ || filter_running_) return;
+		if (filterMode_ == 0u) return;                   /* nothing requested */
+		if (SourceBits(*source_image_) < 9u) {
+			IviewTrace("deferred filter skipped (source has < 9 bits/channel)");
+			return;
+		}
+		StartFilterCompute();
+	}
+
 	/* Selection changed in the panel.  Kicks a worker compute; the textures and
 	 * the picture on screen stay untouched until the result arrives in Main. */
 	void RequestFilterChange(uint32_t mode)
@@ -731,15 +785,7 @@ private:
 		filter_failed_ = false;
 		filter_error_.clear();
 		RebuildFilterOptions();
-
-		filter_running_  = true;
-		filterStartTime_ = std::chrono::steady_clock::now();
-		const Image* const src = source_image_.get();
-		const IWFilterOptions opts = filterOptions_;     /* argv -> filterArgStorage_ */
-		filter_future_ = std::async(std::launch::async, [this, src, opts] {
-			return ComputeFilteredFrames(*src, opts);
-		});
-		IviewTrace("filter re-run started");
+		StartFilterCompute();
 	}
 
 	/* Rebuilds the plugin argument list from the current scalars. */
@@ -915,13 +961,24 @@ public:
 					/* Retained for the lifetime of this file so the filter can be
 					 * re-run without decoding again (see source_image_). */
 					auto image = std::make_unique<Image>(imageFuture.get());
-					if (!LoadTextures(*image, 0, 0, 0, filterOptions_))
+
+					/* The first visible frame is always the plain 8-bit image.
+					 * A requested PWM mode is computed in the background and
+					 * swapped in by the block below once it is ready, so a
+					 * high-bit-depth source never delays start-up. */
+					IWFilterArg noneArgs[1];
+					const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
+					if (!LoadTextures(*image, 0, 0, 0, noneOpts))
 						throw std::runtime_error("the filter produced an unsupported frame count");
 					SetWindowTitle(imagePath);
 					ComputeReadout(*image, imagePath);
 					source_image_ = std::move(image);
 					uploaded = true;
 					IviewTrace("image uploaded to the GPU");
+					/* Kicked after the window is on screen (see the show block
+					 * below): creating the worker before the first swap would
+					 * put thread start-up between the upload and the show. */
+					pendingDeferredFilter_ = true;
 				}
 				catch (std::exception& ex)
 				{
@@ -1017,6 +1074,14 @@ public:
 				glfwShowWindow(glfwWindow);
 				shown = true;
 				IviewTrace("glfwShowWindow");
+			}
+
+			/* Now that the plain image is on screen, queue the requested filter
+			 * mode.  The worker's result is uploaded by block (1b) when ready. */
+			if (pendingDeferredFilter_)
+			{
+				pendingDeferredFilter_ = false;
+				MaybeStartDeferredFilter();
 			}
 
 			/* Continuous-render cost — measured only after the window is visible,
@@ -1323,11 +1388,16 @@ private:
 			{
 				const std::filesystem::path path(reinterpret_cast<const char8_t*>(paths[i]));
 				auto image = std::make_unique<Image>(Image::FromFile(path));
-				if (!LoadTextures(*image, 0, 0, 0, filterOptions_))
+				/* Same two-stage load as start-up: show the plain image now,
+				 * compute the requested filter in the background. */
+				IWFilterArg noneArgs[1];
+				const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
+				if (!LoadTextures(*image, 0, 0, 0, noneOpts))
 					continue;
 				SetWindowTitle(path);
 				ComputeReadout(*image, path);
 				source_image_ = std::move(image);
+				MaybeStartDeferredFilter();
 				imgui_->chromeEnabled     = true;
 				imgui_->lastMouseActivity = std::chrono::steady_clock::now();
 				return;
