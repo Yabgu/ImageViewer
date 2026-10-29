@@ -309,9 +309,8 @@ public:
 		vk_.Initialize(glfwWindow, (uint32_t)fbWidth, (uint32_t)fbHeight);
 		renderer_.Initialize(vk_);
 
-		/* ImGui is deliberately NOT created here: its init and font upload used
-		 * to sit between the swapchain and the first image frame.  See Main(). */
-
+		InitImGui();
+		IviewTrace("ImGui initialized (vulkan backend)");
 
 		hotkeysHandler.setZoomCallback([this](int zoomDelta) { adjustZoom(zoomDelta); });
 		hotkeysHandler.setPanCallback([this](int dx, int dy) { adjustPan(dx, dy); });
@@ -703,11 +702,6 @@ public:
 					 * first frame the user ever sees is the decoded image. */
 					glfwShowWindow(glfwWindow);
 					shown = true;
-					/* The image is already on screen.  Creating ImGui here keeps
-					 * its context setup and font-atlas upload off the startup
-					 * path; the chrome appears on the next frame, as before. */
-					InitImGui();
-					IviewTrace("ImGui initialized (deferred, image visible)");
 					imguiReady = true;
 					IviewTrace("glfwShowWindow");
 					/* Chrome must be drawn on the next frame. */

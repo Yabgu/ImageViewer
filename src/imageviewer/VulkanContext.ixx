@@ -427,13 +427,8 @@ private:
 			int score = 100;
 			switch (props.deviceType)
 			{
-			/* Integrated first.  The panel is normally wired to the iGPU, so
-			 * presenting from it avoids the cross-adapter handshake that
-			 * dominates swapchain creation and the first present.  This viewer
-			 * is latency-bound, not throughput-bound: the dGPU buys nothing a
-			 * still image needs. */
-			case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: score = 500; break;
-			case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   score = 1000;  break;
+			case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   score = 1000; break;
+			case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: score = 500;  break;
 			case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    score = 300;  break;
 			case VK_PHYSICAL_DEVICE_TYPE_CPU:            score = 0;    break;
 			default: break;
