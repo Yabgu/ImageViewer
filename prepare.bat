@@ -28,7 +28,22 @@ set CMAKE_TOOLCHAIN_FILE=%BUILD_ROOT_DIR%\third-party\vcpkg\scripts\buildsystems
 md "%BUILD_ROOT_DIR%\build"
 compact /c "%BUILD_ROOT_DIR%\build" /i /Q
 pushd "%BUILD_ROOT_DIR%\build"
-call :CALL_CMAKE %~dp0 -DCMAKE_TOOLCHAIN_FILE="%CMAKE_TOOLCHAIN_FILE%" && call :CALL_CMAKE --build .
+rem IMAGEVIEWER_USE_VCPKG=ON is what selects the CONFIG find_package() calls in
+rem src/imageviewer/CMakeLists.txt.  With it at its default OFF, the build asks
+rem for a *system* GLFW through cmake/FindGLFW3.cmake ("GLFW3 library not found,
+rem install libglfw3-dev") even though the vcpkg toolchain is active.
+rem
+rem VCPKG_MANIFEST_FEATURES must be given here, on the command line, and not
+rem left to CMakeLists.txt: the toolchain file runs during compiler detection,
+rem before the project body, and that is where vcpkg performs the manifest
+rem install.  Without it only vcpkg.json's default dependencies (doctest,
+rem libpng) are installed and glfw3/glad are missing.  Keep this list in sync
+rem with vcpkg.json and with .github/workflows/build.yml.
+call :CALL_CMAKE %~dp0 ^
+    -DCMAKE_TOOLCHAIN_FILE="%CMAKE_TOOLCHAIN_FILE%" ^
+    -DIMAGEVIEWER_USE_VCPKG=ON ^
+    -DVCPKG_MANIFEST_FEATURES="viewer;plugin-jpeg;plugin-webp;plugin-tiff;plugin-stb;plugin-pixman" ^
+    && call :CALL_CMAKE --build .
 popd
 goto :EOF
 
