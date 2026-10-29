@@ -22,15 +22,11 @@ endif()
 
 if(IMAGEVIEWER_USE_VCPKG)
     find_package(glfw3 CONFIG REQUIRED)
-    find_package(glad CONFIG REQUIRED)
     set(_GLFW_TARGET glfw)
-    set(_GLAD_TARGET glad::glad)
 else()
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
     find_package(GLFW3 REQUIRED)
-    find_package(Glad REQUIRED)
     set(_GLFW_TARGET glfw3::glfw3)
-    set(_GLAD_TARGET glad::glad)
 endif()
 
 # ── Per-plugin optional dependencies (QUIET — skip plugin if not found) ────────
@@ -126,6 +122,21 @@ else()
                 set(PIXMAN_TARGET PkgConfig::PIXMAN)
             endif()
         endif()
+        if(NOT DEFINED PIXMAN_TARGET)
+            # vcpkg's pixman port ships no CMake config, and a plain MSVC/Ninja
+            # install has no pkg-config either, so the plugin used to be skipped
+            # silently on Windows.  Locate the library and headers directly so
+            # FilterPixman (and therefore --filter=pwm) is actually built.
+            find_path(PIXMAN_INCLUDE_DIR NAMES pixman.h PATH_SUFFIXES pixman-1)
+            find_library(PIXMAN_LIBRARY NAMES pixman-1 libpixman-1)
+            if(PIXMAN_INCLUDE_DIR AND PIXMAN_LIBRARY)
+                add_library(pixman_vcpkg UNKNOWN IMPORTED)
+                set_target_properties(pixman_vcpkg PROPERTIES
+                    IMPORTED_LOCATION "${PIXMAN_LIBRARY}"
+                    INTERFACE_INCLUDE_DIRECTORIES "${PIXMAN_INCLUDE_DIR}")
+                set(PIXMAN_TARGET pixman_vcpkg)
+            endif()
+        endif()
     endif()
 endif()
 
@@ -134,6 +145,63 @@ if(DEFINED PIXMAN_TARGET)
 else()
     message(STATUS "Plugin: FilterPixman skipped (pixman not found)")
 endif()
+
+# ── Vulkan headers + volk (third-party/volk submodule) ───────────────────────
+# volk is the only Vulkan binding: every entry point is a function pointer loaded
+# from the platform loader at runtime, so nothing links against vulkan-1.lib and
+# no GL loader (glad) is needed any more.
+find_path(VULKAN_INCLUDE_DIR
+    NAMES vulkan/vulkan.h
+    HINTS ENV VULKAN_SDK
+    PATH_SUFFIXES Include include
+)
+if(NOT VULKAN_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "Vulkan headers not found (<vulkan/vulkan.h>). Install the Vulkan SDK and "
+        "set VULKAN_SDK, or add the vcpkg 'vulkan-headers' port to the viewer feature.")
+endif()
+message(STATUS "Vulkan headers: ${VULKAN_INCLUDE_DIR}")
+
+set(VOLK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/volk")
+if(NOT EXISTS "${VOLK_DIR}/volk.c")
+    message(FATAL_ERROR
+        "third-party/volk is missing. Run: git submodule update --init --recursive")
+endif()
+
+add_library(volk STATIC ${VOLK_DIR}/volk.c)
+target_include_directories(volk PUBLIC ${VOLK_DIR} ${VULKAN_INCLUDE_DIR})
+target_compile_definitions(volk PUBLIC VK_NO_PROTOTYPES)
+
+# ── Dear ImGui (third-party/imgui submodule, pinned at v1.93.0) ──────────────
+# ImGui is compiled as its own static library and linked into the viewer.  The
+# OpenGL3 backend is replaced by the Vulkan backend, built with
+# IMGUI_IMPL_VULKAN_USE_VOLK so it shares volk's function pointers with the rest
+# of the executable: exactly one Vulkan loader, and no GL loader at all.
+set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/imgui")
+
+add_library(imgui STATIC
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+)
+target_include_directories(imgui PUBLIC
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+)
+target_compile_definitions(imgui PRIVATE
+    GLFW_INCLUDE_NONE
+)
+target_compile_definitions(imgui PUBLIC
+    IMGUI_IMPL_VULKAN_USE_VOLK
+)
+target_link_libraries(imgui PUBLIC
+    ${_GLFW_TARGET}
+    volk
+)
+set_property(TARGET imgui PROPERTY CXX_STANDARD 17)
 
 # Main executable
 if(WIN32)
@@ -149,7 +217,8 @@ target_sources(imageviewer PUBLIC
     FILE_SET imageviewer TYPE CXX_MODULES
     FILES
         Window.ixx
-        TexturePool.ixx
+        VulkanContext.ixx
+        VulkanRenderer.ixx
         Image.ixx
         HotkeysHandler.ixx
         PluginManager.ixx
@@ -189,12 +258,11 @@ find_package(PNG REQUIRED)
 
 target_link_libraries(imageviewer PRIVATE
     ${_GLFW_TARGET}
-    ${_GLAD_TARGET}
+    imgui
 )
 
 target_link_libraries(iview PRIVATE
     ${_GLFW_TARGET}
-    ${_GLAD_TARGET}
     imageviewer
 )
 

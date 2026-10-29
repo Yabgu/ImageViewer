@@ -5,107 +5,192 @@ module;
 #include <iostream>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <cassert>
+#include <cmath>
 #include <format>
-#include <thread>
+#include <future>
+#include <string>
 #include <chrono>
 #include <filesystem>
+#include <system_error>
 #include <algorithm>
+#include <utility>
+
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES
+#endif
+#include <volk.h>
 
 #define GLFW_INCLUDE_NONE
-#include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+/* Dear ImGui is pulled in through the global module fragment only: no ImGui
+ * type appears in the exported interface below.  The backend is the Vulkan one,
+ * and it is compiled with IMGUI_IMPL_VULKAN_USE_VOLK so it shares volk's
+ * function pointers with this module (no second loader, no vulkan-1.lib). */
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_vulkan.h"
+
 #include "FilterPluginDef.h"
+#include "FilterCore.hpp"
 
 export module UserInterface;
 
-import TexturePool;
+import VulkanContext;
+import VulkanRenderer;
 import Image;
 import HotkeysHandler;
 import FilterPlugin;
 
+/* All Dear ImGui state lives here.  The type is attached to this module and is
+ * never exported, so the UserInterface interface stays free of ImGui types
+ * (pimpl, see Window::imgui_). */
+struct WindowImGuiState
+{
+	bool  initialized      = false;
+	bool  chromeEnabled    = true;   /* Tab toggles this */
+	bool  frameClockStarted = false;
+	float alpha            = 0.0f;
+	std::string readout;             /* "1920x1080 . 3.2 MB", filled once on upload */
+	std::chrono::steady_clock::time_point lastMouseActivity{};
+};
+
 export class Window
 {
 protected:
+	static Window* From(GLFWwindow* window) noexcept
+	{
+		return reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
+	}
+
 	static void window_size_callback(GLFWwindow* window, int width, int height)
 	{
-		Window* win = (Window*)glfwGetWindowUserPointer(window);
+		Window* win = From(window);
 		if (win != nullptr)
 		{
-			win->width = width;
+			win->width  = width;
 			win->height = height;
+			win->resizePending_ = true;
 		}
-
-		glViewport(0, 0, width, height);
 	}
 
 	static void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 	{
-		window_size_callback(window, width, height);
+		Window* win = From(window);
+		if (win != nullptr)
+		{
+			/* The swapchain is created at framebuffer resolution, so this is the
+			 * size that matters; the window keeps its own size in GLFW. */
+			win->width  = width;
+			win->height = height;
+			win->resizePending_ = true;
+		}
+	}
+
+	static void window_focus_callback(GLFWwindow* window, int focused)
+	{
+		Window* win = From(window);
+		if (win != nullptr && focused == GLFW_TRUE) win->dirtyRequest_ = true;
 	}
 
 	static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 	{
-		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
+		Window* win = From(window);
+		/* Leave the wheel to the ImGui chrome when the cursor is over it. */
+		if (win != nullptr && !ImguiWantsMouse())
+		{
+			win->applyScroll(xoffset, yoffset);
+		}
+		win->dirtyRequest_ = true;
+	}
+
+	/* GLFW file drop.  ImGui's GLFW backend does not install a drop callback, so
+	 * this one survives ImGui_ImplGlfw_InitForVulkan(..., true) untouched. */
+	static void drop_callback(GLFWwindow* window, int count, const char** paths)
+	{
+		Window* win = From(window);
 		if (win != nullptr)
 		{
-			win->scroll_callback(xoffset, yoffset);
+			win->HandleDrop(count, paths);
+			win->dirtyRequest_ = true;
 		}
 	}
 
-	void scroll_callback(double xoffset, double yoffset)
+	void applyScroll(double xoffset, double yoffset)
 	{
 		constexpr int MIN_ZOOM_PERCENT = -90;
 		constexpr int MAX_ZOOM_PERCENT = 400;
 		constexpr double SCROLL_SENSITIVITY = 10;
 
-		// Get mouse position relative to window
 		double mouseX, mouseY;
 		glfwGetCursorPos(glfwWindow, &mouseX, &mouseY);
 
-		// Update scroll value based on scroll input
 		double newZoomLevel = (scroll + yoffset * SCROLL_SENSITIVITY + 100.0) / 100.0;
 		newZoomLevel = std::clamp(newZoomLevel, (MIN_ZOOM_PERCENT + 100.0) / 100.0, (MAX_ZOOM_PERCENT + 100.0) / 100.0);
 
-		// Use setZoom to handle zooming with cursor position
 		setZoom(newZoomLevel, mouseX, mouseY);
 	}
 
 private:
-	GLFWwindow* const glfwWindow;
+	GLFWwindow* glfwWindow = nullptr;
 	int width;
 	int height;
 	int scroll;
-	std::shared_ptr<TextureCollection> textureCollection;
-	/* PWM frame set: non-empty when filter plugin produced multiple frames.
-	 * textureCollection always points to pwmFrames_[0] when the vector is
-	 * non-empty, so the rest of the code (panning, zooming, …) keeps working
-	 * without change.  Draw() cycles through pwmFrames_ at 60 fps. */
-	std::vector<std::shared_ptr<TextureCollection>> pwmFrames_;
-	mutable uint64_t frameCounter_ = 0;
+	int imageWidth_  = 0;
+	int imageHeight_ = 0;
 	FilterPlugin filterPlugin_;
-	GLuint shaderProgram;
 	double panX = 0.0;
 	double panY = 0.0;
 	bool isPanning = false;
 	double lastMouseX = 0.0, lastMouseY = 0.0;
 
+	/* Dear ImGui private state (see WindowImGuiState at module scope). */
+	std::unique_ptr<WindowImGuiState> imgui_;
+	/* Owned copy of the filter options from the command line. */
+	IWFilterOptions filterOptions_{ IW_FILTER_OPTIONS_VERSION, 0u, nullptr };
+	IWFilterArg filterArgStorage_[5]{};
+
+	/* Set by the GLFW callbacks; consumed by Main. */
+	mutable bool dirtyRequest_  = false;
+	bool         resizePending_ = false;
+
+	VulkanContext  vk_;
+	VulkanRenderer renderer_;
+	VkDescriptorPool imguiPool_ = VK_NULL_HANDLE;
+
 	double getZoom() const {
 		return (scroll + 100.0) / 100.0;
 	}
 
+	int getZoomPercent() const noexcept {
+		return static_cast<int>(std::lround(getZoom() * 100.0));
+	}
+
+	bool HasImage() const noexcept { return imageWidth_ > 0 && imageHeight_ > 0; }
+
+	/* True when the ImGui chrome currently owns the mouse (hovering a widget). */
+	static bool ImguiWantsMouse() noexcept {
+		if (ImGui::GetCurrentContext() == nullptr) return false;
+		return ImGui::GetIO().WantCaptureMouse;
+	}
+
 	void setPanning(double x, double y) {
-		if (textureCollection) {
+		if (HasImage()) {
 			double zoom = getZoom();
-			double imgW = textureCollection->width * zoom;
-			double imgH = textureCollection->height * zoom;
+			double imgW = imageWidth_ * zoom;
+			double imgH = imageHeight_ * zoom;
 			double minPanX = -(imgW - width) * 0.5;
 			double maxPanX = (imgW - width) * 0.5;
 			double minPanY = -(imgH - height) * 0.5;
 			double maxPanY = (imgH - height) * 0.5;
 
-			// Center the image if it is smaller than the window and centering is requested
 			if (imgW < width) {
 				panX = 0.0;
 			} else {
@@ -121,24 +206,29 @@ private:
 			panX = x;
 			panY = y;
 		}
+		dirtyRequest_ = true;
 	}
 
 	static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-		Window* win = (Window*)glfwGetWindowUserPointer(window);
+		Window* win = From(window);
 		if (button == GLFW_MOUSE_BUTTON_LEFT) {
 			if (action == GLFW_PRESS) {
+				if (win == nullptr || ImguiWantsMouse()) return;
 				double x, y;
 				glfwGetCursorPos(window, &x, &y);
 				win->isPanning = true;
 				win->lastMouseX = x;
 				win->lastMouseY = y;
 			} else if (action == GLFW_RELEASE) {
-				win->isPanning = false;
+				if (win != nullptr) win->isPanning = false;
 			}
 		}
+		if (win != nullptr) win->dirtyRequest_ = true;
 	}
+
 	static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos) {
-		Window* win = (Window*)glfwGetWindowUserPointer(window);
+		Window* win = From(window);
+		if (win == nullptr) return;
 		if (win->isPanning) {
 			double dx = xpos - win->lastMouseX;
 			double dy = ypos - win->lastMouseY;
@@ -146,16 +236,17 @@ private:
 			win->lastMouseX = xpos;
 			win->lastMouseY = ypos;
 		}
+		win->dirtyRequest_ = true;
 	}
 
 	static GLFWwindow* InitializeWindow(int width, int height, Window* containerWindow)
 	{
-		// Check that the window was successfully created
-		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-		glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_ANY_PROFILE);
+		/* No client API: GLFW only provides the window and the Vulkan surface.
+		 * The window stays invisible until the first frame that contains the
+		 * decoded image has been presented (see Window::Main). */
+		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
-		
 		if (glfwPlatformSupported(GLFW_PLATFORM_WAYLAND))
 		{
 			glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
@@ -169,104 +260,16 @@ private:
 
 		glfwSetWindowUserPointer(glfwWindow, (void*)containerWindow);
 
-		glfwMakeContextCurrent(glfwWindow);
-
 		glfwSetWindowSizeCallback(glfwWindow, window_size_callback);
 		glfwSetFramebufferSizeCallback(glfwWindow, framebuffer_size_callback);
+		glfwSetWindowFocusCallback(glfwWindow, window_focus_callback);
 		glfwSetScrollCallback(glfwWindow, scroll_callback);
 		glfwSetMouseButtonCallback(glfwWindow, mouse_button_callback);
 		glfwSetCursorPosCallback(glfwWindow, cursor_position_callback);
 		glfwSetKeyCallback(glfwWindow, key_callback);
+		glfwSetDropCallback(glfwWindow, drop_callback);
 
-		if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
-		{
-			[[unlikely]] throw std::runtime_error("gladLoadGLLoader failed");
-		}
-
-		glEnable(GL_TEXTURE_2D);
-
-		// Resize the window
-		window_size_callback(glfwWindow, width, height);
 		return glfwWindow;
-	}
-
-	static GLuint initializeDefaultShaderProgram() {
-		// --- Shader and VAO/VBO setup (new for OpenGL 4.x) ---
-		// Basic shaders for rendering a textured quad.
-		// In a real application, these would be loaded from files.
-		const char* vertexShaderSource = R"(
-			#version 400 core
-			layout (location = 0) in vec2 aPos;
-			layout (location = 1) in vec2 aTexCoord;
-
-			out vec2 TexCoord;
-
-			uniform mat4 projection; // Orthographic projection matrix
-			uniform mat4 model;	  // Model matrix for position
-
-			void main()
-			{
-				gl_Position = projection * model * vec4(aPos.x, aPos.y, 0.0, 1.0);
-				TexCoord = aTexCoord;
-			}
-		)";
-
-		const char* fragmentShaderSource = R"(
-			#version 400 core
-			out vec4 FragColor;
-
-			in vec2 TexCoord;
-
-			uniform sampler2D ourTexture;
-
-			void main()
-			{
-				FragColor = texture(ourTexture, TexCoord);
-			}
-		)";
-
-		GLuint vertexShader = CompileShader(GL_VERTEX_SHADER, vertexShaderSource);
-		GLuint fragmentShader = CompileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
-		return LinkProgram(vertexShader, fragmentShader);
-	}
-
-	// Helper function to create and compile a shader
-	static GLuint CompileShader(GLenum type, const char* source)
-	{
-		GLuint shader = glCreateShader(type);
-		glShaderSource(shader, 1, &source, NULL);
-		glCompileShader(shader);
-
-		int success;
-		char infoLog[512];
-		glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-		if (!success)
-		{
-			glGetShaderInfoLog(shader, 512, NULL, infoLog);
-			throw std::runtime_error(std::string("Shader compilation failed: ") + infoLog);
-		}
-		return shader;
-	}
-
-	// Helper function to link a shader program
-	static GLuint LinkProgram(GLuint vertexShader, GLuint fragmentShader)
-	{
-		GLuint program = glCreateProgram();
-		glAttachShader(program, vertexShader);
-		glAttachShader(program, fragmentShader);
-		glLinkProgram(program);
-
-		int success;
-		char infoLog[512];
-		glGetProgramiv(program, GL_LINK_STATUS, &success);
-		if (!success)
-		{
-			glGetProgramInfoLog(program, 512, NULL, infoLog);
-			throw std::runtime_error(std::string("Shader linking failed: ") + infoLog);
-		}
-		glDeleteShader(vertexShader);
-		glDeleteShader(fragmentShader);
-		return program;
 	}
 
 public:
@@ -289,11 +292,26 @@ private:
 public:
 	Window(int width, int height)
 		: glfwWindow(InitializeWindow(width, height, this)),
-			width(width),
-			height(height),
-			scroll(0),
-			shaderProgram(initializeDefaultShaderProgram()),
-			hotkeysHandler() {
+		  width(width),
+		  height(height),
+		  scroll(0),
+		  hotkeysHandler() {
+		/* Diagnostics must interleave truthfully with the Vulkan validation
+		 * layer's own stderr writes. */
+		std::setvbuf(stderr, nullptr, _IONBF, 0);
+		IviewTrace("window created");
+
+		int fbWidth = width, fbHeight = height;
+		glfwGetFramebufferSize(glfwWindow, &fbWidth, &fbHeight);
+
+		/* Instance, surface, device and the first FIFO swapchain.  This runs on
+		 * the main thread while the decode future is still working. */
+		vk_.Initialize(glfwWindow, (uint32_t)fbWidth, (uint32_t)fbHeight);
+		renderer_.Initialize(vk_);
+
+		InitImGui();
+		IviewTrace("ImGui initialized (vulkan backend)");
+
 		hotkeysHandler.setZoomCallback([this](int zoomDelta) { adjustZoom(zoomDelta); });
 		hotkeysHandler.setPanCallback([this](int dx, int dy) { adjustPan(dx, dy); });
 		hotkeysHandler.setSetZoomCallback([this](double zoomLevel) { setZoom(zoomLevel); });
@@ -307,70 +325,89 @@ public:
 		}
 	}
 
-	~Window()
-	{
-		if (shaderProgram) glDeleteProgram(shaderProgram);
-	}
+	~Window() = default;
 
-	void CenterImage()
+private:
+	void InitImGui()
 	{
-		setPanning(0.0, 0.0);
-		if (textureCollection) {
-			double minRatio = std::min<double>((double)width / textureCollection->width, (double)height / textureCollection->height);
-			this->scroll = static_cast<int>(minRatio * 100.0 - 100);
+		imgui_ = std::make_unique<WindowImGuiState>();
+		IMGUI_CHECKVERSION();
+		ImGui::CreateContext();
+		ImGuiIO& io = ImGui::GetIO();
+		io.IniFilename = nullptr;   /* no imgui.ini next to the executable */
+		io.LogFilename = nullptr;
+		ImGui::StyleColorsDark();
+		ImGuiStyle& style = ImGui::GetStyle();
+		style.WindowRounding   = 0.0f;
+		style.WindowBorderSize = 0.0f;
+		style.FrameRounding    = 3.0f;
+
+		if (!ImGui_ImplGlfw_InitForVulkan(glfwWindow, true)) {
+			ImGui::DestroyContext();
+			[[unlikely]] throw std::runtime_error("Failed to initialise ImGui GLFW backend");
 		}
-	}
 
-	/* ── Filter-plugin helpers ──────────────────────────────────────────── */
-
-	/* Query how many bits per colour channel the current GL framebuffer has. */
-	static IWScreenInfo QueryScreenInfo() noexcept
-	{
-		GLint redBits = 0;
-		GLint greenBits = 0;
-		GLint blueBits = 0;
-		GLint alphaBits = 0;
-
-		glGetFramebufferAttachmentParameteriv(
-			GL_FRAMEBUFFER, GL_BACK_LEFT,
-			GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE, &redBits);
-		glGetFramebufferAttachmentParameteriv(
-			GL_FRAMEBUFFER, GL_BACK_LEFT,
-			GL_FRAMEBUFFER_ATTACHMENT_GREEN_SIZE, &greenBits);
-		glGetFramebufferAttachmentParameteriv(
-			GL_FRAMEBUFFER, GL_BACK_LEFT,
-			GL_FRAMEBUFFER_ATTACHMENT_BLUE_SIZE, &blueBits);
-		glGetFramebufferAttachmentParameteriv(
-			GL_FRAMEBUFFER, GL_BACK_LEFT,
-			GL_FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE, &alphaBits);
-
-		uint8_t channelCount = 0;
-		GLint minBits = 0;
-
-		auto considerChannel = [&](GLint bits) noexcept
-		{
-			if (bits > 0)
-			{
-				++channelCount;
-				if (minBits == 0 || bits < minBits)
-				{
-					minBits = bits;
-				}
-			}
+		/* Descriptor pool for the backend's font atlas and any user textures.
+		 * ImGui 1.93 uses separate SAMPLED_IMAGE and SAMPLER descriptors. */
+		VkDescriptorPoolSize sizes[3] = {
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64 },
+			{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          64 },
+			{ VK_DESCRIPTOR_TYPE_SAMPLER,                64 },
 		};
-
-		considerChannel(redBits);
-		considerChannel(greenBits);
-		considerChannel(blueBits);
-		considerChannel(alphaBits);
-
-		if (channelCount == 0 || minBits <= 0)
-		{
-			return { static_cast<uint8_t>(8), 4u };
+		VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+		pci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+		pci.maxSets       = 64;
+		pci.poolSizeCount = 3;
+		pci.pPoolSizes    = sizes;
+		if (vkCreateDescriptorPool(vk_.Device(), &pci, nullptr, &imguiPool_) != VK_SUCCESS) {
+			ImGui_ImplGlfw_Shutdown();
+			ImGui::DestroyContext();
+			[[unlikely]] throw std::runtime_error("Failed to create the ImGui descriptor pool");
 		}
 
-		return { static_cast<uint8_t>(minBits), channelCount };
+		ImGui_ImplVulkan_InitInfo info{};
+		info.ApiVersion        = VK_API_VERSION_1_1;
+		info.Instance          = vk_.Instance();
+		info.PhysicalDevice    = vk_.PhysicalDevice();
+		info.Device            = vk_.Device();
+		info.QueueFamily       = vk_.GraphicsFamily();
+		info.Queue             = vk_.GraphicsQueue();
+		info.DescriptorPool    = imguiPool_;
+		info.MinImageCount     = vk_.ImageCount();
+		info.ImageCount        = vk_.ImageCount();
+		info.UseDynamicRendering = false;
+		/* 1.93: the render pass lives in PipelineInfoMain, not in InitInfo. */
+		info.PipelineInfoMain.RenderPass   = renderer_.RenderPass();
+		info.PipelineInfoMain.Subpass      = 0;
+		info.PipelineInfoMain.MSAASamples  = VK_SAMPLE_COUNT_1_BIT;
+
+		/* Fonts: 1.93 uploads the atlas on the first NewFrame(); there is no
+		 * ImGui_ImplVulkan_CreateFontsTexture() in this version any more. */
+		if (!ImGui_ImplVulkan_Init(&info)) {
+			vkDestroyDescriptorPool(vk_.Device(), imguiPool_, nullptr);
+			imguiPool_ = VK_NULL_HANDLE;
+			ImGui_ImplGlfw_Shutdown();
+			ImGui::DestroyContext();
+			[[unlikely]] throw std::runtime_error("Failed to initialise the ImGui Vulkan backend");
+		}
+		imgui_->initialized = true;
 	}
+
+	void ShutdownImGui()
+	{
+		if (!imgui_ || !imgui_->initialized) return;
+		vk_.WaitIdle();
+		ImGui_ImplVulkan_Shutdown();
+		ImGui_ImplGlfw_Shutdown();
+		ImGui::DestroyContext();
+		imgui_->initialized = false;
+		if (imguiPool_ != VK_NULL_HANDLE) {
+			vkDestroyDescriptorPool(vk_.Device(), imguiPool_, nullptr);
+			imguiPool_ = VK_NULL_HANDLE;
+		}
+	}
+
+	/* ── Image → GPU ───────────────────────────────────────────────────────── */
 
 	/* Build an ImagePluginData view of an Image (no pixel data copy). */
 	static ImagePluginData MakePluginDataView(const Image& image) noexcept
@@ -386,160 +423,558 @@ public:
 		return pd;
 	}
 
-	/* Create a TextureCollection from an ImagePluginData frame.
-	 * Makes a full copy of the pixel data so the filter plugin's malloc
-	 * allocation is not touched by Image's delete[]-based destructor. */
-	static std::shared_ptr<TextureCollection> MakeCollection(
-		const ImagePluginData& pd, int segW, int segH, int border)
+	/* Exactly the plugin's target format: interleaved 8-bit RGBA, in order. */
+	static bool IsPackedRgba8(const IWImageFormat& f) noexcept
 	{
-		Image tmp(pd.width, pd.height, pd.format, pd.colorSpace);
-		if (pd.stride == tmp.stride) {
-			std::memcpy(tmp.data, pd.data, tmp.size);
-		} else {
-			const int copyBytes = std::min(pd.stride, tmp.stride);
-			for (int y = 0; y < pd.height; ++y) {
-				std::memcpy(tmp.data + static_cast<ptrdiff_t>(y) * tmp.stride,
-				            pd.data  + static_cast<ptrdiff_t>(y) * pd.stride,
-				            copyBytes);
+		if (f.storageLayout != IW_STORAGE_INTERLEAVED) return false;
+		if (f.componentCount != 4u || f.bitsPerPixel != 32u) return false;
+		static const IWComponentSemantic kOrder[4] = {
+			IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_SEMANTIC_G,
+			IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_SEMANTIC_A
+		};
+		for (int i = 0; i < 4; ++i) {
+			const IWComponentDef& c = f.components[i];
+			if (c.semantic       != kOrder[i])               return false;
+			if (c.componentClass != IW_COMPONENT_CLASS_UNORM) return false;
+			if (c.bitWidth       != 8u)                      return false;
+			if (c.bitOffset      != (uint16_t)(i * 8))       return false;
+		}
+		return true;
+	}
+
+	/* Convert one frame to tightly packed RGBA8.  The plugin already produces
+	 * exactly that layout, so the common path is a straight row copy; anything
+	 * else (float/16-bit/planar/exotic semantics when no plugin is loaded) is
+	 * normalised through the same FilterCore helper the plugin uses. */
+	static void ToRgba8(const ImagePluginData& pd, std::vector<uint8_t>& out)
+	{
+		out.resize((size_t)pd.width * (size_t)pd.height * 4u);
+		if (IsPackedRgba8(pd.format)) {
+			for (int y = 0; y < pd.height; ++y)
+				std::memcpy(out.data() + (size_t)y * pd.width * 4u,
+				            pd.data  + (ptrdiff_t)y * pd.stride,
+				            (size_t)pd.width * 4u);
+			return;
+		}
+
+		for (int y = 0; y < pd.height; ++y) {
+			uint8_t* dst = out.data() + (size_t)y * pd.width * 4u;
+			for (int x = 0; x < pd.width; ++x) {
+				float rgba[4];
+				FilterCore::ExtractPixelF(pd, x, y, rgba);
+				for (int c = 0; c < 4; ++c) {
+					const float v = std::clamp(rgba[c], 0.0f, 1.0f);
+					dst[x * 4 + c] = (uint8_t)std::lround(v * 255.0f);
+				}
 			}
 		}
-		return std::make_shared<TextureCollection>(tmp, segW, segH, border);
 	}
 
 public:
-	void LoadTextures(
+	/* Kept under its OpenGL name so the call sites do not change.  The tiling
+	 * parameters are meaningless for a single Vulkan texture and are ignored.
+	 *
+	 * Runs the filter plugin (which does the actual temporal quantisation) and
+	 * uploads at most two phase frames.  Returns false when the plugin produced
+	 * more than two frames — N-phase is out of scope for this build. */
+	bool LoadTextures(
 		const Image& image,
-		const int segmentWidth,
-		const int segmentHeight,
-		const int redundantBorderSize,
+		const int /*segmentWidth*/,
+		const int /*segmentHeight*/,
+		const int /*redundantBorderSize*/,
 		const IWFilterOptions& opts = IWFilterOptions{
 			IW_FILTER_OPTIONS_VERSION, 0u, nullptr })
 	{
-		pwmFrames_.clear();
-		frameCounter_ = 0;
+		if (image.width <= 0 || image.height <= 0)
+			return false;
+
+		std::vector<uint8_t> phaseA;
+		std::vector<uint8_t> phaseB;
 
 		if (filterPlugin_.IsLoaded()) {
-			const ImagePluginData pd   = MakePluginDataView(image);
-			const IWScreenInfo  screen = QueryScreenInfo();
+			const ImagePluginData pd = MakePluginDataView(image);
+			/* 8 bits per channel, 4 channels: exactly what the swapchain and
+			 * both FBOs offer, and what the OpenGL renderer reported. */
+			const IWScreenInfo screen{ 8u, 4u };
 
 			IWFilterImageSet* set = nullptr;
-			try {
-				set = filterPlugin_.Filter(&pd, &screen, &opts);
-			} catch (...) {
-				set = nullptr;
-			}
+			try { set = filterPlugin_.Filter(&pd, &screen, &opts); }
+			catch (...) { set = nullptr; }
 
 			if (set && set->frameCount > 0 && set->frames) {
+				if (set->frameCount > 2u) {
+					std::fprintf(stderr,
+						"iview: pwm_bits > 1 (%u phase frames) is not implemented in this build\n",
+						set->frameCount);
+					filterPlugin_.Free(set);
+					return false;
+				}
 				for (uint32_t i = 0; i < set->frameCount; ++i) {
 					if (!set->frames[i]) continue;
 					try {
-						pwmFrames_.push_back(
-							MakeCollection(*set->frames[i],
-							               segmentWidth,
-							               segmentHeight,
-							               redundantBorderSize));
-					} catch (...) {
-						/* If one frame fails, skip it. */
-					}
+						if (i == 0) ToRgba8(*set->frames[i], phaseA);
+						else        ToRgba8(*set->frames[i], phaseB);
+					} catch (...) { /* skip a frame that fails to convert */ }
 				}
 				filterPlugin_.Free(set);
-			} else {
-				if (set) filterPlugin_.Free(set);
+			} else if (set) {
+				filterPlugin_.Free(set);
 			}
 		}
 
-		if (pwmFrames_.empty()) {
-			/* Fallback: no filter or filter returned nothing — use image directly. */
-			pwmFrames_.push_back(std::make_shared<TextureCollection>(
-				image, segmentWidth, segmentHeight, redundantBorderSize));
+		if (phaseA.empty()) {
+			/* No filter (or it returned nothing): use the image directly. */
+			ToRgba8(MakePluginDataView(image), phaseA);
 		}
 
-		textureCollection = pwmFrames_[0];
+		renderer_.Upload((uint32_t)image.width, (uint32_t)image.height,
+		                 phaseA.data(), phaseB.empty() ? nullptr : phaseB.data());
+
+		imageWidth_  = image.width;
+		imageHeight_ = image.height;
 		CenterImage();
+		return true;
 	}
 
-	void Draw() const
+	/* Filter options from the command line.  The argument array is copied into
+	 * the Window, so the caller's storage does not have to outlive Main(). */
+	void SetFilterOptions(const IWFilterOptions& opts)
 	{
-		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT);
-		glLoadIdentity();
-		glUseProgram(shaderProgram);
-
-		// Get uniform locations
-		GLint projectionLoc = glGetUniformLocation(shaderProgram, "projection");
-		GLint modelLoc = glGetUniformLocation(shaderProgram, "model");
-		GLint textureSamplerLoc = glGetUniformLocation(shaderProgram, "ourTexture");
-
-		// Set the texture unit for the sampler
-		glUniform1i(textureSamplerLoc, 0); // Corresponds to GL_TEXTURE0
-
-		/* Select the active frame (PWM cycles through all frames). */
-		TextureCollection* activeTc = nullptr;
-		if (!pwmFrames_.empty()) {
-			const size_t idx = (pwmFrames_.size() > 1u)
-			                 ? (frameCounter_ % pwmFrames_.size())
-			                 : 0u;
-			++frameCounter_;
-			activeTc = pwmFrames_[idx].get();
-		}
-
-		if (activeTc != nullptr)
-		{
-			double zoom = getZoom();
-			float imgW = activeTc->width * zoom;
-			float imgH = activeTc->height * zoom;
-			float cx = (width - imgW) * 0.5f;
-			float cy = (height - imgH) * 0.5f;
-			float left = (-cx - panX) / zoom;
-			float right = (width - cx - panX) / zoom;
-			float top = (-cy - panY) / zoom;
-			float bottom = (height - cy - panY) / zoom;
-			float nearVal = -1.0f;
-			float farVal = 1.0f;
-			float ortho[16] = {
-				2.0f / (right - left), 0.0f, 0.0f, 0.0f,
-				0.0f, 2.0f / (top - bottom), 0.0f, 0.0f,
-				0.0f, 0.0f, -2.0f / (farVal - nearVal), 0.0f,
-				-(right + left) / (right - left), -(top + bottom) / (top - bottom), -(farVal + nearVal) / (farVal - nearVal), 1.0f
-			};
-			glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, ortho);
-			activeTc->Draw(modelLoc);
-		}
-		glfwSwapBuffers(glfwWindow);
+		const uint32_t count = std::min<uint32_t>(opts.argc, 5u);
+		for (uint32_t i = 0; i < count; ++i) filterArgStorage_[i] = opts.argv[i];
+		filterOptions_.version = opts.version;
+		filterOptions_.argc    = count;
+		filterOptions_.argv    = (count != 0u) ? filterArgStorage_ : nullptr;
 	}
 
-	void Main()
+	void CenterImage()
 	{
-		glfwMakeContextCurrent(this->glfwWindow);
+		setPanning(0.0, 0.0);
+		if (HasImage()) {
+			double minRatio = std::min<double>((double)width / imageWidth_, (double)height / imageHeight_);
+			this->scroll = static_cast<int>(minRatio * 100.0 - 100);
+		}
+	}
 
-		using Clock    = std::chrono::steady_clock;
-		using Duration = std::chrono::duration<double>;
-		constexpr double kFrameSeconds = 1.0 / 60.0;
+	/* ── Main loop ─────────────────────────────────────────────────────────── */
 
-		auto lastFrame = Clock::now();
+	void Main(std::future<Image>&& imageFuture, std::filesystem::path imagePath)
+	{
+		using Clock = std::chrono::steady_clock;
 
-		while (!glfwWindowShouldClose(this->glfwWindow))
+		bool uploaded = false;
+		bool shown    = false;
+		bool imguiReady = false;
+		bool dirty    = false;
+		bool firstIteration = true;
+		uint32_t phase = 0;       /* which FBO is scheduled for the next copy */
+		uint64_t slot  = 0;       /* frame slot, == swapchain image count    */
+
+		/* Diagnostics (only printed when IMAGEVIEWER_VK_TRACE is set). */
+		const bool trace = IviewTraceEnabled();
+		std::vector<double> presentIntervalsMs;
+		double cpuOutsidePresentMs = 0.0;
+		bool   idleRecipePrinted   = false;
+		auto   lastPresentEnd      = Clock::now();
+
+		while (!glfwWindowShouldClose(glfwWindow))
 		{
-			[[likely]]
-			Draw();
+			const auto iterationStart = Clock::now();
+			glfwPollEvents();
 
-			if (pwmFrames_.size() > 1u) {
-				/* PWM active: poll events and sleep until the next 60 fps deadline
-				 * so each frame gets an equal display duration. */
-				glfwPollEvents();
-				std::this_thread::sleep_until(lastFrame + Duration(kFrameSeconds));
-				lastFrame = Clock::now();
-			} else {
-				/* Single frame: wait for events (power-efficient). */
-				glfwWaitEventsTimeout(kFrameSeconds);
-				lastFrame = Clock::now();
+			/* (1) Decode future.  Before the image exists there is nothing to
+			 * present, so no acquire and no present happen: poll the future and
+			 * wait for events for at most 2 ms. */
+			if (!uploaded)
+			{
+				if (firstIteration) { IviewTrace("first loop iteration (hidden window)"); firstIteration = false; }
+
+				if (imageFuture.valid() &&
+				    imageFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
+				{
+					IviewTrace("future ready");
+					try
+					{
+						const Image image = imageFuture.get();
+						if (!LoadTextures(image, 0, 0, 0, filterOptions_))
+							throw std::runtime_error("the filter produced an unsupported frame count");
+						SetWindowTitle(imagePath);
+						ComputeReadout(image, imagePath);
+						uploaded = true;
+						dirty = true;
+						IviewTrace("image uploaded to the GPU");
+					}
+					catch (std::exception& ex)
+					{
+#ifdef _WIN32
+						MessageBoxA(NULL, ex.what(), "Error", MB_OK | MB_ICONERROR);
+#else
+						std::cerr << "Failed to process the request : " << ex.what() << std::endl;
+#endif
+						break;
+					}
+				}
+				else
+				{
+					/* The only wait in the loop, and only while nothing exists to
+					 * present; afterwards FIFO presentation paces everything. */
+					glfwWaitEventsTimeout(0.002);
+					continue;
+				}
+			}
+
+			if (firstIteration) { IviewTrace("first loop iteration"); firstIteration = false; }
+
+			/* (2) Swapchain recreation (resize / OUT_OF_DATE / SUBOPTIMAL). */
+			if (resizePending_)
+			{
+				HandleResize(dirty);
+			}
+
+			/* (3) One ImGui frame per dirty burst, reused by both FBO passes. */
+			ImDrawData* guiData = nullptr;
+			if (dirty && imguiReady)
+			{
+				ImGui_ImplVulkan_NewFrame();
+				ImGui_ImplGlfw_NewFrame();
+				ImGui::NewFrame();
+				BuildChrome();
+				ImGui::Render();
+				guiData = ImGui::GetDrawData();
+			}
+
+			/* (4) Acquire, then either the dirty command buffer (two FBO draws +
+			 * one copy) or the pre-recorded idle copy. */
+			uint32_t imageIndex = 0;
+			if (!vk_.AcquireNextImage((uint32_t)(slot % vk_.ImageCount()), &imageIndex))
+			{
+				resizePending_ = true;
+				continue;
+			}
+
+			const bool dirtyFrame = dirty;
+			VkCommandBuffer cmd = VK_NULL_HANDLE;
+			if (dirtyFrame)
+			{
+				cmd = renderer_.DirtyCommand((uint32_t)(slot % vk_.ImageCount()));
+				renderer_.BeginCommand(cmd);
+
+				const ImageDrawParams p = ComputeDrawParams();
+				for (uint32_t ph = 0; ph < 2u; ++ph)
+				{
+					renderer_.BeginImagePass(cmd, ph, p);
+					if (guiData != nullptr)
+						ImGui_ImplVulkan_RenderDrawData(guiData, cmd);
+					renderer_.EndImagePass(cmd);
+				}
+				/* The dirty pass always presents phase A; the alternation
+				 * resumes from phase B on the next frame. */
+				renderer_.CopyPhaseToSwapchain(cmd, imageIndex, 0);
+				renderer_.EndCommand(cmd);
+
+				if (!shown) IviewTrace("dirty pass recorded (both FBOs)");
+			}
+			else
+			{
+				cmd = renderer_.IdleCommand(imageIndex, phase);
+			}
+
+			const auto beforePresent = Clock::now();
+			const bool presented = vk_.SubmitAndPresent((uint32_t)(slot % vk_.ImageCount()),
+			                                            imageIndex, cmd);
+			const auto afterPresent = Clock::now();
+
+			if (!presented)
+			{
+				resizePending_ = true;
+				continue;
+			}
+
+			if (dirtyFrame)
+			{
+				dirty = false;
+				phase = 1u;
+				if (!shown)
+				{
+					IviewTrace("first frame presented (image, still hidden)");
+					/* The image is already in the swapchain image that was just
+					 * presented; only now does the window become visible, so the
+					 * first frame the user ever sees is the decoded image. */
+					glfwShowWindow(glfwWindow);
+					shown = true;
+					imguiReady = true;
+					IviewTrace("glfwShowWindow");
+					/* Chrome must be drawn on the next frame. */
+					dirty = true;
+				}
+			}
+			else
+			{
+				phase ^= 1u;
+				if (!idleRecipePrinted && trace)
+				{
+					idleRecipePrinted = true;
+					std::fprintf(stderr,
+						"IVIEW_TRACE idle frame: vkAcquireNextImageKHR + "
+						"vkCmdPipelineBarrier(UNDEFINED->TRANSFER_DST) + "
+						"vkCmdCopyImage(FBO[%u] -> image %u) + "
+						"vkCmdPipelineBarrier(TRANSFER_DST->PRESENT_SRC) + "
+						"vkQueueSubmit + vkQueuePresentKHR  (no render pass, no draw)\n",
+						phase ^ 1u, imageIndex);
+					std::fflush(stderr);
+				}
+			}
+
+			slot++;
+
+			/* (5) Diagnostics: FIFO pacing and CPU cost outside the present.
+			 * Only idle frames are sampled — a dirty burst is not representative. */
+			if (trace)
+			{
+				if (!dirtyFrame && presentIntervalsMs.size() < 120)
+				{
+					cpuOutsidePresentMs +=
+						std::chrono::duration<double, std::milli>(beforePresent - iterationStart).count();
+					presentIntervalsMs.push_back(
+						std::chrono::duration<double, std::milli>(afterPresent - lastPresentEnd).count());
+					if (presentIntervalsMs.size() == 120)
+					{
+						std::vector<double> sorted = presentIntervalsMs;
+						std::sort(sorted.begin(), sorted.end());
+						std::fprintf(stderr,
+							"IVIEW_TRACE 120 idle presents: median interval %.2f ms "
+							"(min %.2f, max %.2f); CPU outside present %.3f ms/frame\n",
+							sorted[sorted.size() / 2], sorted.front(), sorted.back(),
+							cpuOutsidePresentMs / 120.0);
+						std::fflush(stderr);
+					}
+				}
+				lastPresentEnd = afterPresent;
+			}
+
+			if (dirtyRequest_)
+			{
+				dirtyRequest_ = false;
+				dirty = true;
+			}
+
+			/* The fade needs frames while it animates, and the 1.5 s idle
+			 * transition needs one frame at the moment it starts. */
+			if (imguiReady && ChromeNeedsFrame()) dirty = true;
+		}
+
+		ShutdownImGui();
+
+		/* Step-7 FBO preservation check (opt-in: it copies 60 frames). */
+		if (const char* selftest = std::getenv("IMAGEVIEWER_VK_SELFTEST");
+		    selftest != nullptr && selftest[0] != '\0' && std::strcmp(selftest, "0") != 0)
+		{
+			renderer_.SelfTestFboPreservation();
+		}
+
+		renderer_.Shutdown();
+		vk_.Shutdown();
+	}
+
+private:
+	/* NDC placement of the image quad, derived exactly like the OpenGL
+	 * renderer's orthographic projection. */
+	ImageDrawParams ComputeDrawParams() const
+	{
+		ImageDrawParams p;
+		if (!HasImage() || width <= 0 || height <= 0) return p;
+
+		const double zoom = getZoom();
+		const double imgW = imageWidth_ * zoom;
+		const double imgH = imageHeight_ * zoom;
+		const double imgX = (width - imgW) * 0.5 + panX;
+		const double imgY = (height - imgH) * 0.5 + panY;
+
+		p.posX  = (float)(2.0 * imgX / width  - 1.0);
+		p.posY  = (float)(2.0 * imgY / height - 1.0);
+		p.sizeX = (float)(2.0 * imgW / width);
+		p.sizeY = (float)(2.0 * imgH / height);
+		p.nearest = (zoom >= 1.0);
+		return p;
+	}
+
+	void HandleResize(bool& dirty)
+	{
+		resizePending_ = false;
+
+		int fbWidth = 0, fbHeight = 0;
+		glfwGetFramebufferSize(glfwWindow, &fbWidth, &fbHeight);
+		if (fbWidth <= 0 || fbHeight <= 0) return;   /* minimised: keep the old swapchain */
+
+		width  = fbWidth;
+		height = fbHeight;
+
+		vk_.WaitIdle();
+		if (!vk_.RecreateSwapchain((uint32_t)fbWidth, (uint32_t)fbHeight))
+		{
+			resizePending_ = true;   /* try again next iteration */
+			return;
+		}
+		/* Same call path as the initial creation: new FBOs, new idle buffers. */
+		renderer_.OnSwapchainChanged();
+		ImGui_ImplVulkan_SetMinImageCount(vk_.MinImageCount());
+		dirty = true;
+		IviewTrace("swapchain recreated");
+	}
+
+	/* True while the chrome alpha still has to move towards its target. */
+	bool ChromeNeedsFrame() const
+	{
+		if (!imgui_) return false;
+		using Clock = std::chrono::steady_clock;
+		const auto now = Clock::now();
+		const bool idle = (now - imgui_->lastMouseActivity) > std::chrono::milliseconds(1500);
+		const float target = !imgui_->chromeEnabled ? 0.0f : (idle ? 0.15f : 1.0f);
+		return std::fabs(imgui_->alpha - target) > 0.0001f;
+	}
+
+	void SetWindowTitle(const std::filesystem::path& path)
+	{
+		const std::string title = "ImageViewer \xE2\x80\x94 " + Utf8Filename(path);
+		glfwSetWindowTitle(glfwWindow, title.c_str());
+	}
+
+	void ComputeReadout(const Image& image, const std::filesystem::path& path)
+	{
+		std::error_code ec;
+		const std::uintmax_t bytes = std::filesystem::file_size(path, ec);
+		if (ec)
+		{
+			imgui_->readout = std::format("{}\xC3\x97{}", image.width, image.height);
+		}
+		else
+		{
+			const double megabytes = static_cast<double>(bytes) / (1024.0 * 1024.0);
+			imgui_->readout = std::format("{}\xC3\x97{} \xC2\xB7 {:.1f} MB",
+			                              image.width, image.height, megabytes);
+		}
+	}
+
+	static std::string Utf8Filename(const std::filesystem::path& path)
+	{
+		const std::u8string utf8 = path.filename().u8string();
+		return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+	}
+
+	/* Fade + chrome.  Alpha slews 0 -> 1 in 200 ms, idles at 0.15 after 1.5 s
+	 * without mouse motion, and drops to 0 when Tab hides the chrome. */
+	void BuildChrome()
+	{
+		using Clock = std::chrono::steady_clock;
+		const auto now = Clock::now();
+
+		if (!imgui_->frameClockStarted)
+		{
+			imgui_->lastMouseActivity = now;
+			imgui_->frameClockStarted = true;
+		}
+
+		const ImGuiIO& io = ImGui::GetIO();
+		if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)
+			imgui_->lastMouseActivity = now;
+
+		const bool idle = (now - imgui_->lastMouseActivity) > std::chrono::milliseconds(1500);
+		float target = 0.15f;
+		if (!imgui_->chromeEnabled)      target = 0.0f;
+		else if (!idle)                  target = 1.0f;
+
+		const float step = (io.DeltaTime > 0.0f) ? (io.DeltaTime / 0.2f) : 1.0f;
+		if (imgui_->alpha < target) imgui_->alpha = std::min(target, imgui_->alpha + step);
+		else                        imgui_->alpha = std::max(target, imgui_->alpha - step);
+
+		ImGui::GetStyle().Alpha = imgui_->alpha;
+		if (imgui_->alpha <= 0.001f) return;
+
+		const ImGuiViewport* vp = ImGui::GetMainViewport();
+		constexpr ImGuiWindowFlags kChromeFlags =
+			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize;
+
+		/* Top-right readout: dimensions and on-disk size, computed once. */
+		ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 12.0f, vp->WorkPos.y + 10.0f),
+		                        ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.85f));
+		if (ImGui::Begin("##readout", nullptr, kChromeFlags | ImGuiWindowFlags_NoInputs))
+		{
+			ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.85f);
+			ImGui::TextUnformatted(imgui_->readout.c_str());
+			ImGui::PopFont();
+		}
+		ImGui::End();
+		ImGui::PopStyleColor();
+		ImGui::PopStyleVar();
+
+		/* Bottom-centre control strip: no decoration, transparent background. */
+		ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
+		                               vp->WorkPos.y + vp->WorkSize.y - 12.0f),
+		                        ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 6.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 6.0f));
+		if (ImGui::Begin("##controls", nullptr, kChromeFlags))
+		{
+			if (ImGui::Button("Fit")) fitToWindow();
+			ImGui::SameLine();
+			if (ImGui::Button("1:1")) setZoom(1.0);
+
+			ImGui::SameLine(0.0f, 14.0f);
+			if (ImGui::Button("-")) adjustZoom(-10);
+			ImGui::SameLine();
+			char zoomLabel[16];
+			std::snprintf(zoomLabel, sizeof(zoomLabel), "%3d%%", getZoomPercent());
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextUnformatted(zoomLabel);
+			ImGui::SameLine();
+			if (ImGui::Button("+")) adjustZoom(10);
+
+			ImGui::SameLine(0.0f, 14.0f);
+			if (ImGui::Button("Filter")) ImGui::OpenPopup("##filters");
+			if (ImGui::BeginPopup("##filters"))
+			{
+				ImGui::TextDisabled("No filters yet");
+				ImGui::EndPopup();
+			}
+		}
+		ImGui::End();
+		ImGui::PopStyleVar(2);
+	}
+
+	/* File drop: phase 1 reuses the same decode + upload path on the main
+	 * thread (this runs inside glfwPollEvents, between two frames). */
+	void HandleDrop(int count, const char** paths)
+	{
+		if (count <= 0 || paths == nullptr || !imgui_) return;
+
+		for (int i = 0; i < count; ++i)
+		{
+			if (paths[i] == nullptr) continue;
+			try
+			{
+				const std::filesystem::path path(reinterpret_cast<const char8_t*>(paths[i]));
+				const Image image = Image::FromFile(path);
+				if (!LoadTextures(image, 0, 0, 0, filterOptions_))
+					continue;
+				SetWindowTitle(path);
+				ComputeReadout(image, path);
+				imgui_->chromeEnabled     = true;
+				imgui_->lastMouseActivity = std::chrono::steady_clock::now();
+				return;
+			}
+			catch (const std::exception&)
+			{
+				/* Try the next dropped file; nothing to report in phase 1. */
 			}
 		}
 	}
 
 public:
 	void setZoom(double zoomLevel) {
-		// Use the center of the window as the default cursor position
 		setZoom(zoomLevel, width * 0.5, height * 0.5);
 	}
 
@@ -548,19 +983,18 @@ public:
         const double newScroll = (zoomLevel * 100.0) - 100.0;
         scroll = std::clamp(static_cast<int>(newScroll), -90, 400);
 
-        if (textureCollection) {
-            const double imgW = textureCollection->width * currentZoom;
-            const double imgH = textureCollection->height * currentZoom;
+        if (HasImage()) {
+            const double imgW = imageWidth_ * currentZoom;
+            const double imgH = imageHeight_ * currentZoom;
             const double imgX = (width - imgW) * 0.5 + panX;
             const double imgY = (height - imgH) * 0.5 + panY;
 
-            // Calculate the image position relative to the cursor
             const double mouseImgXBefore = (cursorX - imgX) / currentZoom;
             const double mouseImgYBefore = (cursorY - imgY) / currentZoom;
 
             const double newZoom = getZoom();
-            const double newImgW = textureCollection->width * newZoom;
-            const double newImgH = textureCollection->height * newZoom;
+            const double newImgW = imageWidth_ * newZoom;
+            const double newImgH = imageHeight_ * newZoom;
             const double newImgX = (width - newImgW) * 0.5 + panX;
             const double newImgY = (height - newImgH) * 0.5 + panY;
             const double mouseScreenXAfter = newImgX + mouseImgXBefore * newZoom;
@@ -568,27 +1002,27 @@ public:
 
             setPanning(panX + cursorX - mouseScreenXAfter, panY + cursorY - mouseScreenYAfter);
         }
+        dirtyRequest_ = true;
     }
 
 	void adjustZoom(int zoomDelta) {
         const double currentZoom = getZoom();
         scroll = std::clamp(scroll + zoomDelta, -90, 400);
 
-        if (textureCollection) {
-            const double imgW = textureCollection->width * currentZoom;
-            const double imgH = textureCollection->height * currentZoom;
+        if (HasImage()) {
+            const double imgW = imageWidth_ * currentZoom;
+            const double imgH = imageHeight_ * currentZoom;
             const double imgX = (width - imgW) * 0.5 + panX;
             const double imgY = (height - imgH) * 0.5 + panY;
 
-            // Calculate the center of the current panning
             const double centerX = width * 0.5;
             const double centerY = height * 0.5;
             const double mouseImgXBefore = (centerX - imgX) / currentZoom;
             const double mouseImgYBefore = (centerY - imgY) / currentZoom;
 
             const double newZoom = getZoom();
-            const double newImgW = textureCollection->width * newZoom;
-            const double newImgH = textureCollection->height * newZoom;
+            const double newImgW = imageWidth_ * newZoom;
+            const double newImgH = imageHeight_ * newZoom;
             const double newImgX = (width - newImgW) * 0.5 + panX;
             const double newImgY = (height - newImgH) * 0.5 + panY;
             const double mouseScreenXAfter = newImgX + mouseImgXBefore * newZoom;
@@ -596,6 +1030,7 @@ public:
 
             setPanning(panX + centerX - mouseScreenXAfter, panY + centerY - mouseScreenYAfter);
         }
+        dirtyRequest_ = true;
     }
 
 	void adjustPan(int dx, int dy) {
@@ -604,17 +1039,26 @@ public:
 
 	void fitToWindow() {
 		setPanning(0.0, 0.0);
-		if (textureCollection) {
-			const double minRatio = std::min(static_cast<double>(width) / textureCollection->width,
-											 static_cast<double>(height) / textureCollection->height);
+		if (HasImage()) {
+			const double minRatio = std::min(static_cast<double>(width) / imageWidth_,
+											 static_cast<double>(height) / imageHeight_);
 			scroll = static_cast<int>(minRatio * 100.0 - 100);
 		}
+		dirtyRequest_ = true;
 	}
 
 	static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
 		Window* containerWindow = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
 		if (containerWindow) {
+			/* Tab toggles the chrome.  That this callback still runs is also the
+			 * proof that ImGui_ImplGlfw_InitForVulkan(..., true) chained the
+			 * previously installed GLFW callbacks rather than replacing them. */
+			if (key == GLFW_KEY_TAB && action == GLFW_PRESS && containerWindow->imgui_) {
+				containerWindow->imgui_->chromeEnabled = !containerWindow->imgui_->chromeEnabled;
+				containerWindow->imgui_->lastMouseActivity = std::chrono::steady_clock::now();
+			}
 			containerWindow->hotkeysHandler.key_callback(window, key, scancode, action, mods);
+			containerWindow->dirtyRequest_ = true;
 		}
 	}
 };

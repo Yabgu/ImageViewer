@@ -36,10 +36,10 @@
       ]
     },
     "viewer": {
-      "description": "GUI image viewer (requires OpenGL + display server)",
+      "description": "GUI image viewer (requires Vulkan + display server)",
       "dependencies": [
-        "glad",
-        "glfw3"
+        "glfw3",
+        "vulkan-headers"
       ]
     }
   }
