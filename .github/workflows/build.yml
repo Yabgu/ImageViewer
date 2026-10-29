@@ -31,9 +31,51 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build-linux-native --output-on-failure
 
-  build-mingw32:
-    name: Build (Windows / MinGW-w64 / vcpkg)
-    runs-on: [mingw32, linux, x64]
+  # Windows build with the *real* MSYS2 toolchain, run through LinSYS2
+  # (https://github.com/wszqkzqk/LinSYS2: MSYS2 packages executed under Wine).
+  #
+  # This replaces the previous llvm-mingw + vcpkg cross-build.  There is no
+  # Linux cross-compiler and no vcpkg here: clang, cmake, ninja and every
+  # library are the clang64 MSYS2 packages, so compiler defaults, header layout
+  # and runtime DLL layout match a Windows install instead of approximating it.
+  # The job also *runs* the test binaries (under Wine) rather than only linking
+  # them, which the cross-build could not do.
+  #
+  # The `mingw32` label is served by the self-hosted runner built from
+  # ci/Containerfile.linsys2, which carries a prepared clang64 environment.
+  # prepare_mingw32.sh and ci/Containerfile are left in the tree untouched: the
+  # old path still works for anyone with llvm-mingw installed locally.
+  build-windows-msys2:
+    name: Build (Windows / MSYS2 clang64 / LinSYS2)
+    runs-on: [self-hosted, mingw32, linux, x64]
+    timeout-minutes: 60
+    env:
+      LINSYS2_ENV: clang64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Configure + build + run all three suites.  The script lives in the repo
+      # (ci/build-msys2.sh) so this job and a local run are the same code path.
+      - name: Configure, build, and test (MSYS2 under Wine)
+        run: ./ci/build-msys2.sh
+
+      - name: Package runtime artifacts
+        run: ./ci/package-msys2.sh build-msys2 iview-msys2.zip
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: iview-msys2
+          path: iview-msys2.zip
+          if-no-files-found: error
+
+  build-windows-msvc:
+    name: Build (Windows / MSVC / vcpkg)
+    runs-on: windows-latest
+    timeout-minutes: 60
     env:
       VCPKG_DISABLE_METRICS: "1"
     steps:
@@ -43,46 +85,94 @@ jobs:
           submodules: recursive
 
       - name: Bootstrap vcpkg
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          if [ ! -x third-party/vcpkg/vcpkg ]; then
-            mkdir -p third-party
-            pushd third-party
-            git clone https://github.com/microsoft/vcpkg --depth 1
-            pushd vcpkg
-            ./bootstrap-vcpkg.sh --disableMetrics
-            popd
-            popd
-          fi
+          if (-not (Test-Path third-party/vcpkg/vcpkg.exe)) {
+            New-Item -ItemType Directory -Force -Path third-party | Out-Null
+            git clone https://github.com/microsoft/vcpkg --depth 1 third-party/vcpkg
+            & "${{ github.workspace }}/third-party/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          }
 
+      # No -G: CMake picks the newest installed Visual Studio generator, so the
+      # job keeps working when the runner image moves to a newer VS.  The same
+      # vcpkg manifest feeds this job, so the feature set (viewer + plugins) is
+      # identical to the MSYS2 build.
+      #
+      # VCPKG_MANIFEST_FEATURES must be passed here, on the command line.  The
+      # toolchain file is processed during compiler detection, i.e. before the
+      # project's CMakeLists.txt body runs, and that is where vcpkg performs its
+      # manifest install.  Setting the variable in CMakeLists.txt (as this
+      # repository also does for the non-toolchain include path) is therefore
+      # too late: vcpkg installs only vcpkg.json's default dependencies
+      # (doctest, libpng) and find_package(glfw3 CONFIG REQUIRED) then fails.
+      # Keep this list in sync with the `viewer`/`plugin-*` features in
+      # vcpkg.json and with prepare_mingw32.sh.
       - name: Configure
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          ./prepare_mingw32.sh
+          cmake -S . -B build-msvc -A x64 `
+            -DIMAGEVIEWER_USE_VCPKG=ON `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DVCPKG_MANIFEST_FEATURES="viewer;plugin-jpeg;plugin-webp;plugin-tiff;plugin-stb;plugin-pixman" `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/third-party/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake --build build-mingw32 -j"$(nproc)"
+        shell: pwsh
+        run: cmake --build build-msvc --config Release --parallel
 
-      - name: Package runtime artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f iview-mingw32.zip
+      - name: Run tests
+        shell: pwsh
+        run: ctest --test-dir build-msvc -C Release --output-on-failure
 
-          # Zip only executable + runtime DLLs from the target output directory.
-          (
-            cd build-mingw32/src/imageviewer
-            find . -maxdepth 1 -type f \( -name 'iview.exe' -o -name '*.dll' \) -print | sort | zip -9 -@ "$GITHUB_WORKSPACE/iview-mingw32.zip"
+      # The ABI harness loads the plugin DLLs with LoadLibrary, and a missing
+      # import shows up only as GetLastError=126 (ERROR_MOD_NOT_FOUND), which
+      # does not say which module is missing.  Dump the actual import tables
+      # when anything fails so the next diagnosis does not have to guess.
+      - name: Diagnose plugin dependencies
+        if: failure()
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'build-msvc\src\imageviewer\Release'
+          Write-Host "--- $dir ---"
+          if (Test-Path $dir) {
+            Get-ChildItem $dir | Sort-Object Name |
+              Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
+          } else {
+            Write-Host 'directory does not exist'
+          }
+          $dumpbin = Get-ChildItem `
+            "$env:ProgramFiles\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $dumpbin) { Write-Host 'dumpbin not found'; exit 0 }
+          Write-Host '--- ImageLoaderJpeg.dll dependents ---'
+          & $dumpbin.FullName /nologo /dependents (Join-Path $dir 'ImageLoaderJpeg.dll')
+          Write-Host '--- iview.exe dependents ---'
+          & $dumpbin.FullName /nologo /dependents (Join-Path $dir 'iview.exe')
+
+          # Independent probe: does the DLL load at all outside the harness,
+          # and does the answer change with the search-path flag or with
+          # backslash-normalised paths?  This separates "a real dependency is
+          # missing" from "the harness passes something the loader rejects".
+          # (Built as a concatenation rather than a here-string: a PowerShell
+          # here-string's terminator must start at column 0, which would end
+          # this YAML block scalar.)
+          $sig = 'using System;' + "`n" +
+                 'using System.Runtime.InteropServices;' + "`n" +
+                 'public static class NativeLoad {' + "`n" +
+                 '  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]' + "`n" +
+                 '  public static extern IntPtr LoadLibraryExW(string path, IntPtr hFile, uint flags);' + "`n" +
+                 '}'
+          Add-Type -TypeDefinition $sig
+
+          $plugin = Join-Path $dir 'ImageLoaderJpeg.dll'
+          $variants = @(
+            @{ Label = 'forward, altered';   Path = $plugin;                      Flags = 0x00000008 },
+            @{ Label = 'backslash, altered'; Path = ($plugin -replace '/', '\');  Flags = 0x00000008 },
+            @{ Label = 'backslash, plain';   Path = ($plugin -replace '/', '\');  Flags = 0 }
           )
-
-      - name: Upload executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: iview-mingw32
-          path: iview-mingw32.zip
-          if-no-files-found: error
+          foreach ($v in $variants) {
+            $h = [NativeLoad]::LoadLibraryExW($v.Path, [IntPtr]::Zero, [uint32]$v.Flags)
+            $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            Write-Host ("{0,-22} exists={1} flags={2} handle={3} err={4}" -f
+              $v.Label, (Test-Path $v.Path), $v.Flags, $h, $err)
+          }

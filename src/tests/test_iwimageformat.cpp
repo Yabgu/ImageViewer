@@ -3,10 +3,14 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
+#include <string>
+#include <vector>
 #include "ImagePluginDef.h"
 #include "Utils.hpp"
 #include "FilterPluginDef.h"
 #include "FilterCore.hpp"
+#include "Args.hpp"
 
 // ─── Format-builder helpers ───────────────────────────────────────────────────
 
@@ -666,6 +670,95 @@ static ImagePluginData* MakeRGBA16Row(int w, uint16_t rgbVal)
     return pd;
 }
 
+/* Build a w×1 RGB8 row exactly the way ImageLoaderPng.ixx reports an 8-bit
+ * RGB PNG: three interleaved 8-bit components at bit offsets 0/8/16, every
+ * sample tagged with the loader's chosen component class. */
+static ImagePluginData* MakePngStyleRGB8Row(int w, uint8_t r, uint8_t g, uint8_t b,
+                                            IWComponentClass cls)
+{
+    IWImageFormat fmt = {};
+    fmt.componentCount = 3;
+    fmt.bitsPerPixel   = 24;
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, cls,  0, 8 };
+    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, cls,  8, 8 };
+    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, cls, 16, 8 };
+
+    const int stride = w * 3;
+    uint8_t* buf = static_cast<uint8_t*>(std::malloc(static_cast<size_t>(stride)));
+    for (int x = 0; x < w; ++x) {
+        buf[x * 3 + 0] = r;
+        buf[x * 3 + 1] = g;
+        buf[x * 3 + 2] = b;
+    }
+
+    ImagePluginData* pd = static_cast<ImagePluginData*>(
+        std::malloc(sizeof(ImagePluginData)));
+    pd->width = w; pd->height = 1; pd->stride = stride;
+    pd->colorSpace = IMAGE_COLOR_SPACE_SRGB;
+    pd->size = static_cast<size_t>(stride); pd->data = buf; pd->format = fmt;
+    return pd;
+}
+
+/* Build a w×h 16-bit RGBA UNORM image with R=G=B=rgbVal and opaque alpha.
+ * 4×4 exercises every cell of the Bayer matrix. */
+static ImagePluginData* MakeRGBA16Grid(int w, int h, uint16_t rgbVal)
+{
+    IWImageFormat fmt = {};
+    fmt.componentCount = 4;
+    fmt.bitsPerPixel   = 64;
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
+    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
+    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
+    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 48, 16 };
+
+    const int stride = w * 8;
+    uint8_t* buf = static_cast<uint8_t*>(
+        std::malloc(static_cast<size_t>(stride) * static_cast<size_t>(h)));
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            uint16_t* p = reinterpret_cast<uint16_t*>(buf + y * stride + x * 8);
+            p[0] = rgbVal; p[1] = rgbVal; p[2] = rgbVal; p[3] = 0xFFFFu;
+        }
+    }
+
+    ImagePluginData* pd = static_cast<ImagePluginData*>(
+        std::malloc(sizeof(ImagePluginData)));
+    pd->width = w; pd->height = h; pd->stride = stride;
+    pd->colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+    pd->size = static_cast<size_t>(stride) * static_cast<size_t>(h);
+    pd->data = buf; pd->format = fmt;
+    return pd;
+}
+
+/* Build a w×1 16-bit RGBA UNORM row from per-pixel grey values. */
+static ImagePluginData* MakeGrey16Row(const uint16_t* vals, int w)
+{
+    IWImageFormat fmt = {};
+    fmt.componentCount = 4;
+    fmt.bitsPerPixel   = 64;
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
+    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
+    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
+    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 48, 16 };
+
+    const int stride = w * 8;
+    uint8_t* buf = static_cast<uint8_t*>(std::malloc(static_cast<size_t>(stride)));
+    for (int x = 0; x < w; ++x) {
+        uint16_t* p = reinterpret_cast<uint16_t*>(buf + x * 8);
+        p[0] = vals[x]; p[1] = vals[x]; p[2] = vals[x]; p[3] = 0xFFFFu;
+    }
+
+    ImagePluginData* pd = static_cast<ImagePluginData*>(
+        std::malloc(sizeof(ImagePluginData)));
+    pd->width = w; pd->height = 1; pd->stride = stride;
+    pd->colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+    pd->size = static_cast<size_t>(stride); pd->data = buf; pd->format = fmt;
+    return pd;
+}
+
 // ─── FilterCore::MakeTargetFormat ────────────────────────────────────────────
 
 TEST_SUITE("FilterCore::MakeTargetFormat")
@@ -851,6 +944,236 @@ TEST_SUITE("FilterCore::ApplyPWM")
 
         FilterCore::FreeImageSet(set);
         FilterCore::FreeFrame(src);
+    }
+}
+
+// ─── Dithering saturation regression (loader → FilterCore boundary) ──────────
+//
+// Regression: every image loader used to tag 8/16-bit display data as
+// IW_COMPONENT_CLASS_UINT.  ExtractComponent() returns raw integers for UINT,
+// and ExtractPixelF() clamped those raw values to [0, 1], so every non-zero
+// sample became 1.0 — ApplyNone/ApplyOrdered/ApplyPWM/ApplyFloydSteinberg all
+// rendered a white image.  The loaders now tag display data UNORM, and
+// ExtractPixelF additionally rescales UINT by its bit width.
+//
+// These cases sit exactly on the boundary the bug crossed: the pixel format is
+// built the way ImageLoaderPng.ixx builds it, and mid-grey has to stay grey.
+
+TEST_SUITE("dithering mid-grey regression")
+{
+    /* 128/255 ≈ 0.502 — visual mid-grey to within one 8-bit code. */
+    constexpr uint8_t kMid = 128u;
+    /* One 8-bit code == 1/255. */
+    constexpr int kTol = 1;
+
+    TEST_CASE("PNG-style UNORM RGB8 mid-grey: ApplyNone stays mid-grey, not white")
+    {
+        ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
+                                                   IW_COMPONENT_CLASS_UNORM);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* out = FilterCore::ApplyNone(*src, target);
+        REQUIRE(out != nullptr);
+
+        const int bpp = (out->format.bitsPerPixel + 7) / 8;
+        for (int x = 0; x < 4; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const int v = out->data[x * bpp + c];
+                CHECK(v >= kMid - kTol);
+                CHECK(v <= kMid + kTol);
+                CHECK(v != 255); /* the saturating-bug signature */
+            }
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("PNG-style UNORM RGB8 mid-grey: ApplyOrdered stays mid-grey, not white")
+    {
+        ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
+                                                   IW_COMPONENT_CLASS_UNORM);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        const int bpp = (out->format.bitsPerPixel + 7) / 8;
+        for (int x = 0; x < 4; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const int v = out->data[x * bpp + c];
+                CHECK(v >= kMid - kTol);
+                CHECK(v <= kMid + kTol);
+                CHECK(v != 255);
+            }
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("PNG-style UNORM RGB8 mid-grey: ApplyPWM stays mid-grey in every frame")
+    {
+        ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
+                                                   IW_COMPONENT_CLASS_UNORM);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 1u);
+        REQUIRE(set != nullptr);
+        REQUIRE(set->frameCount == 2u);
+
+        for (uint32_t f = 0; f < set->frameCount; ++f) {
+            REQUIRE(set->frames[f] != nullptr);
+            const int bpp = (set->frames[f]->format.bitsPerPixel + 7) / 8;
+            for (int x = 0; x < 4; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    const int v = set->frames[f]->data[x * bpp + c];
+                    CHECK(v >= kMid - kTol);
+                    CHECK(v <= kMid + kTol);
+                    CHECK(v != 255);
+                }
+            }
+        }
+
+        FilterCore::FreeImageSet(set);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("UINT-labelled RGB8 mid-grey is rescaled by bitWidth, not clamped")
+    {
+        /* Defence in depth: a plugin that still mislabels display data as UINT
+         * must render mid-grey, not white.  128 raw / (2^8 - 1) ≈ 0.502. */
+        ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
+                                                   IW_COMPONENT_CLASS_UINT);
+
+        float rgba[4] = {};
+        FilterCore::ExtractPixelF(*src, 0, 0, rgba);
+        CHECK(rgba[0] == doctest::Approx(128.0f / 255.0f));
+        CHECK(rgba[1] == doctest::Approx(128.0f / 255.0f));
+        CHECK(rgba[2] == doctest::Approx(128.0f / 255.0f));
+        CHECK(rgba[3] == doctest::Approx(1.0f));
+
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* none = FilterCore::ApplyNone(*src, target);
+        REQUIRE(none != nullptr);
+        CHECK(static_cast<int>(none->data[0]) == kMid);
+
+        ImagePluginData* ordered = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(ordered != nullptr);
+        const int obpp = (ordered->format.bitsPerPixel + 7) / 8;
+        for (int x = 0; x < 4; ++x) {
+            const int v = ordered->data[x * obpp + 0];
+            CHECK(v >= kMid - kTol);
+            CHECK(v <= kMid + kTol);
+        }
+
+        IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 1u);
+        REQUIRE(set != nullptr);
+        for (uint32_t f = 0; f < set->frameCount; ++f) {
+            const int v = set->frames[f]->data[0];
+            CHECK(v >= kMid - kTol);
+            CHECK(v <= kMid + kTol);
+        }
+
+        FilterCore::FreeImageSet(set);
+        FilterCore::FreeFrame(ordered);
+        FilterCore::FreeFrame(none);
+        FilterCore::FreeFrame(src);
+    }
+}
+
+// ─── Ordered dither: zero-mean / 1-LSB invariants ───────────────────────────
+//
+// These pin the properties the pixman fast path may not violate: a tile may
+// redistribute the quantisation decision inside one LSB, but it must never
+// shift the mean, never exceed the destination range, and never perturb a
+// value the destination can already represent.
+
+TEST_SUITE("ordered dither zero-mean invariant")
+{
+    TEST_CASE("4x4 Bayer tile of a half-LSB value averages back to the input")
+    {
+        /* 0x80FF = 33023 → 33023/65535*255 ≈ 128.496.  A correct ordered dither
+         * splits this into 128s and 129s; anything that biases the tile (like
+         * the old PIXMAN_OP_ADD of a 0..239 tile) shifts the mean badly. */
+        ImagePluginData* src = MakeRGBA16Grid(4, 4, 0x80FFu);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        const double expected = (33023.0 / 65535.0) * 255.0; /* ≈ 128.4959 */
+        int lo = 255, hi = 0;
+        double sum = 0.0;
+        for (int y = 0; y < 4; ++y) {
+            for (int x = 0; x < 4; ++x) {
+                const int v = out->data[y * out->stride + x * 4 + 0]; /* R */
+                sum += v;
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+        }
+        const double avg = sum / 16.0;
+
+        /* A real Bayer pattern: both neighbouring codes must appear. */
+        CHECK(lo == 128);
+        CHECK(hi == 129);
+        /* ...whose mean is the input, within one 8-bit code. */
+        CHECK(std::abs(avg - expected) <= 1.0);
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("horizontal 16-step grey ramp stays within one LSB of linear")
+    {
+        constexpr int kN = 16;
+        uint16_t vals[kN];
+        for (int i = 0; i < kN; ++i) vals[i] = static_cast<uint16_t>(i * 4096);
+
+        ImagePluginData* src = MakeGrey16Row(vals, kN);
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+
+        ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+        REQUIRE(out != nullptr);
+
+        int prev = -1;
+        for (int i = 0; i < kN; ++i) {
+            const int v = out->data[i * 4 + 0]; /* R */
+            const double linear = (vals[i] / 65535.0) * 255.0;
+            CHECK(std::abs(v - linear) <= 1.0);
+            CHECK(v >= prev); /* never darkens on a rising ramp */
+            prev = v;
+        }
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("exactly representable values get no added noise")
+    {
+        /* 8-bit source → 8-bit destination has no fractional bits to dither, so
+         * black, mid-grey and white must all come back byte-identical. */
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+        const uint8_t samples[] = { 0u, 1u, 128u, 254u, 255u };
+
+        for (uint8_t s : samples) {
+            ImagePluginData* src = MakePngStyleRGB8Row(4, s, s, s,
+                                                       IW_COMPONENT_CLASS_UNORM);
+            ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
+            REQUIRE(out != nullptr);
+
+            const int bpp = (out->format.bitsPerPixel + 7) / 8;
+            for (int x = 0; x < 4; ++x) {
+                CHECK(out->data[x * bpp + 0] == s);
+                CHECK(out->data[x * bpp + 1] == s);
+                CHECK(out->data[x * bpp + 2] == s);
+            }
+
+            FilterCore::FreeFrame(out);
+            FilterCore::FreeFrame(src);
+        }
     }
 }
 
@@ -1590,5 +1913,181 @@ TEST_SUITE("HalfToFloat normalised values")
         /* 0x3555 ≈ 0.3333 in half precision. */
         const float v = HalfToFloat(0x3555u);
         CHECK(v == doctest::Approx(1.0f / 3.0f).epsilon(0.001));
+    }
+}
+
+// ─── ViewerArgs command-line parser ─────────────────────────────────────────
+//
+// ParseViewerArgs() is pure — no I/O, no exceptions — so the whole CLI surface
+// is exercised here without a display.  These cases are the contract the
+// shipped binary relies on to make dithering modes reachable: before this,
+// main built IWFilterOptions with argc = 0 and no mode was selectable at all.
+
+static ViewerArgs ParseCli(std::initializer_list<const char*> args)
+{
+    std::vector<const char*> ptrs(args.begin(), args.end());
+    return ParseViewerArgs(static_cast<int>(ptrs.size()), ptrs.data());
+}
+
+TEST_SUITE("ViewerArgs parser")
+{
+    TEST_CASE("single positional path, no flags — backward compatible defaults")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "photo.jpg" });
+        CHECK(a.parseError.empty());
+        CHECK(a.imagePath == "photo.jpg");
+        CHECK(a.mode == kModeNone);
+        CHECK(a.pwmBits == 0u);
+        CHECK_FALSE(a.helpRequested);
+    }
+
+    TEST_CASE("every --filter value maps to its enumerator")
+    {
+        struct Case { const char* arg; IWFilterMode mode; };
+        const Case cases[] = {
+            { "--filter=none",    kModeNone },
+            { "--filter=ordered", kModeOrdered },
+            { "--filter=floyd",   kModeFloydSteinberg },
+            { "--filter=pwm",     kModePWM },
+        };
+        for (const Case& c : cases) {
+            const ViewerArgs a = ParseCli({ "iview", c.arg, "photo.jpg" });
+            CHECK(a.parseError.empty());
+            CHECK(a.imagePath == "photo.jpg");
+            CHECK(a.mode == c.mode);
+            /* pwmBits stays 0 (plugin default) unless explicitly requested. */
+            CHECK(a.pwmBits == 0u);
+        }
+    }
+
+    TEST_CASE("--filter=pwm with --pwm-bits sets both fields")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--filter=pwm", "--pwm-bits=3", "photo.jpg" });
+        CHECK(a.parseError.empty());
+        CHECK(a.mode == kModePWM);
+        CHECK(a.pwmBits == 3u);
+        CHECK(a.imagePath == "photo.jpg");
+    }
+
+    TEST_CASE("flags may appear before or after the image path")
+    {
+        const ViewerArgs before = ParseCli({ "iview", "--filter=ordered", "photo.jpg" });
+        const ViewerArgs after  = ParseCli({ "iview", "photo.jpg", "--filter=ordered" });
+        CHECK(before.parseError.empty());
+        CHECK(after.parseError.empty());
+        CHECK(before.mode == kModeOrdered);
+        CHECK(after.mode == kModeOrdered);
+        CHECK(before.imagePath == "photo.jpg");
+        CHECK(after.imagePath == "photo.jpg");
+    }
+
+    TEST_CASE("--pwm-bits without --filter=pwm is rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--pwm-bits=3", "photo.jpg" });
+        CHECK(a.parseError == "--pwm-bits is only valid with --filter=pwm");
+        /* Also reject for every other explicit non-pwm mode. */
+        for (const char* m : { "--filter=none", "--filter=ordered", "--filter=floyd" }) {
+            const ViewerArgs b = ParseCli({ "iview", m, "--pwm-bits=2", "photo.jpg" });
+            CHECK(b.parseError == "--pwm-bits is only valid with --filter=pwm");
+        }
+    }
+
+    TEST_CASE("unknown filter mode is rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--filter=bogus", "photo.jpg" });
+        CHECK(a.parseError ==
+              "unknown filter mode: 'bogus' (expected none, ordered, floyd or pwm)");
+    }
+
+    TEST_CASE("--pwm-bits outside [1, 8] is rejected — zero, nine, negative, non-numeric")
+    {
+        for (const char* bad : { "--pwm-bits=0", "--pwm-bits=9", "--pwm-bits=-1",
+                                 "--pwm-bits=abc", "--pwm-bits=", "--pwm-bits=2x",
+                                 "--pwm-bits=99999999999999" }) {
+            const ViewerArgs a = ParseCli({ "iview", "--filter=pwm", bad, "photo.jpg" });
+            CHECK(a.parseError == "--pwm-bits must be an integer in [1, 8]");
+        }
+        /* The boundaries themselves are accepted. */
+        for (const char* good : { "--pwm-bits=1", "--pwm-bits=8" }) {
+            const ViewerArgs a = ParseCli({ "iview", "--filter=pwm", good, "photo.jpg" });
+            CHECK(a.parseError.empty());
+        }
+    }
+
+    TEST_CASE("--help requests help and needs no image path")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--help" });
+        CHECK(a.helpRequested);
+        CHECK(a.parseError.empty());
+        CHECK(a.imagePath.empty());
+    }
+
+    TEST_CASE("--help wins even when other arguments are invalid")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--filter=bogus", "--help" });
+        CHECK(a.helpRequested);
+        CHECK(a.parseError.empty());
+    }
+
+    TEST_CASE("multiple image paths are rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "a.jpg", "b.jpg" });
+        CHECK(a.parseError == "more than one image path given: 'a.jpg' and 'b.jpg'");
+    }
+
+    TEST_CASE("-- makes every later argument a file name")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--", "--filter=pwm" });
+        CHECK(a.parseError.empty());
+        CHECK(a.imagePath == "--filter=pwm");
+        CHECK(a.mode == kModeNone);   /* not parsed as a flag */
+        CHECK(a.pwmBits == 0u);
+    }
+
+    TEST_CASE("-- with two later arguments is still two image paths")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--", "a.jpg", "b.jpg" });
+        CHECK(a.parseError == "more than one image path given: 'a.jpg' and 'b.jpg'");
+    }
+
+    TEST_CASE("an unknown option is rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--nope", "photo.jpg" });
+        CHECK(a.parseError == "unknown option: --nope");
+    }
+
+    TEST_CASE("a missing image path is rejected with the exact message")
+    {
+        const ViewerArgs a = ParseCli({ "iview" });
+        CHECK(a.parseError == "no image path given");
+        CHECK_FALSE(a.helpRequested);
+
+        const ViewerArgs b = ParseCli({ "iview", "--filter=pwm", "--pwm-bits=2" });
+        CHECK(b.parseError == "no image path given");
+    }
+
+    TEST_CASE("flag values are case sensitive")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--filter=PWM", "photo.jpg" });
+        CHECK(a.parseError ==
+              "unknown filter mode: 'PWM' (expected none, ordered, floyd or pwm)");
+    }
+
+    TEST_CASE("NarrowArgv converts wide arguments to UTF-8 for the parser")
+    {
+        /* Exercise the Windows entry path on Linux: wWinMain hands over a
+         * wchar_t argv, which is narrowed before parsing. */
+        const wchar_t* wide[] = { L"iview", L"--filter=pwm", L"photo.jpg" };
+        const std::vector<std::string> narrowed = NarrowArgv(3, wide);
+        REQUIRE(narrowed.size() == 3u);
+        CHECK(narrowed[0] == "iview");
+        CHECK(narrowed[1] == "--filter=pwm");
+        CHECK(narrowed[2] == "photo.jpg");
+
+        /* Non-ASCII survives: 'é' (U+00E9) must become the 2-byte UTF-8 form. */
+        const wchar_t* accented[] = { L"iview", L"caf\u00e9.jpg" };
+        const std::vector<std::string> n2 = NarrowArgv(2, accented);
+        REQUIRE(n2.size() == 2u);
+        CHECK(n2[1] == std::string("caf\xC3\xA9.jpg"));
     }
 }

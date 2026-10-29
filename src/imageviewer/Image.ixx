@@ -56,7 +56,7 @@ private:
 	                                             const std::filesystem::path& pluginPath,
 	                                             const std::filesystem::path& imagePath)
 	{
-		auto* entry = manager.getPlugin(pluginPath);
+		auto entry = manager.getPlugin(pluginPath);
 		if (!entry || !entry->loadFunc)
 			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string());
 		return entry->loadFunc(imagePath.c_str());
@@ -81,7 +81,7 @@ private:
 	                                      const std::filesystem::path& pluginPath,
 	                                      ImagePluginResult& result)
 	{
-		auto* entry = manager.getPlugin(pluginPath);
+		auto entry = manager.getPlugin(pluginPath);
 		if (!entry || !entry->freeFunc)
 			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string());
 		entry->freeFunc(result.data);

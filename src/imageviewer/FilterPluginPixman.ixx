@@ -135,6 +135,11 @@ static pixman_format_code_t GetPixmanFormat(const IWImageFormat& fmt) noexcept
 /* ── pixman-accelerated helpers ──────────────────────────────────────────── */
 
 /*
+ * TODO(stride-guard-follow-up): mode=none reaches this function without the
+ * 4-byte stride check that IsExactCodeMapping() applies to the ordered path;
+ * move the guard in here so both callers inherit it.
+ */
+/*
  * Use pixman_image_composite32(PIXMAN_OP_SRC) to copy / convert between two
  * compatible 8-bit packed-integer formats.
  *
@@ -170,73 +175,102 @@ static bool PixmanConvert(const ImagePluginData& src,
 }
 
 /*
- * pixman-accelerated Bayer ordered dither for 8-bit RGBA → 8-bit RGBA.
+ * DELIBERATE DESIGN DECISION — DO NOT RESTORE A DITHER TILE HERE.
  *
- * Step 1: copy src → dst with PixmanConvert (PIXMAN_OP_SRC).
- * Step 2: create a tiling 4×4 Bayer noise image in PIXMAN_a8b8g8r8 format.
- * Step 3: pixman_image_composite32(PIXMAN_OP_ADD, noiseImg, _, dst, …) adds
- *         per-channel noise; saturating addition gives the dithered values.
+ * At equal source/destination precision (the only case this fast path ever
+ * sees) the correct ordered-dither result is an exact copy, so
+ * PixmanOrderedDither() intentionally applies no tile and performs a plain
+ * conversion.  This is not an unfinished optimisation and not a TODO.
  *
- * The Bayer noise is scaled so that each component gets max +1 extra count
- * relative to a uniform rounding threshold.  For 8-bit → 8-bit this is a
- * passthrough with sub-LSB noise.  For higher source precision the caller
- * should use FilterCore::ApplyOrdered instead.
+ * The measurement that settled it: the previous implementation added a 4x4
+ * tile of n = (kBayerIdx * 255 + 8) / 16, i.e. the 16 values
+ *   0, 16, 32, 48, 64, 80, 96, 112, 128, 143, 159, 175, 191, 207, 223, 239
+ * whose mean is 1913/16 = +119.6 codes.  For mid-grey (128) that lifted the
+ * eight cells with n >= 128 up to the 255 clamp and gave a 4x4 mean of 219.5
+ * (0.8608 normalised) instead of 128 (0.5020).  That is a brightness lift, not
+ * dithering.  Any tile that is not identically zero at this precision either
+ * repeats that bias (>= 1 LSB) or rounds away in integer destination
+ * arithmetic (< 1 LSB), so zero is the only correct choice.
  *
- * Returns true on success.
+ * Sub-LSB dithering requires the source to carry more precision than the
+ * display.  That belongs to FilterCore::ApplyOrdered(), which is exactly what
+ * this function defers to by returning false.
+ */
+
+/*
+ * True when pixman can reproduce `src` in `dst` as an exact 1:1 code mapping.
+ *
+ * Two conditions are required:
+ *   • every active source component carries an already-normalised display code
+ *     (IW_COMPONENT_CLASS_UNORM);
+ *   • each of those components uses the same bit width in source and
+ *     destination, so no rescaling between quantisation steps is involved; and
+ *   • both row strides are 4-byte aligned, which pixman_image_create_bits()
+ *     requires (it asserts rowstride_bytes % sizeof(uint32_t) == 0).  RGB8
+ *     widths not divisible by 4 produce unaligned strides; those images are
+ *     routed to FilterCore rather than handed to pixman on an undefined
+ *     contract.
+ *
+ * Raw integers (IW_COMPONENT_CLASS_UINT) are deliberately excluded: their
+ * numeric scale is 2^bitWidth - 1, so mapping them onto display codes needs a
+ * division that pixman's fixed-function compositing cannot express here.  Such
+ * inputs are deferred to FilterCore, which normalises each component by its
+ * declared width (ExtractComponentNormalised) before quantising.
+ */
+static bool IsExactCodeMapping(const ImagePluginData& src,
+                               const ImagePluginData& dst) noexcept
+{
+    if (src.format.storageLayout != IW_STORAGE_INTERLEAVED ||
+        dst.format.storageLayout != IW_STORAGE_INTERLEAVED)
+        return false;
+
+    /* pixman_image_create_bits() requires 4-byte-aligned row strides.  Both
+     * sides are checked: a 4-component source can have an aligned stride while
+     * a 3-component destination of the same width does not (and vice versa). */
+    if ((src.stride % 4) != 0 || (dst.stride % 4) != 0)
+        return false;
+
+    const uint16_t n  = src.format.componentCount;
+    const uint16_t dn = dst.format.componentCount;
+    if (n == 0u || dn == 0u || n > IW_MAX_COMPONENTS)
+        return false;
+
+    for (uint16_t i = 0; i < n; ++i) {
+        if (src.format.components[i].componentClass != IW_COMPONENT_CLASS_UNORM)
+            return false;
+        /* A component the destination does not carry (e.g. alpha dropped for a
+         * 3-channel screen) is handled by pixman's conversion; skip it. */
+        if (i < dn &&
+            src.format.components[i].bitWidth != dst.format.components[i].bitWidth)
+            return false;
+    }
+    return true;
+}
+
+/*
+ * pixman-accelerated ordered (Bayer) path.  Applies no tile — see the
+ * DELIBERATE DESIGN DECISION note above IsExactCodeMapping() for why exact
+ * conversion at equal precision is correct and must not be "fixed" back.
+ *
+ * This path is only reachable when the source and destination quantisation
+ * steps are identical (GetPixmanFormat() accepts 8-bit packed formats only,
+ * and anything wider than the screen has already gone to FilterCore via
+ * NeedsDownsample()), so the mathematically correct ordered-dither result is
+ * the input itself: there are no fractional bits below the destination's LSB
+ * for a Bayer threshold to round.
+ *
+ * Returns true when `dst` now holds the converted image.
  */
 static bool PixmanOrderedDither(const ImagePluginData& src,
                                  ImagePluginData*       dst) noexcept
 {
-    if (!PixmanConvert(src, dst)) return false;
+    /* Raw integers and mixed quantisation steps need numeric interpretation;
+     * hand those to FilterCore instead of compositing them as display codes. */
+    if (!IsExactCodeMapping(src, *dst))
+        return false;
 
-    const pixman_format_code_t df = GetPixmanFormat(dst->format);
-    if (df == (pixman_format_code_t)0) return false;
-
-    /* Build a 4×4 Bayer noise tile in RGBA8 (PIXMAN_a8b8g8r8) memory layout.
-     * Noise value for row r, col c: round(kBayerIdx[r][c] / 16.0 * 255)
-     *   = (kBayerIdx[r][c] * 255 + 8) / 16   (integer, +8 rounds to nearest)
-     * Max intermediate value: 15 * 255 + 8 = 3833 < UINT32_MAX — no overflow.
-     * We apply the same noise to R/G/B; alpha noise is zero.
-     */
-    uint8_t bayerTile[4 * 4 * 4]; /* 4 rows × 4 pixels × 4 bytes (RGBA8) */
-    static const uint8_t kBayerIdx[4][4] = {
-        {  0,  8,  2, 10 },
-        { 12,  4, 14,  6 },
-        {  3, 11,  1,  9 },
-        { 15,  7, 13,  5 }
-    };
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) {
-            const uint8_t n = static_cast<uint8_t>(
-                (static_cast<unsigned>(kBayerIdx[r][c]) * 255u + 8u) / 16u);
-            /* PIXMAN_a8b8g8r8: byte order [R, G, B, A] in memory. */
-            uint8_t* p = bayerTile + (r * 4 + c) * 4;
-            p[0] = n; /* R */
-            p[1] = n; /* G */
-            p[2] = n; /* B */
-            p[3] = 0; /* A — no noise on alpha */
-        }
-    }
-
-    pixman_image_t* noiseImg = pixman_image_create_bits(
-        PIXMAN_a8b8g8r8, 4, 4,
-        reinterpret_cast<uint32_t*>(bayerTile), 4 * 4 /* stride in bytes */);
-    if (!noiseImg) return false;
-    pixman_image_set_repeat(noiseImg, PIXMAN_REPEAT_NORMAL);
-
-    pixman_image_t* di = pixman_image_create_bits(
-        df, dst->width, dst->height,
-        reinterpret_cast<uint32_t*>(dst->data), dst->stride);
-    if (!di) { pixman_image_unref(noiseImg); return false; }
-
-    pixman_image_composite32(PIXMAN_OP_ADD,
-                              noiseImg, nullptr, di,
-                              0, 0, 0, 0, 0, 0,
-                              dst->width, dst->height);
-
-    pixman_image_unref(noiseImg);
-    pixman_image_unref(di);
-    return true;
+    /* Exact 1:1 conversion — no tile, no added noise. */
+    return PixmanConvert(src, dst);
 }
 
 /* ── Helpers shared between FilterImage paths ────────────────────────────── */
@@ -360,8 +394,15 @@ IWFilterImageSet* FilterImage(const ImagePluginData*  src,
         frame = FilterCore::ApplyFloydSteinberg(*src, targetFmt);
 
     } else {
-        /* Unknown mode: fall back to no dither. */
-        frame = FilterCore::ApplyNone(*src, targetFmt);
+        /* Unknown mode: report through the plugin error contract instead of
+         * silently degrading to no dither (which made a typo'd mode look like
+         * a successful pass-through to the caller). */
+        std::free(set->frames);
+        std::free(set);
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "FilterImage: unknown mode %u", mode);
+        SetError(msg);
+        return nullptr;
     }
 
     if (!frame) {

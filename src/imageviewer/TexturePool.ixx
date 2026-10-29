@@ -71,18 +71,19 @@ static GLTexParams TryGetGLParams(const IWImageFormat& fmt) noexcept
 }
 
 /* Convert any interleaved IWImageFormat to RGBA F32.
- * Returns a heap-allocated buffer of width*height*4*sizeof(float) bytes;
- * the caller must delete[] it. */
-static float* ConvertToRGBAF32(const Image& img)
+ * Returns a zero-initialised buffer of width*height*4 floats; the buffer is
+ * owned by the caller through the returned unique_ptr. */
+static std::unique_ptr<float[]> ConvertToRGBAF32(const Image& img)
 {
     const IWImageFormat& fmt = img.format;
     const int            bpp = img.BytesPerPixel();
     const int            n   = img.ComponentCount();
-    float* dst = new float[static_cast<size_t>(img.width) * img.height * 4u];
+    std::unique_ptr<float[]> dst =
+        std::make_unique<float[]>(static_cast<size_t>(img.width) * img.height * 4u);
 
     for (int y = 0; y < img.height; ++y) {
         const uint8_t* row = img.data + static_cast<ptrdiff_t>(y) * img.stride;
-        float*         out = dst + static_cast<ptrdiff_t>(y) * img.width * 4;
+        float*         out = dst.get() + static_cast<ptrdiff_t>(y) * img.width * 4;
         for (int x = 0; x < img.width; ++x) {
             const uint8_t* pixel = row + x * bpp;
             float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -308,11 +309,10 @@ public:
 			             gp.format, gp.type, image.data);
 		} else {
 			// Slow path: convert component-by-component to RGBA F32, then upload.
-			float* tmp = ConvertToRGBAF32(image);
+			const std::unique_ptr<float[]> tmp = ConvertToRGBAF32(image);
 			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F,
 			             image.width, image.height, 0,
-			             GL_RGBA, GL_FLOAT, tmp);
-			delete[] tmp;
+			             GL_RGBA, GL_FLOAT, tmp.get());
 		}
 
 		glBindTexture(GL_TEXTURE_2D, 0);

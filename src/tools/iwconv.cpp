@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cassert>
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
@@ -15,7 +14,15 @@ import Image;
 
 static void WritePNG(const std::string& path, const iw::Image& iwi)
 {
-    assert(iwi.format.componentCount > 0 && iwi.format.components[0].bitWidth > 0);
+    /* The format descriptor is read from an .iwi file, i.e. untrusted input:
+     * check it instead of asserting.  assert() aborts a debug build and lets a
+     * release build walk past the fixed-size components array below. */
+    if (iwi.format.componentCount == 0
+        || iwi.format.componentCount > IW_MAX_COMPONENTS
+        || iwi.format.components[0].bitWidth == 0)
+    {
+        throw std::runtime_error("WritePNG: malformed IWI image format");
+    }
 
     if (iwi.format.storageLayout == IW_STORAGE_PLANAR)
         throw std::runtime_error("WritePNG: planar IWI images are not supported");

@@ -1,17 +1,19 @@
-find_package(OpenMP)
-# For cross-compilation targets, skip OpenMP since module metadata is strict about compile flags
-# and inconsistent OpenMP flags between modules cause precompilation metadata mismatches
-if (OPENMP_FOUND AND NOT CMAKE_CROSSCOMPILING)
-    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-
-    if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /openmp:llvm /openmp:experimental")
-        set (OpenMP_RUNTIME_MSVC llvm CACHE STRING "Specify the OpenMP Runtime for MSVC")
-    endif()
-
-    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
-endif()
+# OpenMP is deliberately not enabled.  Nothing in this project uses it: there
+# is no `#pragma omp` and no `omp.h` include under src/.
+#
+# It used to be enabled unconditionally here, and appending the flags to
+# CMAKE_CXX_FLAGS applied them to every target in this directory -- including
+# all the plugin SHARED libraries.  On MSVC /openmp:llvm therefore made every
+# plugin import the OpenMP runtime (libomp140.x86_64.dll), which is not on
+# PATH on a stock machine, so LoadLibrary failed with ERROR_MOD_NOT_FOUND and
+# the shipped viewer would not start on a clean Windows install.  Defining
+# _OPENMP for the modules but not for their consumers also produced C5050
+# "possible incompatible environment" warnings.  clang64 does not find OpenMP
+# at all, which is why the MSYS2 build never showed either symptom.
+#
+# If OpenMP is adopted later, give the flags to the targets that actually use
+# it via target_compile_options()/target_link_libraries() rather than to
+# CMAKE_CXX_FLAGS, and apply identical flags to every module importer.
 
 if(NOT IMAGEVIEWER_BUILD_VIEWER)
     message(STATUS "IMAGEVIEWER_BUILD_VIEWER=OFF — skipping GUI viewer build")
@@ -196,9 +198,20 @@ target_link_libraries(iview PRIVATE
     imageviewer
 )
 
+# Copying runtime DLLs next to iview is a convenience for launching the binary
+# directly on a Windows desktop; the build itself does not need it, because the
+# tests and the app are run with the toolchain's own bin directory on PATH.
+# It is also not always possible: CMake's Ninja generator implements POST_BUILD
+# by nesting `cmd.exe /C` inside another `cmd.exe /C`, and Wine's cmd cannot
+# parse that, so the link step of a target carrying a POST_BUILD command fails
+# under LinSYS2 even though the binary itself linked correctly.  CI therefore
+# sets this to OFF and packages DLLs explicitly.
+option(IMAGEVIEWER_COPY_RUNTIME_DLLS
+    "Copy compiler/runtime DLLs next to iview after linking (Windows desktop convenience)" ON)
+
 # vcpkg's applocal handles dependency DLLs from vcpkg, but not compiler runtime
 # DLLs such as libc++.dll/libunwind.dll used by llvm-mingw toolchains.
-if(WIN32)
+if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
     get_filename_component(_CXX_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
     set(_MINGW_RUNTIME_DLL_CANDIDATES
         "${_CXX_COMPILER_DIR}/libc++.dll"
@@ -320,7 +333,7 @@ if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
     target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET})
 
     # Copy FilterPixman DLL next to iview on Windows (same logic as runtime DLLs)
-    if(WIN32)
+    if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
         add_custom_command(TARGET iview POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_FILE:FilterPixman>

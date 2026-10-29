@@ -19,3 +19,8 @@ include(CTest)
 add_test(NAME iview_tests COMMAND iview_tests)
 
 add_subdirectory(format)
+
+# ABI conformance tests: load the built plugin binaries and drive them through
+# their exported C ABI. Only contributes targets when the plugins are built
+# (IMAGEVIEWER_BUILD_VIEWER=ON).
+add_subdirectory(abi)
