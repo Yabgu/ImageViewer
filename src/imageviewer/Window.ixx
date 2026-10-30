@@ -585,6 +585,12 @@ private:
 		style.WindowBorderSize = 0.0f;
 		style.FrameRounding    = 3.0f;
 
+		/* All controls at 2x: the strip, panel and readout were too small at
+		 * 100 %.  ScaleAllSizes covers paddings, spacing, rounding and the
+		 * widget geometry; FontSizeBase scales the text with them. */
+		style.ScaleAllSizes(2.0f);
+		style.FontScaleMain = 2.0f;   /* text; GetFontSize() = FontSizeBase * this */
+
 		/* install_callbacks = true chains the GLFW callbacks installed above,
 		 * including the file drop callback. */
 		if (!ImGui_ImplGlfw_InitForOpenGL(glfwWindow, true) ||
@@ -1471,7 +1477,7 @@ private:
 			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize;
 
 		/* Top-right readout: dimensions and on-disk size, computed once. */
-		ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 12.0f, vp->WorkPos.y + 10.0f),
+		ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 24.0f, vp->WorkPos.y + 20.0f),
 		                        ImGuiCond_Always, ImVec2(1.0f, 0.0f));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.85f));
@@ -1522,10 +1528,10 @@ private:
 
 		/* Bottom-centre control strip. */
 		ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
-		                               vp->WorkPos.y + vp->WorkSize.y - 12.0f),
+		                               vp->WorkPos.y + vp->WorkSize.y - 24.0f),
 		                        ImGuiCond_Always, ImVec2(0.5f, 1.0f));
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 6.0f));
-		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 6.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 12.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 12.0f));
 		if (ImGui::Begin("##controls", nullptr, kChromeFlags))
 		{
 			ImVec2 r[5][2];
@@ -1540,7 +1546,7 @@ private:
 			if (ImGui::Button("1:1")) SetZoom1to1();
 			r[1][0] = ImGui::GetItemRectMin(); r[1][1] = ImGui::GetItemRectMax();
 
-			ImGui::SameLine(0.0f, 14.0f);
+			ImGui::SameLine(0.0f, 28.0f);
 			if (ImGui::Button("-")) adjustZoom(-10);
 			r[2][0] = ImGui::GetItemRectMin(); r[2][1] = ImGui::GetItemRectMax();
 			ImGui::SameLine();
@@ -1557,7 +1563,7 @@ private:
 			if (ImGui::Button(">")) NavigateRelative(+1);
 			ImGui::EndDisabled();
 
-			ImGui::SameLine(0.0f, 14.0f);
+			ImGui::SameLine(0.0f, 28.0f);
 			if (ImGui::Button("Filter"))
 			{
 				filter_panel_open_ = !filter_panel_open_;
