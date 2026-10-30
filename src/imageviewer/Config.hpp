@@ -44,6 +44,9 @@ struct Settings
 	int         windowHeight  = 720;
 	bool        initialZoomFit = true;  /* false = 100 %                    */
 	bool        chromeVisible = true;
+	int         wheelAction   = 0;      /* 0 = zoom, 1 = prev/next           */
+	float       wheelNavThreshold = 1.0f;
+	int         navZoomMode   = 0;      /* 0 = preserve, 1 = fit, 2 = 100 %  */
 
 	/* Filled by Load(); not written by Save(). */
 	std::string loadPath;               /* empty when only defaults applied */
@@ -216,6 +219,26 @@ inline bool ApplyLine(Settings& s, const std::string& key, const std::string& va
 		if (value == "100")     { s.initialZoomFit = false; return true; }
 		return false;
 	}
+	if (key == "wheel_action")
+	{
+		if (value == "zoom")      { s.wheelAction = 0; return true; }
+		if (value == "next_prev") { s.wheelAction = 1; return true; }
+		return false;
+	}
+	if (key == "wheel_nav_threshold")
+	{
+		float v = 0.0f;
+		if (!ParseFloat(value, v) || v < 0.1f || v > 100.0f) return false;
+		s.wheelNavThreshold = v;
+		return true;
+	}
+	if (key == "nav_zoom_mode")
+	{
+		if (value == "preserve") { s.navZoomMode = 0; return true; }
+		if (value == "fit")      { s.navZoomMode = 1; return true; }
+		if (value == "100")      { s.navZoomMode = 2; return true; }
+		return false;
+	}
 	if (key == "chrome_visible_on_start")
 	{
 		bool v = true;
@@ -323,6 +346,9 @@ inline bool Save(const Settings& s)
 	out << "window_height = " << s.windowHeight << "\n";
 	out << "initial_zoom = " << (s.initialZoomFit ? "fit" : "100") << "\n";
 	out << "chrome_visible_on_start = " << (s.chromeVisible ? "true" : "false") << "\n";
+	out << "wheel_action = " << (s.wheelAction == 1 ? "next_prev" : "zoom") << "\n";
+	out << "wheel_nav_threshold = " << s.wheelNavThreshold << "\n";
+	out << "nav_zoom_mode = " << (s.navZoomMode == 1 ? "fit" : (s.navZoomMode == 2 ? "100" : "preserve")) << "\n";
 	return out.good();
 }
 

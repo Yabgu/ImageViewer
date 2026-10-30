@@ -137,9 +137,25 @@ protected:
 	static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 	{
 		Window* win = From(window);
-		/* Leave the wheel to the ImGui chrome when the cursor is over it. */
-		if (win != nullptr && !ImguiWantsMouse())
-			win->applyScroll(xoffset, yoffset);
+		if (win == nullptr) return;
+		/* Let the ImGui chrome keep the wheel when the cursor is over it. */
+		if (ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse) return;
+
+		if (win->settings_.wheelAction == 1)
+		{
+			/* Prev/next: accumulate notches, one navigation per threshold.  The
+			 * coalescing decoder collapses a fast spin to one decode. */
+			win->wheel_accum_ += static_cast<float>(yoffset);
+			const float threshold = std::max(0.1f, win->settings_.wheelNavThreshold);
+			while (std::fabs(win->wheel_accum_) >= threshold)
+			{
+				if (win->wheel_accum_ > 0.0f) { win->wheel_accum_ -= threshold; win->NavigateRelative(-1); }  /* up = prev */
+				else                          { win->wheel_accum_ += threshold; win->NavigateRelative(+1); }
+			}
+			return;
+		}
+
+		win->applyScroll(xoffset, yoffset);
 	}
 
 	/* GLFW file drop.  ImGui's GLFW backend does not install a drop callback, so
@@ -197,6 +213,7 @@ private:
 	std::future<FilterFrameSet> filter_future_;
 	bool                        filter_running_ = false;
 	uint32_t                    appliedMode_    = 0;   /* mode in the textures */
+	uint64_t                    filterGeneration_ = 0; /* file the compute belongs to */
 	std::chrono::steady_clock::time_point filterStartTime_{};
 	bool                        filter_failed_  = false;
 	std::string                 filter_error_;
@@ -214,6 +231,29 @@ private:
 	/* Set when an image was uploaded in mode=none and the requested mode still
 	 * has to be computed; consumed once the window is visible. */
 	bool     pendingDeferredFilter_ = false;
+
+	/* ── Folder navigation ─────────────────────────────────────────────────── */
+	std::vector<std::filesystem::path> folder_images_;
+	size_t   folder_index_     = 0;
+
+	struct DecodeResult
+	{
+		size_t index;
+		Image  image;
+	};
+	std::future<DecodeResult> nav_future_;
+	bool     nav_in_flight_    = false;
+	size_t   nav_target_index_ = 0;   /* what the user wants         */
+	size_t   nav_shown_index_  = 0;   /* what is on screen           */
+
+	std::filesystem::path current_path_;   /* file on screen (or loading) */
+	uint64_t file_generation_ = 0;         /* bumped per upload; stale-result guard */
+	std::string readout_dims_;             /* "WxH . N MB", built once per file     */
+	std::string last_error_;               /* nav decode failure for the readout    */
+	float    wheel_accum_     = 0.0f;
+
+	enum class ZoomMode { Fit, Pct100, Manual };
+	ZoomMode zoom_mode_ = ZoomMode::Fit;
 	/* One-shot UI rect logs, used by the automated strip/panel check. */
 	bool     stripRectsLogged_  = false;
 	bool     panelRectsLogged_  = false;
@@ -754,6 +794,7 @@ private:
 	{
 		filter_running_  = true;
 		filterStartTime_ = std::chrono::steady_clock::now();
+		filterGeneration_ = file_generation_;
 		const Image* const src = source_image_.get();
 		const IWFilterOptions opts = filterOptions_;     /* argv -> filterArgStorage_ */
 		filter_future_ = std::async(std::launch::async, [this, src, opts] {
@@ -787,6 +828,177 @@ private:
 		filter_error_.clear();
 		RebuildFilterOptions();
 		StartFilterCompute();
+	}
+
+	/* ── Folder navigation ─────────────────────────────────────────────────── */
+
+	static bool IsSupportedImage(const std::filesystem::path& p)
+	{
+		static const char* const kExtensions[] = {
+			".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".apng", ".bmp", ".dib",
+			".tif", ".tiff", ".webp", ".gif", ".avif", ".heic", ".heif", ".hdr",
+			".exr", ".pic", ".ppm", ".pgm", ".pbm", ".pnm", ".tga"
+		};
+		std::string ext = p.extension().string();
+		for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		for (const char* e : kExtensions)
+			if (ext == e) return true;
+		return false;
+	}
+
+	/* First supported image of a folder.  real_main calls this before launching
+	 * the async decode, so a directory argument opens its first image. */
+public:
+	static std::filesystem::path FirstImageInFolder(const std::filesystem::path& dir)
+	{
+		std::error_code ec;
+		std::vector<std::filesystem::path> found;
+		for (std::filesystem::directory_iterator it(dir,
+				std::filesystem::directory_options::skip_permission_denied, ec), end;
+		     !ec && it != end; it.increment(ec))
+		{
+			std::error_code fec;
+			if (!it->is_regular_file(fec) || fec) continue;
+			if (IsSupportedImage(it->path())) found.push_back(it->path());
+		}
+		if (found.empty())
+			throw std::runtime_error("no supported images in " + dir.string());
+		std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) {
+			return NaturalLess(a.filename().string(), b.filename().string());
+		});
+		return found.front();
+	}
+private:
+
+	/* "img2.png" < "img10.png": digit runs compare numerically, the rest
+	 * case-insensitively. */
+	static bool NaturalLess(const std::string& a, const std::string& b)
+	{
+		size_t i = 0, j = 0;
+		while (i < a.size() && j < b.size())
+		{
+			const bool da = std::isdigit(static_cast<unsigned char>(a[i])) != 0;
+			const bool db = std::isdigit(static_cast<unsigned char>(b[j])) != 0;
+			if (da && db)
+			{
+				size_t ia = i, jb = j;
+				while (ia < a.size() && std::isdigit(static_cast<unsigned char>(a[ia]))) ++ia;
+				while (jb < b.size() && std::isdigit(static_cast<unsigned char>(b[jb]))) ++jb;
+				size_t sa = i, sb = j;
+				while (sa + 1 < ia && a[sa] == '0') ++sa;
+				while (sb + 1 < jb && b[sb] == '0') ++sb;
+				const size_t la = ia - sa, lb = jb - sb;
+				if (la != lb) return la < lb;
+				const int cmp = a.compare(sa, la, b, sb, lb);
+				if (cmp != 0) return cmp < 0;
+				i = ia; j = jb;
+				continue;
+			}
+			const unsigned char ca = static_cast<unsigned char>(std::tolower(static_cast<unsigned char>(a[i])));
+			const unsigned char cb = static_cast<unsigned char>(std::tolower(static_cast<unsigned char>(b[j])));
+			if (ca != cb) return ca < cb;
+			++i; ++j;
+		}
+		return a.size() < b.size();
+	}
+
+	/* Fills folder_images_ from the directory holding `any_path` and points
+	 * folder_index_ at that file.  Throws when the folder has no supported
+	 * image. */
+	void ScanFolder(const std::filesystem::path& any_path)
+	{
+		std::error_code ec;
+		std::filesystem::path start = any_path;
+		if (!std::filesystem::is_directory(start, ec)) start = start.parent_path();
+		if (start.empty()) start = std::filesystem::current_path();
+
+		std::vector<std::filesystem::path> found;
+		std::error_code dirEc;
+		for (std::filesystem::directory_iterator it(start,
+				std::filesystem::directory_options::skip_permission_denied, dirEc), end;
+		     !dirEc && it != end; it.increment(dirEc))
+		{
+			std::error_code fec;
+			if (!it->is_regular_file(fec) || fec) continue;
+			if (IsSupportedImage(it->path())) found.push_back(it->path());
+		}
+		if (found.empty())
+			throw std::runtime_error("no supported images in " + start.string());
+
+		std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) {
+			return NaturalLess(a.filename().string(), b.filename().string());
+		});
+		folder_images_ = std::move(found);
+
+		folder_index_ = 0;
+		std::error_code cec;
+		const std::filesystem::path want = std::filesystem::weakly_canonical(any_path, cec);
+		if (!cec)
+			for (size_t i = 0; i < folder_images_.size(); ++i)
+			{
+				std::error_code e2;
+				if (std::filesystem::weakly_canonical(folder_images_[i], e2) == want) { folder_index_ = i; break; }
+			}
+	}
+
+	/* Coalescing request: one decode at a time; a newer target only moves
+	 * nav_target_index_ and the in-flight result is discarded on arrival. */
+	void NavRequest(size_t target)
+	{
+		if (folder_images_.empty()) return;
+		if (target >= folder_images_.size()) target = folder_images_.size() - 1;
+		nav_target_index_ = target;
+		if (!nav_in_flight_) StartNavDecode();
+	}
+
+	void StartNavDecode()
+	{
+		nav_in_flight_ = true;
+		const size_t idx = nav_target_index_;
+		const std::filesystem::path p = folder_images_[idx];
+		/* TODO(prefetch): decode idx+1 while the user looks at idx. */
+		IviewTrace("nav decode started");
+		nav_future_ = std::async(std::launch::async, [idx, p] {
+			return DecodeResult{ idx, Image::FromFile(p) };
+		});
+	}
+
+	void NavigateTo(size_t target)
+	{
+		if (folder_images_.empty()) return;
+		if (target >= folder_images_.size()) target = folder_images_.size() - 1;
+		NavigateRelativeTo(target);
+	}
+
+	void NavigateRelativeTo(size_t target)
+	{
+		if (target == nav_target_index_ && !nav_in_flight_ && target == nav_shown_index_) return;
+		NavRequest(target);
+	}
+
+	void NavigateRelative(int delta)
+	{
+		if (folder_images_.empty()) return;
+		const long long raw = static_cast<long long>(nav_target_index_) + delta;
+		if (raw < 0 || raw >= static_cast<long long>(folder_images_.size())) return;   /* clamp */
+		NavigateRelativeTo(static_cast<size_t>(raw));
+	}
+
+	/* Zoom policy applied after a navigation upload. */
+	void ApplyNavZoom()
+	{
+		const int mode = settings_.navZoomMode;      /* 0 preserve, 1 fit, 2 100 % */
+		if (mode == 1) { fitToWindow(); zoom_mode_ = ZoomMode::Fit; return; }
+		if (mode == 2) { SetZoom1to1(); return; }
+		if (zoom_mode_ == ZoomMode::Manual) { fitToWindow(); zoom_mode_ = ZoomMode::Fit; }
+		else if (zoom_mode_ == ZoomMode::Pct100) SetZoom1to1();
+		else fitToWindow();
+	}
+
+	void SetZoom1to1()
+	{
+		setZoom(1.0);
+		zoom_mode_ = ZoomMode::Pct100;
 	}
 
 	/* Rebuilds the plugin argument list from the current scalars. */
@@ -987,6 +1199,19 @@ public:
 					SetWindowTitle(imagePath);
 					ComputeReadout(*image, imagePath);
 					source_image_ = std::move(image);
+					current_path_ = imagePath;
+					++file_generation_;
+
+					/* Folder context.  A directory argument arrives here as its
+					 * first image, so the parent is always the right folder. */
+					try {
+						ScanFolder(imagePath);
+						nav_shown_index_  = folder_index_;
+						nav_target_index_ = folder_index_;
+					} catch (const std::exception& ex) {
+						folder_images_.clear();       /* stay single-file */
+						std::fprintf(stderr, "iview: %s\n", ex.what());
+					}
 					uploaded = true;
 					IviewTrace("image uploaded to the GPU");
 					/* Kicked after the window is on screen (see the show block
@@ -1005,6 +1230,48 @@ public:
 				}
 			}
 
+			/* (1a) Navigation decode finished.  Everything happens on this thread;
+			 * the old image stayed on screen while the worker decoded. */
+			if (nav_in_flight_ && nav_future_.valid() &&
+			    nav_future_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
+			{
+				nav_in_flight_ = false;
+				try
+				{
+					DecodeResult r = nav_future_.get();
+					if (r.index == nav_target_index_)
+					{
+						IWFilterArg noneArgs[1];
+						const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
+						if (!LoadTextures(r.image, 0, 0, 0, noneOpts))
+							throw std::runtime_error("the filter produced an unsupported frame count");
+
+						const std::filesystem::path& shownPath = folder_images_[r.index];
+						SetWindowTitle(shownPath);
+						ComputeReadout(r.image, shownPath);
+						source_image_ = std::make_unique<Image>(std::move(r.image));
+						current_path_ = shownPath;
+						++file_generation_;
+						nav_shown_index_ = r.index;
+						folder_index_    = r.index;
+						last_error_.clear();
+						ApplyNavZoom();
+						pendingDeferredFilter_ = true;
+						IviewTrace("nav image uploaded");
+					}
+					else if (nav_target_index_ != nav_shown_index_)
+					{
+						/* The user moved on while this decode ran. */
+						StartNavDecode();
+					}
+				}
+				catch (const std::exception& ex)
+				{
+					last_error_ = "Failed: " + folder_images_[nav_target_index_].filename().string();
+					std::fprintf(stderr, "iview: nav decode failed: %s\n", ex.what());
+				}
+			}
+
 			/* (1b) A filter re-run finished: upload it on this thread.  The old
 			 * textures kept rendering until this moment, so the picture never
 			 * blanked and the phase alternation never stopped. */
@@ -1016,19 +1283,28 @@ public:
 				try
 				{
 					FilterFrameSet fs = filter_future_.get();
-					const auto uploadStart = Clock::now();
-					UploadFrameSet(fs);
-					appliedMode_ = filterMode_;
-					const double uploadMs = std::chrono::duration<double, std::milli>(
-						Clock::now() - uploadStart).count();
-
-					filter_failed_ = false;
-					filter_error_.clear();
-					if (trace)
+					if (filterGeneration_ != file_generation_)
 					{
-						std::fprintf(stderr, "IVIEW_FILTER compute=%.1f ms upload=%.1f ms\n",
-						             computeMs, uploadMs);
-						std::fflush(stderr);
+						/* The user navigated while this was computing: the result
+						 * belongs to a file that is no longer on screen. */
+						IviewTrace("stale filter result discarded");
+					}
+					else
+					{
+						const auto uploadStart = Clock::now();
+						UploadFrameSet(fs);
+						appliedMode_ = filterMode_;
+						const double uploadMs = std::chrono::duration<double, std::milli>(
+							Clock::now() - uploadStart).count();
+
+						filter_failed_ = false;
+						filter_error_.clear();
+						if (trace)
+						{
+							std::fprintf(stderr, "IVIEW_FILTER compute=%.1f ms upload=%.1f ms\n",
+							             computeMs, uploadMs);
+							std::fflush(stderr);
+						}
 					}
 				}
 				catch (const std::exception& ex)
@@ -1142,12 +1418,12 @@ private:
 		const std::uintmax_t bytes = std::filesystem::file_size(path, ec);
 		if (ec)
 		{
-			imgui_->readout = std::format("{}\xC3\x97{}", image.width, image.height);
+			readout_dims_ = std::format("{}\xC3\x97{}", image.width, image.height);
 		}
 		else
 		{
 			const double megabytes = static_cast<double>(bytes) / (1024.0 * 1024.0);
-			imgui_->readout = std::format("{}\xC3\x97{} \xC2\xB7 {:.1f} MB",
+			readout_dims_ = std::format("{}\xC3\x97{} \xC2\xB7 {:.1f} MB",
 			                              image.width, image.height, megabytes);
 		}
 	}
@@ -1201,8 +1477,43 @@ private:
 		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.85f));
 		if (ImGui::Begin("##readout", nullptr, kChromeFlags | ImGuiWindowFlags_NoInputs))
 		{
+			/* States compose: counter, size, dithering, error. */
+			char counter[96] = {0};
+			std::string text;
+			if (!last_error_.empty())
+			{
+				text = last_error_;
+			}
+			else if (nav_in_flight_)
+			{
+				std::snprintf(counter, sizeof(counter), "Loading %zu / %zu",
+				              nav_target_index_ + 1, folder_images_.size());
+				text = counter;
+			}
+			else
+			{
+				if (folder_images_.size() > 1)
+				{
+					std::snprintf(counter, sizeof(counter), "%zu / %zu   ",
+					              nav_shown_index_ + 1, folder_images_.size());
+					text = counter;
+				}
+				text += readout_dims_;
+			}
+			if (filter_running_)
+				text += text.empty() ? "Dithering\xE2\x80\xA6" : " \xC2\xB7 Dithering\xE2\x80\xA6";
+
 			ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.85f);
-			ImGui::TextUnformatted(imgui_->readout.c_str());
+			if (!last_error_.empty())
+			{
+				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
+				ImGui::TextUnformatted(text.c_str());
+				ImGui::PopStyleColor();
+			}
+			else
+			{
+				ImGui::TextUnformatted(text.c_str());
+			}
 			ImGui::PopFont();
 		}
 		ImGui::End();
@@ -1218,10 +1529,15 @@ private:
 		if (ImGui::Begin("##controls", nullptr, kChromeFlags))
 		{
 			ImVec2 r[5][2];
+			const bool hasFolder = folder_images_.size() > 1;
+			ImGui::BeginDisabled(!hasFolder || nav_shown_index_ == 0);
+			if (ImGui::Button("<")) NavigateRelative(-1);
+			ImGui::EndDisabled();
+			ImGui::SameLine();
 			if (ImGui::Button("Fit")) fitToWindow();
 			r[0][0] = ImGui::GetItemRectMin(); r[0][1] = ImGui::GetItemRectMax();
 			ImGui::SameLine();
-			if (ImGui::Button("1:1")) setZoom(1.0);
+			if (ImGui::Button("1:1")) SetZoom1to1();
 			r[1][0] = ImGui::GetItemRectMin(); r[1][1] = ImGui::GetItemRectMax();
 
 			ImGui::SameLine(0.0f, 14.0f);
@@ -1235,6 +1551,11 @@ private:
 			ImGui::SameLine();
 			if (ImGui::Button("+")) adjustZoom(10);
 			r[3][0] = ImGui::GetItemRectMin(); r[3][1] = ImGui::GetItemRectMax();
+
+			ImGui::SameLine();
+			ImGui::BeginDisabled(!hasFolder || nav_shown_index_ + 1 >= folder_images_.size());
+			if (ImGui::Button(">")) NavigateRelative(+1);
+			ImGui::EndDisabled();
 
 			ImGui::SameLine(0.0f, 14.0f);
 			if (ImGui::Button("Filter"))
@@ -1338,6 +1659,11 @@ private:
 		ImGui::SliderInt("Fade delay", &fadeDelayMs_, 200, 5000, "%d ms");
 		ImGui::SliderFloat("Min alpha", &fadeMinAlpha_, 0.0f, 1.0f, "%.2f");
 
+		int wheel = settings_.wheelAction;
+		if (ImGui::RadioButton("Wheel: zoom", &wheel, 0)) settings_.wheelAction = 0;
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Wheel: prev/next", &wheel, 1)) settings_.wheelAction = 1;
+
 		ImGui::Separator();
 		if (ImGui::Button("Reset to defaults")) LoadBuiltinDefaults();
 		ImGui::SameLine();
@@ -1402,9 +1728,14 @@ private:
 			try
 			{
 				const std::filesystem::path path(reinterpret_cast<const char8_t*>(paths[i]));
+				/* ACDSee behaviour: the dropped file's folder becomes the current
+				 * folder and the dropped file becomes the current index. */
+				ScanFolder(path);
+				nav_shown_index_  = folder_index_;
+				nav_target_index_ = folder_index_;
+				nav_in_flight_    = false;
+
 				auto image = std::make_unique<Image>(Image::FromFile(path));
-				/* Same two-stage load as start-up: show the plain image now,
-				 * compute the requested filter in the background. */
 				IWFilterArg noneArgs[1];
 				const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
 				if (!LoadTextures(*image, 0, 0, 0, noneOpts))
@@ -1412,6 +1743,9 @@ private:
 				SetWindowTitle(path);
 				ComputeReadout(*image, path);
 				source_image_ = std::move(image);
+				current_path_ = path;
+				++file_generation_;
+				last_error_.clear();
 				MaybeStartDeferredFilter();
 				imgui_->chromeEnabled     = true;
 				imgui_->lastMouseActivity = std::chrono::steady_clock::now();
@@ -1431,6 +1765,7 @@ public:
 
 	void setZoom(double zoomLevel, double cursorX, double cursorY) {
 		IviewTrace("action: set_zoom");
+		zoom_mode_ = ZoomMode::Manual;
 		const double currentZoom = getZoom();
 		const double newScroll = (zoomLevel * 100.0) - 100.0;
 		scroll = std::clamp(static_cast<int>(newScroll), -90, 400);
@@ -1501,6 +1836,40 @@ public:
 	static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
 		Window* containerWindow = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
 		if (containerWindow) {
+			/* Let ImGui take the keyboard while one of its widgets has focus. */
+			if (ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureKeyboard) return;
+
+			/* Folder navigation.  Clamped at the ends by NavigateRelative. */
+			if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+				switch (key) {
+				case GLFW_KEY_RIGHT:
+				case GLFW_KEY_SPACE:
+				case GLFW_KEY_PAGE_DOWN:
+					containerWindow->NavigateRelative(+1);
+					break;
+				case GLFW_KEY_LEFT:
+				case GLFW_KEY_BACKSPACE:
+				case GLFW_KEY_PAGE_UP:
+					containerWindow->NavigateRelative(-1);
+					break;
+				case GLFW_KEY_HOME:
+					containerWindow->NavigateTo(0);
+					break;
+				case GLFW_KEY_END:
+					if (!containerWindow->folder_images_.empty())
+						containerWindow->NavigateTo(containerWindow->folder_images_.size() - 1);
+					break;
+				case GLFW_KEY_F:
+					containerWindow->fitToWindow();
+					containerWindow->zoom_mode_ = Window::ZoomMode::Fit;
+					break;
+				case GLFW_KEY_1:
+					containerWindow->SetZoom1to1();
+					break;
+				default:
+					break;
+				}
+			}
 			/* Tab toggles the chrome.  That this callback still runs is also the
 			 * proof that ImGui_ImplGlfw_InitForOpenGL(..., true) chained the
 			 * previously installed GLFW callbacks rather than replacing them. */

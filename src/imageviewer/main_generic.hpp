@@ -117,7 +117,22 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
      * concurrently.  std::launch::async guarantees a real thread (the default
      * launch policy would silently run ProcessInput inline on this thread).
      * The path is captured by value because `parsed` is not shared. */
-    const std::filesystem::path imagePath = PathFromUtf8(parsed.imagePath);
+    std::filesystem::path imagePath = PathFromUtf8(parsed.imagePath);
+
+    /* A directory argument opens its first image; the Window scans the folder
+     * for prev/next navigation.  Done before the decode so the async launch
+     * order below is unchanged. */
+    {
+        std::error_code dirEc;
+        if (std::filesystem::is_directory(imagePath, dirEc)) {
+            try { imagePath = Window::FirstImageInFolder(imagePath); }
+            catch (const std::exception& ex) {
+                std::cerr << "iview: " << ex.what() << "\n";
+                return 2;
+            }
+        }
+    }
+
     std::future<Image> imageFuture = std::async(std::launch::async, [imagePath] {
         return ProcessInput(imagePath);
     });

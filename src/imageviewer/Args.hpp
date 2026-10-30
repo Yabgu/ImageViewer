@@ -70,7 +70,7 @@ struct ViewerArgs
 inline const char* UsageText() noexcept
 {
     return
-        "Usage: iview [options] <image>\n"
+        "Usage: iview [options] <image|directory>\n"
         "\n"
         "Options:\n"
         "  --filter=MODE   none (default), ordered, floyd, pwm, bayer4x4, bayer8x8,\n"
