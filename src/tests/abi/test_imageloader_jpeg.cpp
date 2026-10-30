@@ -6,15 +6,18 @@
  * that suite links only headers and structurally cannot reach code inside the
  * plugin, which is where the component-count policy lives.
  *
- * Fixtures are checked in under src/tests/abi/fixtures/ and are 16x16 flat
- * mid-grey images, generated once:
+ * Fixtures are checked in under src/tests/abi/fixtures/ and generated once by
+ * fixtures/generate_fixtures.c:
  *
- *   gray_1comp.jpg   1 component  — grayscale JPEG
- *   ycbcr_3comp.jpg  3 components — YCbCr JPEG (RGB after libjpeg conversion)
- *   cmyk_4comp.jpg   4 components — Adobe-style (inverted) CMYK JPEG
- *   two_comp.jpg     2 components — JCS_UNKNOWN, written via libjpeg with
- *                                   input_components = 2 (no standard 2-component
- *                                   colour space exists, so this is synthetic)
+ *   gray_1comp.jpg    1 component  — 16x16 flat grayscale JPEG
+ *   ycbcr_3comp.jpg   3 components — 16x16 flat YCbCr JPEG (RGB after conversion)
+ *   cmyk_4comp.jpg    4 components — 16x16 Adobe-style (inverted) CMYK JPEG
+ *   two_comp.jpg      2 components — 16x16 JCS_UNKNOWN, written via libjpeg with
+ *                                    input_components = 2 (no standard 2-component
+ *                                    colour space exists, so this is synthetic)
+ *   orient6_3comp.jpg 3 components — 16x8, left half white / right half black,
+ *                                    tagged EXIF Orientation=6 (rotate 90° CW),
+ *                                    so the loader must return 8x16, white on top
  *
  * The 1- and 3-component fixtures must load and describe themselves correctly.
  * The 2- and 4-component fixtures must be rejected with a specific message:
@@ -199,6 +202,60 @@ TEST_SUITE("JPEG loader ABI: rejected component counts")
         CHECK(!err.empty());
         CHECK(err.find("JPEG has 2 components") != std::string::npos);
         CHECK(err.find("only grayscale and YCbCr are supported") != std::string::npos);
+
+        plugin.free(r.data);
+    }
+}
+
+TEST_SUITE("JPEG loader ABI: EXIF orientation")
+{
+    TEST_CASE("Orientation=6 is applied: dimensions swap and the raster turns upright")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+        ImagePluginResult r = plugin.load(Fixture("orient6_3comp.jpg"));
+
+        REQUIRE(r.code == IMAGE_PLUGIN_OK);
+        REQUIRE(r.data != nullptr);
+
+        const ImagePluginData& d = *r.data;
+
+        /* The file stores a 16x8 raster tagged Orientation=6 (rotate 90° CW),
+         * so the upright image is 8x16.  Before the loader honoured the tag
+         * this reported 16x8 and the pixels came out sideways. */
+        CHECK(d.width  == 8);
+        CHECK(d.height == 16);
+        CHECK(d.format.componentCount == 3);
+        CHECK(d.format.bitsPerPixel   == 24);
+        CHECK(d.stride >= d.width * 3);
+        CHECK(d.size   == static_cast<size_t>(d.stride) *
+                           static_cast<size_t>(d.height));
+
+        const std::string problem = iwabi::DescriptorProblem(d);
+        INFO("descriptor problem: " << problem);
+        CHECK(problem.empty());
+
+        /* The stored file's left half is white and its right half is black.
+         * A 90-degree clockwise turn puts the white half on top.  Both halves
+         * cover whole 8x8 DCT blocks and the samples stay away from the seam,
+         * so a tight tolerance is safe. */
+        for (int y = 2; y <= 5; ++y) {
+            for (int x = 1; x <= 6; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    const int v = SampleComponent(d, c, x, y);
+                    INFO("white: (" << x << "," << y << ") ch" << c << " = " << v);
+                    CHECK(v >= 235);
+                }
+            }
+        }
+        for (int y = 10; y <= 13; ++y) {
+            for (int x = 1; x <= 6; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    const int v = SampleComponent(d, c, x, y);
+                    INFO("black: (" << x << "," << y << ") ch" << c << " = " << v);
+                    CHECK(v <= 20);
+                }
+            }
+        }
 
         plugin.free(r.data);
     }

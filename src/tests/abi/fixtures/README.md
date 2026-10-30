@@ -1,9 +1,10 @@
 # JPEG loader ABI fixtures
 
-Four synthetic 16x16 baseline JPEGs, checked in as binaries, used by
+Five synthetic baseline JPEGs, checked in as binaries, used by
 `../test_imageloader_jpeg.cpp` to drive the built `ImageLoaderJpeg` plugin
-through its C ABI. Their only purpose is a known component count — the pixel
-content is incidental.
+through its C ABI. Four are 16x16 with a known component count and uniform
+pixel content; the fifth is 16x8 with a two-tone raster and an EXIF
+Orientation tag.
 
 | File | Components | Colour space | Bytes | Meaning |
 |---|---|---|---|---|
@@ -11,28 +12,50 @@ content is incidental.
 | `ycbcr_3comp.jpg` | 3 | YCbCr | 632 | accepted; described as `R`/`G`/`B` at 8/8/8 |
 | `cmyk_4comp.jpg` | 4 | CMYK + Adobe APP14 | 362 | rejected: `JPEG has 4 components; ...` |
 | `two_comp.jpg` | 2 | `JCS_UNKNOWN` | 323 | rejected: `JPEG has 2 components; ...` |
+| `orient6_3comp.jpg` | 3 | YCbCr + EXIF APP1 | 669 | accepted as 8x16, upright (see below) |
 
-All samples are uniform: 128 for the 1-, 2- and 3-component files. The CMYK
-file stores 255, which under the Adobe convention is *inverted*, so it means
-"no ink" — white, not mid-grey. That detail is invisible to the tests because
-the loader rejects 4-component input before converting anything.
+All samples of the first four are uniform: 128 for the 1-, 2- and 3-component
+files. The CMYK file stores 255, which under the Adobe convention is
+*inverted*, so it means "no ink" — white, not mid-grey. That detail is
+invisible to the tests because the loader rejects 4-component input before
+converting anything.
+
+## The oriented fixture
+
+`orient6_3comp.jpg` exists so the EXIF-orientation path has a real file to run
+against. It stores a 16x8 landscape raster — left half white, right half black
+— and declares `Orientation = 6` (rotate 90° clockwise) in an APP1 segment
+immediately after SOI, exactly the shape a phone camera writes for a portrait
+photo. The loader must apply the tag and return **8x16, white half on top**;
+before the tag was honoured this file loaded sideways with `width == 16`.
+
+The halves cover whole 8x8 DCT blocks, so the decoded values stay flat and the
+test can hold them to a tight tolerance. The tag lives in the file, not in the
+test: this is the only fixture whose correctness depends on bytes outside the
+JPEG entropy stream.
 
 ## Regenerating
 
-`generate_fixtures.c` reproduces all four files **byte-for-byte** with
+`generate_fixtures.c` reproduces all five files **byte-for-byte** with
 libjpeg-turbo 8:
 
 ```bash
 cc -O2 -o /tmp/gen_fixtures generate_fixtures.c -ljpeg
 mkdir -p /tmp/fx && /tmp/gen_fixtures /tmp/fx
-for f in gray_1comp ycbcr_3comp cmyk_4comp two_comp; do
+for f in gray_1comp ycbcr_3comp cmyk_4comp two_comp orient6_3comp; do
     cmp /tmp/fx/$f.jpg $f.jpg && echo "ok $f"
 done
 ```
 
 A different libjpeg major version may encode the entropy-coded segment
 differently while producing a structurally identical file. That is acceptable:
-the tests depend on the component count, not on the bytes.
+the tests depend on the component count, the EXIF tag, and the flat halves, not
+on the exact bytes.
+
+The generator encodes to a memory buffer (`jpeg_mem_dest`) and writes it
+itself. Observed on Windows: handing the executable's `FILE*` to the vcpkg
+libjpeg-turbo DLL makes `jpeg_finish_compress` fastfail inside the CRT's
+`fflush`. The memory form is what the APP1 splice needs anyway.
 
 ## Why `two_comp.jpg` will not open in most image viewers
 
