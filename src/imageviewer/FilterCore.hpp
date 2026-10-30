@@ -19,6 +19,7 @@
 #include "ImagePluginDef.h"
 #include "FilterPluginDef.h"
 #include "Utils.hpp"
+#include "BlueNoiseTile.hpp"
 
 namespace FilterCore {
 
@@ -29,6 +30,55 @@ static constexpr float kBayer4x4[4][4] = {
     {  3.f/16, 11.f/16,  1.f/16,  9.f/16 },
     { 15.f/16,  7.f/16, 13.f/16,  5.f/16 }
 };
+
+/* ── 8×8 Bayer threshold matrix, raw ranks 0..63 ────────────────────────── */
+/* Standard recursive construction.  Threshold = (rank + 0.5) / 64, i.e. never
+ * 0 and never 1, so a constant input averages exactly over the tile. */
+static constexpr int kBayer8x8Raw[8][8] = {
+    {  0, 32,  8, 40,  2, 34, 10, 42 },
+    { 48, 16, 56, 24, 50, 18, 58, 26 },
+    { 12, 44,  4, 36, 14, 46,  6, 38 },
+    { 60, 28, 52, 20, 62, 30, 54, 22 },
+    {  3, 35, 11, 43,  1, 33,  9, 41 },
+    { 51, 19, 59, 27, 49, 17, 57, 25 },
+    { 15, 47,  7, 39, 13, 45,  5, 37 },
+    { 63, 31, 55, 23, 61, 29, 53, 21 }
+};
+
+/* Which threshold field a spatial mode draws from. */
+enum class SpatialKind : uint8_t { Bayer4, Bayer8, BlueNoise };
+
+/* Spatial resolution of each field, in bits (the tile holds 2^bits ranks).
+ * Bayer 4x4 = 16 ranks (4 bits), Bayer 8x8 = 64 ranks (6 bits),
+ * blue noise = 64x64 = 4096 ranks (12 bits). */
+static inline uint32_t SpatialKindBits(SpatialKind kind) noexcept
+{
+    switch (kind) {
+    case SpatialKind::Bayer4:    return 4u;
+    case SpatialKind::Bayer8:    return 6u;
+    case SpatialKind::BlueNoise: return 12u;
+    }
+    return 0u;
+}
+
+/* Threshold for pixel (x, y) in (0, 1).  `seed` shifts the blue-noise tile so
+ * repeated loads can use different dither patterns without changing the
+ * statistics; Bayer matrices are position-locked by definition. */
+static inline float SpatialThreshold(SpatialKind kind, int x, int y, uint64_t seed) noexcept
+{
+    switch (kind) {
+    case SpatialKind::Bayer4:
+        return kBayer4x4[y & 3][x & 3] + 0.5f / 16.f;
+    case SpatialKind::Bayer8:
+        return (static_cast<float>(kBayer8x8Raw[y & 7][x & 7]) + 0.5f) / 64.f;
+    case SpatialKind::BlueNoise: {
+        const int sx = (x + static_cast<int>(seed & 63u)) & 63;
+        const int sy = (y + static_cast<int>((seed >> 6) & 63u)) & 63;
+        return (static_cast<float>(kBlueNoise64[sy][sx]) + 0.5f) / 4096.f;
+    }
+    }
+    return 0.5f;
+}
 
 /* ── Target-format construction ──────────────────────────────────────────── */
 
@@ -405,6 +455,159 @@ inline ImagePluginData* ApplyFloydSteinberg(const ImagePluginData& src,
         std::swap(errCurr, errNext);
     }
     return out;
+}
+
+/*
+ * ApplySpatial — single-frame spatial dither (Bayer 4×4, Bayer 8×8 or the
+ * vendored 64×64 blue-noise tile).
+ *
+ * Same quantiser as ApplyOrdered but with the (rank + 0.5) / N² threshold
+ * convention and a selectable field.  Over a tile the average equals the input
+ * exactly (the thresholds are uniform in (0, 1)), so the extra source bits are
+ * carried spatially rather than in time.
+ *
+ * Alpha is not dithered (rounded instead).
+ */
+inline ImagePluginData* ApplySpatial(const ImagePluginData& src,
+                                     const IWImageFormat& targetFmt,
+                                     SpatialKind kind, uint64_t seed)
+{
+    ImagePluginData* out = AllocFrame(src, targetFmt);
+    if (!out) return nullptr;
+
+    const int bpp = BytesPerPixel(targetFmt);
+    const int nc  = static_cast<int>(targetFmt.componentCount);
+    const uint32_t maxVal =
+        (targetFmt.components[0].bitWidth < 32u)
+        ? ((1u << targetFmt.components[0].bitWidth) - 1u)
+        : 0xFFFFFFFFu;
+
+    for (int y = 0; y < src.height; ++y) {
+        uint8_t* row = out->data + static_cast<ptrdiff_t>(y) * out->stride;
+        for (int x = 0; x < src.width; ++x) {
+            float rgba[4];
+            ExtractPixelF(src, x, y, rgba);
+            const float s = SpatialThreshold(kind, x, y, seed);
+            uint8_t* pix = row + x * bpp;
+            for (int c = 0; c < nc; ++c) {
+                const IWComponentDef& cd = targetFmt.components[c];
+                const float v = GetComponentValue(rgba, cd.semantic);
+                const uint32_t q =
+                    (cd.semantic == IW_COMPONENT_SEMANTIC_A)
+                    ? QuantizeRound(v, maxVal)
+                    : QuantizeBayer(v, maxVal, s);
+                WriteQuantizedComponent(pix, cd, q);
+            }
+        }
+    }
+    return out;
+}
+
+/*
+ * ApplySpatialTemporal — two complementary phase frames.
+ *
+ * Each frame carries 8 bits per channel and the pair carries one more bit in
+ * time, so the temporal average alone is a 9-bit (511-level) value.  The
+ * caller's spatial budget is clamped to the resolution of the threshold field
+ * (SpatialKindBits) and shapes the pattern, not the mean — see the note at the
+ * end.
+ *
+ * Construction, per pixel and per colour channel:
+ *
+ *     q9   = round(v * 2*maxVal)     // 9-bit value, 0 .. 2*maxVal
+ *     base = q9 >> 1                 // code both frames start from
+ *     odd  = q9 & 1                  // the half-code the two frames trade
+ *     p    = (s(x,y) < 0.5)          // complementary phase selector, 50 %
+ *     A    = base + (odd ? p : 0)
+ *     B    = base + (odd ? 1-p : 0)
+ *
+ * A + B = 2*base + odd = q9 at every pixel, so the temporal average is exactly
+ * the smooth 9-bit value: the matrix pattern cancels between the two frames and
+ * the average contains no residual lattice.  Each frame on its own carries one
+ * half of the pattern, so the dither is present in every frame and inverts
+ * between them.  Where q9 is even there is no half-code to trade and the two
+ * frames are identical.
+ *
+ * Deliberate consequence: because the average must stay lattice-free, the
+ * temporal pair cannot also carry sub-9-bit DC information — the spatial field
+ * decides *which phase* shows the half-code, not the mean.  Modes that want the
+ * spatial average to carry the extra source bits use ApplySpatial.
+ *
+ * Alpha is not dithered (rounded in both frames).
+ */
+inline IWFilterImageSet* ApplySpatialTemporal(const ImagePluginData& src,
+                                              const IWImageFormat& targetFmt,
+                                              SpatialKind kind, uint64_t seed)
+{
+    const int bpp    = BytesPerPixel(targetFmt);
+    const int stride = src.width * bpp;
+    const size_t fsz = static_cast<size_t>(src.height) * stride;
+    const int nc     = static_cast<int>(targetFmt.componentCount);
+    const uint32_t maxVal =
+        (targetFmt.components[0].bitWidth < 32u)
+        ? ((1u << targetFmt.components[0].bitWidth) - 1u)
+        : 0xFFFFFFFFu;
+    const uint32_t level9 = 2u * maxVal;
+
+    IWFilterImageSet* set = static_cast<IWFilterImageSet*>(
+        std::malloc(sizeof(IWFilterImageSet)));
+    if (!set) return nullptr;
+    set->frameCount = 2;
+    set->frames = static_cast<ImagePluginData**>(
+        std::malloc(sizeof(ImagePluginData*) * 2u));
+    if (!set->frames) { std::free(set); return nullptr; }
+    set->frames[0] = nullptr;
+    set->frames[1] = nullptr;
+
+    for (uint32_t f = 0; f < 2u; ++f) {
+        uint8_t* buf = static_cast<uint8_t*>(std::malloc(fsz));
+        if (!buf) { FreeImageSet(set); return nullptr; }
+        ImagePluginData* pd = static_cast<ImagePluginData*>(
+            std::malloc(sizeof(ImagePluginData)));
+        if (!pd) { std::free(buf); FreeImageSet(set); return nullptr; }
+        pd->width      = src.width;
+        pd->height     = src.height;
+        pd->stride     = stride;
+        pd->colorSpace = src.colorSpace;
+        pd->size       = fsz;
+        pd->data       = buf;
+        pd->format     = targetFmt;
+        set->frames[f] = pd;
+    }
+
+    uint8_t* const out0 = set->frames[0]->data;
+    uint8_t* const out1 = set->frames[1]->data;
+
+    for (int y = 0; y < src.height; ++y) {
+        for (int x = 0; x < src.width; ++x) {
+            float rgba[4];
+            ExtractPixelF(src, x, y, rgba);
+            const bool pHigh = (SpatialThreshold(kind, x, y, seed) < 0.5f);
+
+            uint8_t* pix0 = out0 + static_cast<ptrdiff_t>(y) * stride + x * bpp;
+            uint8_t* pix1 = out1 + static_cast<ptrdiff_t>(y) * stride + x * bpp;
+
+            for (int c = 0; c < nc; ++c) {
+                const IWComponentDef& cd = targetFmt.components[c];
+                const float v = GetComponentValue(rgba, cd.semantic);
+
+                uint32_t a = 0, b = 0;
+                if (cd.semantic == IW_COMPONENT_SEMANTIC_A) {
+                    a = b = QuantizeRound(v, maxVal);
+                } else {
+                    const uint32_t q9   = QuantizeRound(v, level9);
+                    const uint32_t base = q9 >> 1;
+                    const uint32_t odd  = q9 & 1u;
+                    a = base + ((odd != 0u &&  pHigh) ? 1u : 0u);
+                    b = base + ((odd != 0u && !pHigh) ? 1u : 0u);
+                }
+                WriteQuantizedComponent(pix0, cd, a);
+                WriteQuantizedComponent(pix1, cd, b);
+            }
+        }
+    }
+
+    return set;
 }
 
 /*

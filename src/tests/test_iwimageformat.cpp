@@ -11,6 +11,7 @@
 #include "FilterPluginDef.h"
 #include "FilterCore.hpp"
 #include "Args.hpp"
+#include "ExifOrientation.hpp"
 
 // ─── Format-builder helpers ───────────────────────────────────────────────────
 
@@ -1996,7 +1997,7 @@ TEST_SUITE("ViewerArgs parser")
     {
         const ViewerArgs a = ParseCli({ "iview", "--filter=bogus", "photo.jpg" });
         CHECK(a.parseError ==
-              "unknown filter mode: 'bogus' (expected none, ordered, floyd or pwm)");
+              "unknown filter mode: 'bogus' (expected none, ordered, floyd, pwm, bayer4x4, bayer8x8, bluenoise or spatial_temporal)");
     }
 
     TEST_CASE("--pwm-bits outside [1, 8] is rejected — zero, nine, negative, non-numeric")
@@ -2070,7 +2071,7 @@ TEST_SUITE("ViewerArgs parser")
     {
         const ViewerArgs a = ParseCli({ "iview", "--filter=PWM", "photo.jpg" });
         CHECK(a.parseError ==
-              "unknown filter mode: 'PWM' (expected none, ordered, floyd or pwm)");
+              "unknown filter mode: 'PWM' (expected none, ordered, floyd, pwm, bayer4x4, bayer8x8, bluenoise or spatial_temporal)");
     }
 
     TEST_CASE("NarrowArgv converts wide arguments to UTF-8 for the parser")
@@ -2089,5 +2090,182 @@ TEST_SUITE("ViewerArgs parser")
         const std::vector<std::string> n2 = NarrowArgv(2, accented);
         REQUIRE(n2.size() == 2u);
         CHECK(n2[1] == std::string("caf\xC3\xA9.jpg"));
+    }
+}
+
+// ─── EXIF orientation ─────────────────────────────────────────────────────────
+
+namespace {
+
+/* Minimal big- or little-endian TIFF block: header plus IFD0 with a single
+ * entry.  `value` is written into the entry's value field using TIFF type
+ * `type` (3 = SHORT, 4 = LONG). */
+std::vector<uint8_t> MakeTiffBlock(uint16_t tag, uint16_t type, uint32_t count,
+                                   uint32_t value, bool littleEndian)
+{
+    std::vector<uint8_t> t(8 + 2 + 12, 0);   /* header, entry count, one entry */
+
+    auto put16 = [&](size_t at, uint16_t v) {
+        t[at + (littleEndian ? 0u : 1u)] = static_cast<uint8_t>(v & 0xFFu);
+        t[at + (littleEndian ? 1u : 0u)] = static_cast<uint8_t>(v >> 8);
+    };
+    auto put32 = [&](size_t at, uint32_t v) {
+        for (int i = 0; i < 4; ++i) {
+            const int shift = littleEndian ? 8 * i : 8 * (3 - i);
+            t[at + static_cast<size_t>(i)] = static_cast<uint8_t>((v >> shift) & 0xFFu);
+        }
+    };
+
+    t[0] = littleEndian ? 'I' : 'M';
+    t[1] = t[0];
+    put16(2, 42);        /* TIFF magic */
+    put32(4, 8);         /* IFD0 starts immediately after the header */
+    put16(8, 1);         /* one entry */
+    put16(10, tag);
+    put16(12, type);
+    put32(14, count);
+    if (type == 3) put16(18, static_cast<uint16_t>(value));
+    else           put32(18, value);
+    return t;
+}
+
+} // namespace
+
+TEST_SUITE("EXIF orientation: parsing")
+{
+    TEST_CASE("reads Orientation from little- and big-endian TIFF blocks")
+    {
+        const std::vector<uint8_t> le = MakeTiffBlock(0x0112, 3, 1, 6, true);
+        const std::vector<uint8_t> be = MakeTiffBlock(0x0112, 3, 1, 8, false);
+        CHECK(exif::ParseOrientation(le.data(), le.size()) == 6);
+        CHECK(exif::ParseOrientation(be.data(), be.size()) == 8);
+    }
+
+    TEST_CASE("accepts a LONG-typed Orientation tag, as some writers emit")
+    {
+        const std::vector<uint8_t> t = MakeTiffBlock(0x0112, 4, 1, 3, true);
+        CHECK(exif::ParseOrientation(t.data(), t.size()) == 3);
+    }
+
+    TEST_CASE("absent, wrongly typed and out-of-range tags mean normal")
+    {
+        const std::vector<uint8_t> otherTag = MakeTiffBlock(0x010F, 3, 1, 6, true);
+        CHECK(exif::ParseOrientation(otherTag.data(), otherTag.size()) == 1);
+
+        /* BYTE is not a valid Orientation type. */
+        const std::vector<uint8_t> byteType = MakeTiffBlock(0x0112, 1, 1, 6, true);
+        CHECK(exif::ParseOrientation(byteType.data(), byteType.size()) == 1);
+
+        for (uint32_t value : { 0u, 9u, 65535u }) {
+            const std::vector<uint8_t> t = MakeTiffBlock(0x0112, 3, 1, value, true);
+            CHECK(exif::ParseOrientation(t.data(), t.size()) == 1);
+        }
+
+        /* Orientation is single-valued; a multi-value tag is not trusted. */
+        const std::vector<uint8_t> twoValues = MakeTiffBlock(0x0112, 3, 2, 6, true);
+        CHECK(exif::ParseOrientation(twoValues.data(), twoValues.size()) == 1);
+    }
+
+    TEST_CASE("malformed or truncated blocks are refused without over-reading")
+    {
+        CHECK(exif::ParseOrientation(nullptr, 0) == 1);
+
+        const std::vector<uint8_t> t = MakeTiffBlock(0x0112, 3, 1, 6, true);
+
+        /* Wrong byte-order mark. */
+        {
+            std::vector<uint8_t> bad = t;
+            bad[0] = 'X'; bad[1] = 'X';
+            CHECK(exif::ParseOrientation(bad.data(), bad.size()) == 1);
+        }
+
+        /* TIFF magic must be 42. */
+        {
+            std::vector<uint8_t> bad = t;
+            bad[3] = 43;
+            CHECK(exif::ParseOrientation(bad.data(), bad.size()) == 1);
+        }
+
+        /* IFD0 offset beyond the block. */
+        {
+            std::vector<uint8_t> bad = t;
+            bad[4] = 0xFF; bad[5] = 0xFF; bad[6] = 0xFF; bad[7] = 0xFF;
+            CHECK(exif::ParseOrientation(bad.data(), bad.size()) == 1);
+        }
+
+        /* Entry count that would walk past the end. */
+        {
+            std::vector<uint8_t> bad = t;
+            bad[8] = 0xFF; bad[9] = 0xFF;
+            CHECK(exif::ParseOrientation(bad.data(), bad.size()) == 1);
+        }
+
+        /* Every truncation of a valid block is refused, not read. */
+        for (size_t n = 0; n < t.size(); ++n) {
+            CAPTURE(n);
+            CHECK(exif::ParseOrientation(t.data(), n) == 1);
+        }
+    }
+}
+
+TEST_SUITE("EXIF orientation: pixel transform")
+{
+    TEST_CASE("all eight orientations produce the documented layouts")
+    {
+        /* Stored 3x2 raster, one byte per pixel:
+         *   1 2 3
+         *   4 5 6
+         * The expected upright grids are written out by hand rather than
+         * derived, so this records the specification instead of re-running the
+         * implementation's own mapping. */
+        const std::vector<uint8_t> stored = { 1, 2, 3,
+                                              4, 5, 6 };
+
+        struct Case { int orientation; int width; int height; std::vector<uint8_t> pixels; };
+        const Case cases[] = {
+            { 1, 3, 2, { 1, 2, 3, 4, 5, 6 } },
+            { 2, 3, 2, { 3, 2, 1, 6, 5, 4 } },
+            { 3, 3, 2, { 6, 5, 4, 3, 2, 1 } },
+            { 4, 3, 2, { 4, 5, 6, 1, 2, 3 } },
+            { 5, 2, 3, { 1, 4, 2, 5, 3, 6 } },
+            { 6, 2, 3, { 4, 1, 5, 2, 6, 3 } },
+            { 7, 2, 3, { 6, 3, 5, 2, 4, 1 } },
+            { 8, 2, 3, { 3, 6, 2, 5, 1, 4 } },
+        };
+
+        for (const Case& c : cases) {
+            CAPTURE(c.orientation);
+            CHECK(exif::OrientedWidth(3, 2, c.orientation) == c.width);
+            CHECK(exif::OrientedHeight(3, 2, c.orientation) == c.height);
+
+            std::vector<uint8_t> upright(static_cast<size_t>(c.width) * c.height, 0);
+            exif::OrientPixels(stored.data(), 3, 2, 1, c.orientation, upright.data());
+            CHECK(upright == c.pixels);
+        }
+    }
+
+    TEST_CASE("multi-byte pixels are moved whole")
+    {
+        /* 3x2 of 16-bit samples, rotated 90 degrees clockwise. */
+        const std::vector<uint8_t> stored = { 1, 101, 2, 102, 3, 103,
+                                              4, 104, 5, 105, 6, 106 };
+        const std::vector<uint8_t> expected = { 4, 104, 1, 101,
+                                                5, 105, 2, 102,
+                                                6, 106, 3, 103 };
+
+        std::vector<uint8_t> upright(stored.size(), 0);
+        exif::OrientPixels(stored.data(), 3, 2, 2, 6, upright.data());
+        CHECK(upright == expected);
+    }
+
+    TEST_CASE("orientation 1 and out-of-range values are a straight copy")
+    {
+        const std::vector<uint8_t> stored = { 1, 2, 3, 4, 5, 6 };
+        for (int orientation : { 1, 0, 9, -3 }) {
+            CAPTURE(orientation);
+            std::vector<uint8_t> out(stored.size(), 0);
+            exif::OrientPixels(stored.data(), 3, 2, 1, orientation, out.data());
+            CHECK(out == stored);
+        }
     }
 }

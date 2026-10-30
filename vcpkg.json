@@ -38,8 +38,8 @@
     "viewer": {
       "description": "GUI image viewer (requires OpenGL + display server)",
       "dependencies": [
-        "glad",
-        "glfw3"
+        "glfw3",
+        "glad"
       ]
     }
   }

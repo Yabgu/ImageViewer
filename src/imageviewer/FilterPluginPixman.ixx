@@ -48,6 +48,12 @@ static constexpr uint32_t kModeNone            = 0u;
 static constexpr uint32_t kModeOrdered         = 1u;
 static constexpr uint32_t kModeFloydSteinberg  = 2u;
 static constexpr uint32_t kModePWM             = 3u;
+/* Spatial / spatio-temporal additions.  The numbering continues the existing
+ * sequence so every value 0..3 keeps its meaning for existing hosts. */
+static constexpr uint32_t kModeBayer4x4        = 4u;
+static constexpr uint32_t kModeBayer8x8        = 5u;
+static constexpr uint32_t kModeBlueNoise       = 6u;
+static constexpr uint32_t kModeSpatialTemporal = 7u;
 /*
  * Hosts pass named IWFilterArg entries to select behaviour; these integer
  * values are internal to FilterPluginPixman and are not exposed in any header.
@@ -310,6 +316,87 @@ static uint32_t GetArgU32(const IWFilterOptions* opts,
     return defaultVal;
 }
 
+static uint64_t GetArgU64(const IWFilterOptions* opts,
+                           const char*            name,
+                           uint64_t               defaultVal) noexcept
+{
+    if (!opts || !opts->argv) return defaultVal;
+    for (uint32_t i = 0; i < opts->argc; ++i) {
+        const IWFilterArg& a = opts->argv[i];
+        if (std::strcmp(a.name, name) == 0) {
+            if (a.type == IW_FILTER_ARG_UINT64) return a.value.u64;
+            break;
+        }
+    }
+    return defaultVal;
+}
+
+/* Diagnostics are opt-in (IMAGEVIEWER_FILTER_VERBOSE=1) so a normal run stays
+ * silent, including the spatial-budget fallback notes. */
+static bool Verbose() noexcept
+{
+    static const bool enabled = [] {
+        const char* e = std::getenv("IMAGEVIEWER_FILTER_VERBOSE");
+        return e != nullptr && e[0] != '\0' && e[0] != '0';
+    }();
+    return enabled;
+}
+
+/* Bits per channel actually carried by the source (minimum over components). */
+static uint32_t SourceBits(const ImagePluginData& src) noexcept
+{
+    uint32_t bits = 0;
+    for (uint16_t i = 0; i < src.format.componentCount; ++i) {
+        const uint16_t b = src.format.components[i].bitWidth;
+        if (b == 0u) continue;
+        if (bits == 0u || b < bits) bits = b;
+    }
+    return bits;
+}
+
+/*
+ * spatial_bits = min(requested, source_bits - 8 - temporal_bits), then clamped
+ * to the resolution of the threshold field.  requested == 0 means "as many as
+ * the budget allows" (the documented default).
+ */
+static uint32_t SpatialBudget(const ImagePluginData& src,
+                               uint32_t requested,
+                               uint32_t temporalBits,
+                               uint32_t fieldBits) noexcept
+{
+    const int32_t srcBits = static_cast<int32_t>(SourceBits(src));
+    int32_t available = srcBits - 8 - static_cast<int32_t>(temporalBits);
+    if (available < 0) available = 0;
+    const uint32_t budget = static_cast<uint32_t>(available);
+    uint32_t want = (requested == 0u) ? budget : requested;
+    if (want > budget)   want = budget;
+    if (want > fieldBits) want = fieldBits;
+    return want;
+}
+
+static FilterCore::SpatialKind KindOf(uint32_t mode) noexcept
+{
+    switch (mode) {
+    case kModeBayer4x4: return FilterCore::SpatialKind::Bayer4;
+    case kModeBayer8x8: return FilterCore::SpatialKind::Bayer8;
+    default:            return FilterCore::SpatialKind::BlueNoise;
+    }
+}
+
+static IWFilterImageSet* WrapSingleFrame(ImagePluginData* frame) noexcept
+{
+    if (!frame) return nullptr;
+    IWFilterImageSet* set = static_cast<IWFilterImageSet*>(
+        std::malloc(sizeof(IWFilterImageSet)));
+    if (!set) { FilterCore::FreeFrame(frame); return nullptr; }
+    set->frames = static_cast<ImagePluginData**>(
+        std::malloc(sizeof(ImagePluginData*)));
+    if (!set->frames) { std::free(set); FilterCore::FreeFrame(frame); return nullptr; }
+    set->frameCount = 1u;
+    set->frames[0]  = frame;
+    return set;
+}
+
 /* ── Exported plugin symbols ─────────────────────────────────────────────── */
 
 export extern "C" FILTERPLUGIN_API
@@ -333,13 +420,73 @@ IWFilterImageSet* FilterImage(const ImagePluginData*  src,
 
     /* Read named arguments (all optional; defaults shown in comments). */
     const uint32_t mode    = GetArgU32(options, "mode",     kModeNone);
-    const uint32_t pwmBits = GetArgU32(options, "pwm_bits", 1u);
 
-    /* ── PWM path (always uses FilterCore) ────────────────────────────── */
+    /* Temporal bit count.  "temporal_bits" is the documented name now;
+     * "pwm_bits" is the pre-existing name and is still honoured, so an older
+     * host keeps working unchanged (--filter=pwm sends the same number). */
+    uint32_t temporalBits = GetArgU32(options, "temporal_bits", 0xFFFFFFFFu);
+    if (temporalBits == 0xFFFFFFFFu)
+        temporalBits = GetArgU32(options, "pwm_bits", 1u);
+    if (temporalBits == 0u) temporalBits = 1u;   /* PWM needs at least one */
+
+    const uint32_t spatialBitsReq = GetArgU32(options, "spatial_bits", 0u);
+    const uint64_t seed           = GetArgU64(options, "seed", 0u);
+
+    /* ── PWM path (always uses FilterCore; bit-exact with the old code) ── */
     if (mode == kModePWM) {
         IWFilterImageSet* set =
-            FilterCore::ApplyPWM(*src, targetFmt, pwmBits);
+            FilterCore::ApplyPWM(*src, targetFmt, temporalBits);
         if (!set) SetError("FilterImage: PWM allocation failed");
+        return set;
+    }
+
+    /* ── Spatial paths (one frame) ────────────────────────────────────── */
+    if (mode == kModeBayer4x4 || mode == kModeBayer8x8 || mode == kModeBlueNoise) {
+        const FilterCore::SpatialKind kind = KindOf(mode);
+        const uint32_t fieldBits = FilterCore::SpatialKindBits(kind);
+        const uint32_t sb = SpatialBudget(*src, spatialBitsReq, 0u, fieldBits);
+        if (Verbose()) {
+            std::fprintf(stderr,
+                "FilterPixman: mode=%u source_bits=%u spatial_bits=%u "
+                "(requested %u, field %u)\n",
+                mode, SourceBits(*src), sb, spatialBitsReq, fieldBits);
+            std::fflush(stderr);
+        }
+        ImagePluginData* frame = FilterCore::ApplySpatial(*src, targetFmt, kind, seed);
+        if (!frame) { SetError("FilterImage: spatial allocation failed"); return nullptr; }
+        return WrapSingleFrame(frame);
+    }
+
+    /* ── Spatio-temporal path (two complementary frames) ──────────────── */
+    if (mode == kModeSpatialTemporal) {
+        const uint32_t srcBits = SourceBits(*src);
+        if (srcBits < 9u) {
+            /* No room for a temporal bit: refuse to invent a pattern. */
+            if (Verbose()) {
+                std::fprintf(stderr,
+                    "FilterPixman: spatial_temporal needs a >= 9-bit source "
+                    "(got %u bits), falling back to none\n", srcBits);
+                std::fflush(stderr);
+            }
+            ImagePluginData* frame = FilterCore::ApplyNone(*src, targetFmt);
+            if (!frame) { SetError("FilterImage: fallback allocation failed"); return nullptr; }
+            return WrapSingleFrame(frame);
+        }
+        /* The complementary phase pattern is drawn from the blue-noise tile
+         * (12 bits of spatial resolution, the finest field we ship). */
+        const FilterCore::SpatialKind kind = FilterCore::SpatialKind::BlueNoise;
+        const uint32_t fieldBits = FilterCore::SpatialKindBits(kind);
+        const uint32_t sb = SpatialBudget(*src, spatialBitsReq, 1u, fieldBits);
+        if (Verbose()) {
+            std::fprintf(stderr,
+                "FilterPixman: mode=spatial_temporal source_bits=%u temporal_bits=1 "
+                "spatial_bits=%u (requested %u, field %u)\n",
+                srcBits, sb, spatialBitsReq, fieldBits);
+            std::fflush(stderr);
+        }
+        IWFilterImageSet* set =
+            FilterCore::ApplySpatialTemporal(*src, targetFmt, kind, seed);
+        if (!set) SetError("FilterImage: spatio-temporal allocation failed");
         return set;
     }
 

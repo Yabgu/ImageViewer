@@ -31,7 +31,11 @@ enum IWFilterMode : uint32_t {
     kModeNone           = 0u,   /* pass-through conversion, no dithering     */
     kModeOrdered        = 1u,   /* 4x4 Bayer ordered dither                  */
     kModeFloydSteinberg = 2u,   /* Floyd-Steinberg error diffusion           */
-    kModePWM            = 3u    /* temporal / PWM dither, multiple frames    */
+    kModePWM            = 3u,   /* temporal / PWM dither, multiple frames    */
+    kModeBayer4x4       = 4u,   /* spatial: 4x4 Bayer                        */
+    kModeBayer8x8       = 5u,   /* spatial: 8x8 Bayer                        */
+    kModeBlueNoise      = 6u,   /* spatial: 64x64 void-and-cluster tile      */
+    kModeSpatialTemporal = 7u   /* two complementary spatial phases          */
 };
 
 /* ── pwm_bits range ──────────────────────────────────────────────────────────
@@ -53,6 +57,10 @@ struct ViewerArgs
     std::string  imagePath;        /* empty only when helpRequested          */
     IWFilterMode mode        = kModeNone;
     uint32_t     pwmBits     = 0u; /* 0 = do not send pwm_bits, use plugin default */
+    uint32_t     spatialBits = 0u; /* 0 = matrix maximum (plugin default)     */
+    uint64_t     seed        = 0u; /* blue-noise tile offset                  */
+    bool         filterSpecified = false; /* --filter given: CLI beats config */
+    std::string  configPath;       /* --config=<path>; empty = search order   */
     bool         helpRequested = false;
     std::string  parseError;       /* empty on success                       */
 };
@@ -62,17 +70,24 @@ struct ViewerArgs
 inline const char* UsageText() noexcept
 {
     return
-        "Usage: iview [options] <image>\n"
+        "Usage: iview [options] <image|directory>\n"
         "\n"
         "Options:\n"
-        "  --filter=MODE   Dithering mode: none (default), ordered, floyd, pwm\n"
+        "  --filter=MODE   none (default), ordered, floyd, pwm, bayer4x4, bayer8x8,\n"
+        "                  bluenoise, spatial_temporal\n"
         "  --pwm-bits=N    Extra virtual bits for --filter=pwm; N in [1, 8]\n"
+        "                  only N=1 (9-bit, two phases) is implemented in this build\n"
+        "  --spatial-bits=N  Bits the spatial stage may spend (0 = matrix maximum)\n"
+        "  --seed=N        Offset the blue-noise tile (unsigned, default 0)\n"
+        "  --config=<path> Settings file to load (save goes here too); default\n"
+        "                  %APPDATA%/ImageViewer/iview.conf or <exe_dir>/iview.conf\n"
         "  --help          Show this help and exit\n"
         "  --              Treat every remaining argument as a file name\n"
         "\n"
         "Examples:\n"
         "  iview photo.jpg\n"
-        "  iview --filter=pwm --pwm-bits=2 photo.jpg\n"
+        "  iview --filter=pwm --pwm-bits=1 photo.jpg\n"
+        "  iview --filter=spatial_temporal --spatial-bits=4 photo16.png\n"
         "  iview --filter=ordered photo.jpg\n";
 }
 
@@ -82,8 +97,16 @@ inline bool ParseMode(const std::string& value, IWFilterMode& out) noexcept
 {
     if (value == "none")    { out = kModeNone;           return true; }
     if (value == "ordered") { out = kModeOrdered;        return true; }
-    if (value == "floyd")   { out = kModeFloydSteinberg; return true; }
+    if (value == "floyd" || value == "floydsteinberg") {
+        out = kModeFloydSteinberg; return true;
+    }
     if (value == "pwm")     { out = kModePWM;            return true; }
+    if (value == "bayer4x4")  { out = kModeBayer4x4;       return true; }
+    if (value == "bayer8x8")  { out = kModeBayer8x8;       return true; }
+    if (value == "bluenoise") { out = kModeBlueNoise;      return true; }
+    if (value == "spatial_temporal" || value == "spatial-temporal") {
+        out = kModeSpatialTemporal; return true;
+    }
     return false;
 }
 
@@ -108,6 +131,24 @@ inline bool ParseU32(const std::string& value, uint32_t& out) noexcept
     return true;
 }
 
+/* Strict unsigned 64-bit decimal parse, same rules as ParseU32. */
+inline bool ParseU64(const std::string& value, uint64_t& out) noexcept
+{
+    if (value.empty() || value.size() > 20u)
+        return false;
+    uint64_t acc = 0;
+    for (char c : value) {
+        if (c < '0' || c > '9')
+            return false;
+        const uint64_t digit = static_cast<uint64_t>(c - '0');
+        if (acc > (0xFFFFFFFFFFFFFFFFull - digit) / 10u)
+            return false;
+        acc = acc * 10u + digit;
+    }
+    out = acc;
+    return true;
+}
+
 } // namespace args_detail
 
 /* ── Parser ────────────────────────────────────────────────────────────────*/
@@ -117,6 +158,8 @@ inline ViewerArgs ParseViewerArgs(int argc, const char* const* argv)
     ViewerArgs out;
     bool afterDoubleDash = false;
     bool sawPwmBits      = false;
+    bool sawSpatialBits   = false;
+    bool sawSeed          = false;
 
     /* --help wins regardless of position, so someone who mistypes another flag
      * still gets the usage text.  The scan stops at "--", because everything
@@ -157,9 +200,16 @@ inline ViewerArgs ParseViewerArgs(int argc, const char* const* argv)
             const std::string value = arg.substr(9);
             if (!args_detail::ParseMode(value, out.mode)) {
                 out.parseError = "unknown filter mode: '" + value +
-                                 "' (expected none, ordered, floyd or pwm)";
+                                 "' (expected none, ordered, floyd, pwm, bayer4x4, "
+                                 "bayer8x8, bluenoise or spatial_temporal)";
                 return out;
             }
+            out.filterSpecified = true;
+            continue;
+        }
+
+        if (arg.rfind("--config=", 0) == 0) {
+            out.configPath = arg.substr(9);
             continue;
         }
 
@@ -173,6 +223,30 @@ inline ViewerArgs ParseViewerArgs(int argc, const char* const* argv)
             }
             out.pwmBits  = parsed;
             sawPwmBits   = true;
+            continue;
+        }
+
+        if (arg.rfind("--spatial-bits=", 0) == 0) {
+            const std::string value = arg.substr(15);
+            uint32_t parsed = 0;
+            if (!args_detail::ParseU32(value, parsed) || parsed > 16u) {
+                out.parseError = "--spatial-bits must be an integer in [0, 16]";
+                return out;
+            }
+            out.spatialBits = parsed;      /* 0 = matrix maximum */
+            sawSpatialBits  = true;
+            continue;
+        }
+
+        if (arg.rfind("--seed=", 0) == 0) {
+            const std::string value = arg.substr(7);
+            uint64_t parsed = 0;
+            if (!args_detail::ParseU64(value, parsed)) {
+                out.parseError = "--seed must be an unsigned 64-bit integer";
+                return out;
+            }
+            out.seed = parsed;
+            sawSeed  = true;
             continue;
         }
 
@@ -193,6 +267,19 @@ inline ViewerArgs ParseViewerArgs(int argc, const char* const* argv)
      * that flag order does not matter (`--pwm-bits=2 --filter=pwm` is valid). */
     if (sawPwmBits && out.mode != kModePWM) {
         out.parseError = "--pwm-bits is only valid with --filter=pwm";
+        return out;
+    }
+
+    const bool spatialMode = (out.mode == kModeBayer4x4 || out.mode == kModeBayer8x8 ||
+                              out.mode == kModeBlueNoise || out.mode == kModeSpatialTemporal);
+    if (sawSpatialBits && !spatialMode) {
+        out.parseError = "--spatial-bits is only valid with a spatial filter mode "
+                         "(bayer4x4, bayer8x8, bluenoise, spatial_temporal)";
+        return out;
+    }
+    if (sawSeed && !spatialMode) {
+        out.parseError = "--seed is only valid with a spatial filter mode "
+                         "(bayer4x4, bayer8x8, bluenoise, spatial_temporal)";
         return out;
     }
 
