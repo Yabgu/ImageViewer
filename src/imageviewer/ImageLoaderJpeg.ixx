@@ -10,6 +10,7 @@ module;
 #include <filesystem>
 #include <format>
 #include "ImagePluginDef.h"
+#include "ExifOrientation.hpp"
 
 namespace {
 struct my_error_mgr
@@ -21,9 +22,10 @@ struct my_error_mgr
 /* Owns everything the decode allocates: the pixel storage first, then the
  * descriptor handed back to the caller on success.  libjpeg reports fatal
  * errors by longjmp()ing out of the failing call, so this holder is created
- * *before* setjmp() and never reassigned afterwards; an automatic variable
- * written between setjmp() and longjmp() would be indeterminate on the error
- * path and leak or double-free. */
+ * *before* setjmp() and is not replaced while a libjpeg call can still
+ * longjmp; an automatic variable written between setjmp() and longjmp() would
+ * be indeterminate on the error path and leak or double-free.  The upright
+ * buffer replaces the decode buffer only after the last libjpeg call. */
 struct OwnedImagePluginData
 {
 	std::unique_ptr<uint8_t[]>       pixels;
@@ -80,7 +82,26 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
     jpeg_create_decompress(&cinfo);
     jpeg_stdio_src(&cinfo, file);
+
+    /* Keep EXIF APP1 segments: libjpeg discards markers unless asked, and the
+     * Orientation tag lives in one.  0xFFFF is the largest a marker can be. */
+    jpeg_save_markers(&cinfo, JPEG_APP0 + 1, 0xFFFF);
+
     jpeg_read_header(&cinfo, TRUE);
+
+    /* EXIF Orientation (tag 0x0112).  XMP also uses APP1, so match the
+     * six-byte "Exif\0\0" identifier before handing the TIFF block to the
+     * parser.  Anything missing or malformed yields 1 (normal): no rotation. */
+    int orientation = 1;
+    for (jpeg_saved_marker_ptr marker = cinfo.marker_list; marker != nullptr;
+         marker = marker->next)
+    {
+        if (marker->marker != JPEG_APP0 + 1 || marker->data_length < 6) continue;
+        if (std::memcmp(marker->data, "Exif\0\0", 6) != 0) continue;
+        orientation = exif::ParseOrientation(marker->data + 6,
+                                             marker->data_length - 6);
+        break;
+    }
 
     /* ── Component-count policy ──────────────────────────────────────────
      * The number of components is a property of the file, not a preference,
@@ -141,8 +162,13 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
     constexpr int kBitsPerComponent = 8;
     const int bytesPerPixel = channelCount * (kBitsPerComponent / 8);
-    const int rowStride     = static_cast<int>(cinfo.output_width) * bytesPerPixel;
-    const size_t dataSize   = static_cast<size_t>(rowStride) * cinfo.output_height;
+
+    /* Snapshot the stored geometry now: orientation can swap width and height,
+     * and cinfo is destroyed before the descriptor is built. */
+    const int    storedWidth  = static_cast<int>(cinfo.output_width);
+    const int    storedHeight = static_cast<int>(cinfo.output_height);
+    const int    rowStride    = storedWidth * bytesPerPixel;
+    const size_t dataSize     = static_cast<size_t>(rowStride) * storedHeight;
 
     constexpr int MaxLinesToRead = 1;
 
@@ -168,16 +194,6 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         return result;
     }
 
-    owned->info = std::make_unique<ImagePluginData>(ImagePluginData{
-        .width      = static_cast<int>(cinfo.output_width),
-        .height     = static_cast<int>(cinfo.output_height),
-        .stride     = rowStride,
-        .colorSpace = IMAGE_COLOR_SPACE_SRGB,
-        .size       = dataSize,
-        .data       = owned->pixels.get(),
-        .format     = fmt
-    });
-
     while (cinfo.output_scanline < cinfo.output_height)
     {
         auto current_scanline = cinfo.output_scanline;
@@ -194,8 +210,50 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     }
 
     jpeg_finish_decompress(&cinfo);
+    /* No libjpeg call below this point can longjmp, so replacing the pixel
+     * holder is safe even though it was created before setjmp(). */
     jpeg_destroy_decompress(&cinfo);
     fclose(file);
+
+    /* ── Upright the raster ────────────────────────────────────────────────
+     * The decode buffer is in storage order; EXIF Orientation says how to
+     * rotate or mirror it for display.  A phone portrait shot is stored as a
+     * landscape raster plus Orientation=6, so without this the image opens
+     * sideways and reports swapped width/height.  Turning it here means every
+     * consumer — viewer, iwconv, tests — receives upright pixels and upright
+     * dimensions instead of each having to interpret the tag. */
+    int    finalWidth  = storedWidth;
+    int    finalHeight = storedHeight;
+    int    finalStride = rowStride;
+    size_t finalSize   = dataSize;
+
+    if (orientation != 1)
+    {
+        finalWidth  = exif::OrientedWidth(storedWidth, storedHeight, orientation);
+        finalHeight = exif::OrientedHeight(storedWidth, storedHeight, orientation);
+        finalStride = finalWidth * bytesPerPixel;
+        finalSize   = static_cast<size_t>(finalStride) * finalHeight;
+
+        auto upright = std::make_unique<uint8_t[]>(finalSize);
+        if (!upright) {
+            snprintf(lastError, sizeof(lastError), "Failed to allocate image buffer");
+            result.code = IMAGE_PLUGIN_ALLOC_ERROR;
+            return result;   /* owned releases the decoded buffer */
+        }
+        exif::OrientPixels(owned->pixels.get(), storedWidth, storedHeight,
+                           bytesPerPixel, orientation, upright.get());
+        owned->pixels = std::move(upright);
+    }
+
+    owned->info = std::make_unique<ImagePluginData>(ImagePluginData{
+        .width      = finalWidth,
+        .height     = finalHeight,
+        .stride     = finalStride,
+        .colorSpace = IMAGE_COLOR_SPACE_SRGB,
+        .size       = finalSize,
+        .data       = owned->pixels.get(),
+        .format     = fmt
+    });
 
     /* Success: transfer ownership of the descriptor and its pixel buffer to
      * the caller, which releases them through FreeImageData(). */

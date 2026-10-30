@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstring>
+#include <cstdio>
+#include <chrono>
 #include <filesystem>
 #include <future>
 #include <iostream>
@@ -10,6 +12,7 @@
 #include <type_traits>
 #include <vector>
 #include "Args.hpp"
+#include "Config.hpp"
 #include "FilterPluginDef.h"
 
 import Image;
@@ -31,25 +34,46 @@ inline Image ProcessInput(const std::filesystem::path& path)
 /*
  * Build the IWFilterOptions handed to the filter plugin from the parsed
  * command line.  `mode` is always sent explicitly so that mode=none is a
- * deliberate request rather than an absent argument, and pwm_bits is only sent
- * for PWM because the plugin treats it as PWM-specific.
+ * deliberate request rather than an absent argument.  The temporal bit count is
+ * sent as "temporal_bits" (documented name) plus the legacy "pwm_bits" name,
+ * and only for PWM; spatial_bits/seed are only meaningful for the spatial
+ * modes.  The plugin clamps everything to its own budget.
  */
 inline IWFilterOptions MakeFilterOptions(const ViewerArgs& parsed,
-                                         IWFilterArg (&storage)[2]) noexcept
+                                         IWFilterArg (&storage)[5]) noexcept
 {
-    std::memset(storage, 0, sizeof(IWFilterArg) * 2u);
+    std::memset(storage, 0, sizeof(IWFilterArg) * 5u);
     uint32_t count = 0;
 
-    std::strncpy(storage[count].name, "mode", IW_FILTER_ARG_NAME_MAX - 1u);
-    storage[count].type      = IW_FILTER_ARG_UINT32;
-    storage[count].value.u32 = static_cast<uint32_t>(parsed.mode);
-    ++count;
+    auto addU32 = [&](const char* name, uint32_t value) {
+        std::strncpy(storage[count].name, name, IW_FILTER_ARG_NAME_MAX - 1u);
+        storage[count].type      = IW_FILTER_ARG_UINT32;
+        storage[count].value.u32 = value;
+        ++count;
+    };
+    auto addU64 = [&](const char* name, uint64_t value) {
+        std::strncpy(storage[count].name, name, IW_FILTER_ARG_NAME_MAX - 1u);
+        storage[count].type      = IW_FILTER_ARG_UINT64;
+        storage[count].value.u64 = value;
+        ++count;
+    };
+
+    addU32("mode", static_cast<uint32_t>(parsed.mode));
 
     if (parsed.mode == kModePWM && parsed.pwmBits != 0u) {
-        std::strncpy(storage[count].name, "pwm_bits", IW_FILTER_ARG_NAME_MAX - 1u);
-        storage[count].type      = IW_FILTER_ARG_UINT32;
-        storage[count].value.u32 = parsed.pwmBits;
-        ++count;
+        /* "temporal_bits" is the documented name; "pwm_bits" is sent as well so
+         * a plugin built against the old vocabulary keeps working unchanged. */
+        addU32("temporal_bits", parsed.pwmBits);
+        addU32("pwm_bits",      parsed.pwmBits);
+    }
+
+    const bool spatialMode = (parsed.mode == kModeBayer4x4 ||
+                              parsed.mode == kModeBayer8x8 ||
+                              parsed.mode == kModeBlueNoise ||
+                              parsed.mode == kModeSpatialTemporal);
+    if (spatialMode) {
+        addU32("spatial_bits", parsed.spatialBits);   /* 0 = matrix maximum */
+        addU64("seed",         parsed.seed);
     }
 
     IWFilterOptions opts{};
@@ -74,65 +98,92 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
         return 2;
     }
 
+    /* N-phase temporal dithering is not implemented in the Vulkan renderer: it
+     * only has the two offscreen phases A/B.  Refuse at startup — before the
+     * window, the async decode and the filter plugin exist — instead of showing
+     * a wrong image later. */
+    if (parsed.pwmBits > 1u) {
+        std::cerr << "iview: pwm_bits > 1 (" << parsed.pwmBits
+                  << "-phase) is not implemented in this build\n";
+        return 2;
+    }
+
     std::unique_ptr<Window> window;
-    std::unique_ptr<Image> image;
 
     /* Decode the image on a worker thread so that file I/O and decoder work
      * overlaps window creation on this (main) thread.  The future is the only
-     * hand-off between the two: the worker writes the shared state, and
-     * get() below publishes it to this thread, so `image` is never touched
+     * hand-off between the two: the worker writes the shared state, and Main()
+     * is the single consumer on this thread, so the Image is never touched
      * concurrently.  std::launch::async guarantees a real thread (the default
      * launch policy would silently run ProcessInput inline on this thread).
      * The path is captured by value because `parsed` is not shared. */
-    const std::filesystem::path imagePath = PathFromUtf8(parsed.imagePath);
+    std::filesystem::path imagePath = PathFromUtf8(parsed.imagePath);
+
+    /* A directory argument opens its first image; the Window scans the folder
+     * for prev/next navigation.  Done before the decode so the async launch
+     * order below is unchanged. */
+    {
+        std::error_code dirEc;
+        if (std::filesystem::is_directory(imagePath, dirEc)) {
+            try { imagePath = Window::FirstImageInFolder(imagePath); }
+            catch (const std::exception& ex) {
+                std::cerr << "iview: " << ex.what() << "\n";
+                return 2;
+            }
+        }
+    }
+
     std::future<Image> imageFuture = std::async(std::launch::async, [imagePath] {
         return ProcessInput(imagePath);
     });
+    IviewTrace("async decode launched");
+
+    /* Settings are read *after* the decode is running, so file I/O for the
+     * config cannot delay the image.  Resolution order and validation live in
+     * Config.hpp; this must stay well under a millisecond. */
+    const auto configStart = std::chrono::steady_clock::now();
+    Config::Settings settings = Config::Load(parsed.configPath, false);
+    const double configMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - configStart).count();
+    {
+        char line[512];
+        std::snprintf(line, sizeof(line), "config loaded in %.3f ms (%s)",
+                      configMs,
+                      settings.loadPath.empty() ? "builtin defaults" : settings.loadPath.c_str());
+        IviewTrace(line);
+    }
+
+    /* Merge order: builtin defaults < config file < CLI flags. */
+    if (parsed.filterSpecified) settings.filterMode = static_cast<uint32_t>(parsed.mode);
+    if (parsed.pwmBits != 0u)   settings.pwmBits    = parsed.pwmBits;
+
+    /* The same refusal as above, now covering a pwm_bits that came from the
+     * config file. */
+    if (settings.pwmBits > 1u) {
+        std::cerr << "iview: pwm_bits > 1 (" << settings.pwmBits
+                  << "-phase) is not implemented in this build\n";
+        return 2;
+    }
 
     /* Window creation stays on the main thread: GLFW expects window and event
      * handling on the thread that owns the context. */
     Window::Initialize();
-    window = std::make_unique<Window>(640, 640);
+    window = std::make_unique<Window>(settings.windowWidth, settings.windowHeight, settings);
+    IviewTrace("window + renderer constructed");
 
-    /* Blocks until the worker has finished (or rethrows its exception).  This
-     * is the happens-before edge: everything the loader wrote is visible from
-     * here on, and the Image is moved out of the future's shared state. */
-    try
-    {
-        image = std::make_unique<Image>(imageFuture.get());
-    }
-    catch (std::exception& ex)
-    {
-#ifdef _WIN32
-        MessageBoxA(NULL, ex.what(), "Error", MB_OK | MB_ICONERROR);
-#else
-        std::cerr << "Failed to process the request : " << ex.what() << std::endl;
-#endif
-    }
+    /* The decode keeps running on its worker thread: Main polls the future
+     * without blocking, uploads as soon as it is ready and only then shows the
+     * window, so the first frame ever presented is the decoded image.  The
+     * filter options are copied into the Window, so `filterArgs` here does not
+     * have to outlive Main(). */
+    ViewerArgs effective = parsed;                    /* CLI, for spatial args */
+    effective.mode    = static_cast<IWFilterMode>(settings.filterMode);
+    effective.pwmBits = settings.pwmBits;
+    IWFilterArg filterArgs[5];
+    const IWFilterOptions filterOpts = MakeFilterOptions(effective, filterArgs);
+    window->SetFilterOptions(filterOpts);
 
-    if (image != nullptr)
-    {
-        static constexpr int PreferredTextureWidth = 256;
-        static constexpr int PreferredTextureHeight = 256;
-        static constexpr int PreferredRedundantBorder = 2;
-
-        /* Filter options come from the command line, so dithering modes are
-         * reachable from the shipped binary: `iview --filter=pwm photo.jpg`.
-         * See ParseViewerArgs() in Args.hpp for the accepted flags. */
-        IWFilterArg filterArgs[2];
-        const IWFilterOptions filterOpts = MakeFilterOptions(parsed, filterArgs);
-
-        window->LoadTextures(
-            *image,
-            PreferredTextureWidth,
-            PreferredTextureHeight,
-            PreferredRedundantBorder,
-            filterOpts);
-
-        image.reset();
-    }
-
-    window->Main();
+    window->Main(std::move(imageFuture), imagePath);
     window.reset();
     Window::Deinitialize();
     return 0;

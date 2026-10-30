@@ -98,6 +98,35 @@ typedef struct IWFilterImageSet {
     ImagePluginData**  frames;     /* array of frameCount pointers              */
 } IWFilterImageSet;
 
+/* ── Recognised argument vocabulary ──────────────────────────────────────── */
+/*
+ * IWFilterOptions itself keeps its three-field layout: new behaviour is added
+ * by *name*, so the ABI version does not change when a mode or a parameter is
+ * introduced.  FilterPluginPixman recognises:
+ *
+ *   "mode"           uint32  0 none
+ *                            1 ordered (4x4 Bayer)
+ *                            2 floyd_steinberg
+ *                            3 pwm (temporal, 2^bits frames)
+ *                            4 bayer4x4        (spatial, one frame)
+ *                            5 bayer8x8        (spatial, one frame)
+ *                            6 blue_noise      (spatial, 64x64 tile)
+ *                            7 spatial_temporal (two complementary frames)
+ *
+ *   "temporal_bits"  uint32  bits carried in time (PWM; 1 = 9-bit, 2 phases).
+ *                            The pre-existing name "pwm_bits" is still accepted
+ *                            and the host sends both, so old plugins keep
+ *                            working.
+ *
+ *   "spatial_bits"   uint32  bits the spatial stage may spend; 0 = as many as
+ *                            the source/temporal budget allows.  Clamped by the
+ *                            plugin to source_bits - 8 - temporal_bits and to
+ *                            the threshold field's resolution.
+ *
+ *   "seed"           uint64  offset applied to the blue-noise tile (default 0);
+ *                            ignored by the position-locked Bayer matrices.
+ */
+
 /* ── Plugin function-pointer typedefs ────────────────────────────────────── */
 typedef IWFilterImageSet* (*FilterImageFunc)(
     const ImagePluginData*  src,

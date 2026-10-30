@@ -22,15 +22,11 @@ endif()
 
 if(IMAGEVIEWER_USE_VCPKG)
     find_package(glfw3 CONFIG REQUIRED)
-    find_package(glad CONFIG REQUIRED)
     set(_GLFW_TARGET glfw)
-    set(_GLAD_TARGET glad::glad)
 else()
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
     find_package(GLFW3 REQUIRED)
-    find_package(Glad REQUIRED)
     set(_GLFW_TARGET glfw3::glfw3)
-    set(_GLAD_TARGET glad::glad)
 endif()
 
 # ── Per-plugin optional dependencies (QUIET — skip plugin if not found) ────────
@@ -126,6 +122,21 @@ else()
                 set(PIXMAN_TARGET PkgConfig::PIXMAN)
             endif()
         endif()
+        if(NOT DEFINED PIXMAN_TARGET)
+            # vcpkg's pixman port ships no CMake config, and a plain MSVC/Ninja
+            # install has no pkg-config either, so the plugin used to be skipped
+            # silently on Windows.  Locate the library and headers directly so
+            # FilterPixman (and therefore --filter=pwm) is actually built.
+            find_path(PIXMAN_INCLUDE_DIR NAMES pixman.h PATH_SUFFIXES pixman-1)
+            find_library(PIXMAN_LIBRARY NAMES pixman-1 libpixman-1)
+            if(PIXMAN_INCLUDE_DIR AND PIXMAN_LIBRARY)
+                add_library(pixman_vcpkg UNKNOWN IMPORTED)
+                set_target_properties(pixman_vcpkg PROPERTIES
+                    IMPORTED_LOCATION "${PIXMAN_LIBRARY}"
+                    INTERFACE_INCLUDE_DIRECTORIES "${PIXMAN_INCLUDE_DIR}")
+                set(PIXMAN_TARGET pixman_vcpkg)
+            endif()
+        endif()
     endif()
 endif()
 
@@ -133,6 +144,51 @@ if(DEFINED PIXMAN_TARGET)
     message(STATUS "Plugin: FilterPixman enabled (pixman found)")
 else()
     message(STATUS "Plugin: FilterPixman skipped (pixman not found)")
+endif()
+
+# ── GL loader (glad) ────────────────────────────────────────────────────────
+# Exactly one GL loader in the process: glad.  ImGui's OpenGL3 backend is built
+# with IMGUI_IMPL_OPENGL_LOADER_CUSTOM and force-includes glad/glad.h, so it
+# resolves the same symbols the Window module uses.
+if(IMAGEVIEWER_USE_VCPKG)
+    find_package(glad CONFIG REQUIRED)
+    set(_GLAD_TARGET glad::glad)
+else()
+    find_package(Glad REQUIRED)
+    set(_GLAD_TARGET glad::glad)
+endif()
+
+# ── Dear ImGui (third-party/imgui submodule, pinned at v1.93.0) ──────────────
+set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/imgui")
+
+add_library(imgui STATIC
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui PUBLIC
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+)
+target_compile_definitions(imgui PRIVATE
+    GLFW_INCLUDE_NONE
+    IMGUI_IMPL_OPENGL_LOADER_CUSTOM
+)
+target_link_libraries(imgui PUBLIC
+    ${_GLFW_TARGET}
+    ${_GLAD_TARGET}
+)
+set_property(TARGET imgui PROPERTY CXX_STANDARD 17)
+
+if(MSVC)
+    set_source_files_properties(${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+        PROPERTIES COMPILE_OPTIONS "/FIglad/glad.h")
+else()
+    set_source_files_properties(${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+        PROPERTIES COMPILE_OPTIONS "-include;glad/glad.h")
 endif()
 
 # Main executable
@@ -149,7 +205,6 @@ target_sources(imageviewer PUBLIC
     FILE_SET imageviewer TYPE CXX_MODULES
     FILES
         Window.ixx
-        TexturePool.ixx
         Image.ixx
         HotkeysHandler.ixx
         PluginManager.ixx
@@ -190,6 +245,7 @@ find_package(PNG REQUIRED)
 target_link_libraries(imageviewer PRIVATE
     ${_GLFW_TARGET}
     ${_GLAD_TARGET}
+    imgui
 )
 
 target_link_libraries(iview PRIVATE
@@ -251,6 +307,7 @@ endif()
 # JPEG Plugin DLL — only when libjpeg-turbo is available
 if(IMAGEVIEWER_JPEG_TARGET)
     add_library(ImageLoaderJpeg SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderJpeg)
     target_sources(ImageLoaderJpeg PUBLIC
         FILE_SET jpegloader TYPE CXX_MODULES
         FILES
@@ -264,6 +321,7 @@ endif()
 
 # PNG Plugin DLL — always built (libpng is a default vcpkg dep)
 add_library(ImageLoaderPng SHARED)
+list(APPEND _PLUGIN_TARGETS ImageLoaderPng)
 target_sources(ImageLoaderPng PUBLIC
     FILE_SET pngloader TYPE CXX_MODULES
     FILES
@@ -280,6 +338,7 @@ target_link_libraries(ImageLoaderPng PRIVATE
 # WebP Plugin DLL — only when libwebp is available
 if(WebP_FOUND)
     add_library(ImageLoaderWebp SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderWebp)
     target_sources(ImageLoaderWebp PUBLIC
         FILE_SET webploader TYPE CXX_MODULES
         FILES
@@ -295,6 +354,7 @@ endif()
 # TIFF Plugin DLL — only when libtiff is available
 if(TIFF_FOUND)
     add_library(ImageLoaderTiff SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderTiff)
     target_sources(ImageLoaderTiff PUBLIC
         FILE_SET tiffloader TYPE CXX_MODULES
         FILES
@@ -309,6 +369,7 @@ endif()
 # Stb Plugin DLL — only when stb is available
 if(Stb_FOUND)
     add_library(ImageLoaderStb SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderStb)
     target_sources(ImageLoaderStb PUBLIC
         FILE_SET stbloader TYPE CXX_MODULES
         FILES
@@ -321,6 +382,7 @@ endif()
 # FilterPixman Plugin DLL — only when pixman is available
 if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
     add_library(FilterPixman SHARED)
+    list(APPEND _PLUGIN_TARGETS FilterPixman)
     target_sources(FilterPixman PUBLIC
         FILE_SET filterpixman TYPE CXX_MODULES
         FILES
@@ -332,13 +394,34 @@ if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
     )
     target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET})
 
-    # Copy FilterPixman DLL next to iview on Windows (same logic as runtime DLLs)
-    if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
-        add_custom_command(TARGET iview POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:FilterPixman>
-                $<TARGET_FILE_DIR:iview>
-            VERBATIM
-        )
-    endif()
+endif()
+# ── Ship the plugins with the viewer ────────────────────────────────────────
+# The plugin libraries are built into the same directory as iview by default, but
+# nothing in the target graph said so: building only the iview target skipped the
+# plugins entirely, which left a Release folder with no loadable image loaders or
+# filter.  Make the dependency explicit and copy every plugin next to the
+# executable, so any build (single- or multi-config) ships a runnable viewer.
+if(_PLUGIN_TARGETS)
+    add_dependencies(iview ${_PLUGIN_TARGETS})
+    set(_PLUGIN_FILES "")
+    foreach(_plugin IN LISTS _PLUGIN_TARGETS)
+        if(TARGET ${_plugin})
+            list(APPEND _PLUGIN_FILES "$<TARGET_FILE:${_plugin}>")
+        endif()
+    endforeach()
+    add_custom_command(TARGET iview POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${_PLUGIN_FILES}
+            $<TARGET_FILE_DIR:iview>
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
+    message(STATUS "Plugins shipped with iview: ${_PLUGIN_TARGETS}")
+endif()
+
+# Packaging path: `cmake --install` produces a folder containing iview.exe and
+# every plugin (the runtime DLLs beside them come from vcpkg's applocal step).
+install(TARGETS iview RUNTIME DESTINATION .)
+if(_PLUGIN_TARGETS)
+    install(TARGETS ${_PLUGIN_TARGETS} RUNTIME DESTINATION .)
 endif()
