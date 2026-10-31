@@ -30,6 +30,9 @@ public:
         PluginHandle handle;
         LoadImageFromFileFunc loadFunc;
         FreeImageDataFunc freeFunc;
+        /* Optional preview export; nullptr when the loader does not provide a
+         * cheap reduced-resolution decode.  Callers must check before use. */
+        LoadImagePreviewFromFileFunc previewFunc = nullptr;
     };
 
     PluginManager() = default;
@@ -188,6 +191,10 @@ private:
             FreeLibrary(handle);
             return false;
         }
+        /* Optional: a plugin without a preview decoder is still valid. */
+        SetLastError(0);
+        entry.previewFunc = (LoadImagePreviewFromFileFunc)GetProcAddress(
+            handle, "LoadImagePreviewFromFile");
 #else
         dlerror();
         entry.loadFunc = (LoadImageFromFileFunc)dlsym(handle, "LoadImageFromFile");
@@ -207,6 +214,11 @@ private:
             dlclose(handle);
             return false;
         }
+        /* Optional: a plugin without a preview decoder is still valid. */
+        dlerror();
+        entry.previewFunc = (LoadImagePreviewFromFileFunc)dlsym(
+            handle, "LoadImagePreviewFromFile");
+        (void)dlerror();
 #endif
         return true;
     }

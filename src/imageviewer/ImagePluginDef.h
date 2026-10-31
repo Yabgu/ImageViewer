@@ -167,6 +167,42 @@ typedef ImagePluginResult (*LoadImageFromFileFunc)(ImagePluginPath);
 typedef void (*FreeImageDataFunc)(ImagePluginData*);
 typedef const char* (*ImagePluginGetLastErrorFunc)();
 
+/*
+ * OPTIONAL export: "LoadImagePreviewFromFile".
+ *
+ * Decodes a reduced-resolution version of the file for display while the
+ * full-resolution decode runs.  Loaders that can produce a cheaper preview
+ * export this symbol; the host resolves it with GetProcAddress/dlsym and
+ * silently falls back to LoadImageFromFile when it is absent.
+ *
+ *   maxDimension   largest side (width or height) wanted for the preview.
+ *                  0 asks for the decoder's fastest useful preview.  This is
+ *                  best effort: a format that cannot scale far enough may
+ *                  return a larger preview.
+ *   fullWidth      optional out-parameter: upright width of the full image
+ *   fullHeight     optional out-parameter: upright height of the full image
+ *
+ * The preview is returned through the normal ImagePluginResult/ImagePluginData
+ * contract and is released with FreeImageData().  fullWidth/fullHeight let the
+ * renderer size the preview quad like the final image, so replacing the
+ * preview with the full raster does not move or resize the picture.  They may
+ * be left at 0 when the loader cannot determine them; the host then treats the
+ * preview dimensions as authoritative.
+ *
+ * A loader may return the full-resolution image from this call (for example
+ * when the file already fits inside maxDimension).  The host compares the
+ * returned dimensions with fullWidth/fullHeight and skips the second decode in
+ * that case.
+ *
+ * On failure the loader returns a non-OK code; the host then performs a normal
+ * LoadImageFromFile() rather than failing the load.
+ */
+typedef ImagePluginResult (*LoadImagePreviewFromFileFunc)(
+    ImagePluginPath filePath,
+    uint32_t maxDimension,
+    int* fullWidth,
+    int* fullHeight);
+
 #ifdef __cplusplus
 }
 #endif

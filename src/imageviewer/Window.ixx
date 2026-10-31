@@ -14,6 +14,8 @@ module;
 #include <utility>
 #include <future>
 #include <mutex>
+#include <optional>
+#include <exception>
 #include <string>
 #include <format>
 #include <filesystem>
@@ -30,6 +32,10 @@ module;
 #ifdef _WIN32
 #include <windows.h>
 #include <share.h>
+/* glfwGetWin32Window: the window handle is needed for SetWindowPlacement, see
+ * ShowInitialWindow(). */
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
 #endif
 
 #include "imgui.h"
@@ -169,11 +175,14 @@ protected:
 		Window* win = From(window);
 		if (win != nullptr)
 		{
+			/* A resize can arrive before the GL context is current (applying the
+			 * saved placement resizes the hidden window during construction);
+			 * glViewport would then call a null glad entry point. */
+			if (glfwGetCurrentContext() == window) glViewport(0, 0, width, height);
 			/* The viewport follows the framebuffer, which is what the quad's
 			 * projection is computed against. */
 			win->width  = width;
 			win->height = height;
-			glViewport(0, 0, width, height);
 		}
 	}
 
@@ -230,6 +239,15 @@ private:
 	int width;
 	int height;
 	int scroll;
+	/* Last client-area geometry observed while the window was in its normal state
+	 * (neither maximized nor iconified).  GLFW exposes no restore rectangle, so
+	 * this sample is what gets persisted: a maximized window comes back maximized
+	 * *and* un-maximizes to where the user left it. */
+	int  normalX_ = 0;
+	int  normalY_ = 0;
+	int  normalW_ = 0;
+	int  normalH_ = 0;
+	bool normalGeometryKnown_ = false;
 	int imageWidth_  = 0;
 	int imageHeight_ = 0;
 	FilterPlugin filterPlugin_;
@@ -254,6 +272,12 @@ private:
 	 * out from under the worker.  const because ComputeFilteredFrames() only
 	 * reads the source. */
 	std::shared_ptr<const Image> source_image_;
+
+	/* Progressive initial load workers.  Main() consumes the shared state, but
+	 * the futures are kept here so the destructor can drain them before GL
+	 * teardown.  The preview future is absent for loaders without a preview. */
+	std::future<void>           initial_preview_worker_;
+	std::future<void>           initial_worker_;
 
 	/* Async filter re-run.  Only one compute may be in flight: the plugin is a
 	 * single DLL handle with no documented reentrancy, and its result is
@@ -395,6 +419,125 @@ private:
 		}
 	}
 
+	/* Client-area rectangle in screen coordinates, the same convention GLFW uses
+	 * for glfwCreateWindow()/glfwSetWindowPos()/glfwGetWindowSize(). */
+	struct WindowPlacement
+	{
+		int x      = 0;
+		int y      = 0;
+		int width  = 0;
+		int height = 0;
+	};
+
+	/* Decoration around the content area (glfwGetWindowFrameSize).  Screens are
+	 * laid out by *frame* rect, not client rect: centring a client area that is
+	 * almost as tall as the work area without these extents puts the title bar
+	 * above the screen. */
+	struct FrameExtents
+	{
+		int left   = 0;
+		int top    = 0;
+		int right  = 0;
+		int bottom = 0;
+
+		int width()  const noexcept { return std::max(0, left) + std::max(0, right); }
+		int height() const noexcept { return std::max(0, top) + std::max(0, bottom); }
+	};
+
+	struct ScreenRect
+	{
+		int x      = 0;
+		int y      = 0;
+		int width  = 0;
+		int height = 0;
+	};
+
+	static ScreenRect FrameRectFor(const WindowPlacement& p, const FrameExtents& frame) noexcept
+	{
+		return ScreenRect{ p.x - frame.left,
+		                   p.y - frame.top,
+		                   p.width  + frame.width(),
+		                   p.height + frame.height() };
+	}
+
+	/* True when the frame's title bar is reachable on some monitor and at least
+	 * half of the window would be visible.  A saved position may name a monitor
+	 * that is no longer attached, a retired layout, or coordinates outside every
+	 * screen; centring is a better answer than restoring a window the user
+	 * cannot grab, see or move. */
+	static bool PlacementIsReachable(const WindowPlacement& p, const FrameExtents& frame) noexcept
+	{
+		if (p.width <= 0 || p.height <= 0) return false;
+		int count = 0;
+		GLFWmonitor** const monitors = glfwGetMonitors(&count);
+		if (monitors == nullptr || count == 0) return false;
+
+		const ScreenRect f = FrameRectFor(p, frame);
+		if (f.width <= 0 || f.height <= 0) return false;
+		const long long area = static_cast<long long>(f.width) * f.height;
+		constexpr int kTitleBarMinHeight = 16;
+
+		for (int i = 0; i < count; ++i)
+		{
+			int wx = 0, wy = 0, ww = 0, wh = 0;
+			glfwGetMonitorWorkarea(monitors[i], &wx, &wy, &ww, &wh);
+			if (ww <= 0 || wh <= 0) continue;
+
+			const bool titleReachable = f.y >= wy &&
+			                            f.y + kTitleBarMinHeight <= wy + wh &&
+			                            f.x + f.width > wx && f.x < wx + ww;
+			if (!titleReachable) continue;
+
+			const long long x0 = std::max<long long>(f.x, wx);
+			const long long y0 = std::max<long long>(f.y, wy);
+			const long long x1 = std::min<long long>(static_cast<long long>(f.x) + f.width,
+			                                        static_cast<long long>(wx) + ww);
+			const long long y1 = std::min<long long>(static_cast<long long>(f.y) + f.height,
+			                                        static_cast<long long>(wy) + wh);
+			if (x1 <= x0 || y1 <= y0) continue;
+			if ((x1 - x0) * (y1 - y0) * 2 >= area) return true;
+		}
+		return false;
+	}
+
+	/* A stored size can outlive the display it was measured on.  Shrink the
+	 * client area so the whole frame still fits the largest work area. */
+	static void ClampSizeToDisplays(int& width, int& height, const FrameExtents& frame) noexcept
+	{
+		int count = 0;
+		GLFWmonitor** const monitors = glfwGetMonitors(&count);
+		if (monitors == nullptr || count == 0) return;
+
+		int maxWidth  = 0;
+		int maxHeight = 0;
+		for (int i = 0; i < count; ++i)
+		{
+			int wx = 0, wy = 0, ww = 0, wh = 0;
+			glfwGetMonitorWorkarea(monitors[i], &wx, &wy, &ww, &wh);
+			maxWidth  = std::max(maxWidth, ww);
+			maxHeight = std::max(maxHeight, wh);
+		}
+		if (maxWidth  > 0) width  = std::min(width,  std::max(64, maxWidth  - frame.width()));
+		if (maxHeight > 0) height = std::min(height, std::max(64, maxHeight - frame.height()));
+	}
+
+	static WindowPlacement CentreOnPrimary(int width, int height, const FrameExtents& frame) noexcept
+	{
+		WindowPlacement p{0, 0, width, height};
+		GLFWmonitor* const primary = glfwGetPrimaryMonitor();
+		int wx = 0, wy = 0, ww = 0, wh = 0;
+		if (primary != nullptr) glfwGetMonitorWorkarea(primary, &wx, &wy, &ww, &wh);
+		if (ww > 0 && wh > 0)
+		{
+			const int frameX = wx + (ww - (width + frame.width())) / 2;
+			int       frameY = wy + (wh - (height + frame.height())) / 2;
+			frameY = std::max(frameY, wy);   /* never hide the title bar */
+			p.x = frameX + frame.left;
+			p.y = frameY + frame.top;
+		}
+		return p;
+	}
+
 	static GLFWwindow* InitializeWindow(int width, int height, Window* containerWindow)
 	{
 		/* GL 3.3 core: everything this renderer uses (VAO, GLSL 330, layout
@@ -490,6 +633,24 @@ public:
 		}
 		IviewTrace("GL context created");
 
+		/* Placement is applied only now: resizing fires WM_SIZE and
+		 * framebuffer_size_callback calls glViewport, which needs a current
+		 * context.  The window is still hidden, so nothing of this is visible. */
+		const WindowPlacement placement = ApplyInitialPlacement(settings_);
+		normalX_ = placement.x;
+		normalY_ = placement.y;
+		normalW_ = placement.width;
+		normalH_ = placement.height;
+		normalGeometryKnown_ = true;
+		{
+			char line[192];
+			std::snprintf(line, sizeof(line),
+			              "window placement: %dx%d at %d,%d maximized=%d",
+			              placement.width, placement.height, placement.x, placement.y,
+			              glfwGetWindowAttrib(glfwWindow, GLFW_MAXIMIZED) == GLFW_TRUE ? 1 : 0);
+			IviewTrace(line);
+		}
+
 		glEnable(GL_TEXTURE_2D);
 
 		CreateQuadResources();
@@ -530,6 +691,24 @@ public:
 		 * not need to outlive the workers today, but ordering the wait first
 		 * makes that invariant explicit and avoids a future GL-using job racing
 		 * glfwDestroyWindow(). */
+		if (initial_preview_worker_.valid())
+		{
+			IviewTrace("draining initial preview future");
+			try { initial_preview_worker_.wait(); }
+			catch (...)
+			{
+				IviewTrace("initial preview future drain caught exception");
+			}
+		}
+		if (initial_worker_.valid())
+		{
+			IviewTrace("draining initial progressive future");
+			try { initial_worker_.wait(); }
+			catch (...)
+			{
+				IviewTrace("initial progressive future drain caught exception");
+			}
+		}
 		if (filter_future_.valid())
 		{
 			IviewTrace("draining filter future");
@@ -762,7 +941,6 @@ private:
 		return pd;
 	}
 
-	/* Exactly the plugin's target format: interleaved 8-bit RGBA, in order. */
 	static bool IsPackedRgba8(const IWImageFormat& f) noexcept
 	{
 		if (f.storageLayout != IW_STORAGE_INTERLEAVED) return false;
@@ -781,10 +959,39 @@ private:
 		return true;
 	}
 
+	static bool IsPackedRgb8(const IWImageFormat& f) noexcept
+	{
+		if (f.storageLayout != IW_STORAGE_INTERLEAVED) return false;
+		if (f.componentCount != 3u || f.bitsPerPixel != 24u) return false;
+		static const IWComponentSemantic kOrder[3] = {
+			IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_SEMANTIC_B
+		};
+		for (int i = 0; i < 3; ++i) {
+			const IWComponentDef& c = f.components[i];
+			if (c.semantic       != kOrder[i])                return false;
+			if (c.componentClass != IW_COMPONENT_CLASS_UNORM) return false;
+			if (c.bitWidth       != 8u)                       return false;
+			if (c.bitOffset      != (uint16_t)(i * 8))        return false;
+		}
+		return true;
+	}
+
+	static bool IsPackedGray8(const IWImageFormat& f) noexcept
+	{
+		return f.storageLayout == IW_STORAGE_INTERLEAVED &&
+		       f.componentCount == 1u && f.bitsPerPixel == 8u &&
+		       f.components[0].semantic       == IW_COMPONENT_SEMANTIC_GRAY &&
+		       f.components[0].componentClass == IW_COMPONENT_CLASS_UNORM &&
+		       f.components[0].bitWidth       == 8u &&
+		       f.components[0].bitOffset      == 0u;
+	}
+
 	/* Convert one frame to tightly packed RGBA8.  The plugin already produces
-	 * exactly that layout, so the common path is a straight row copy; anything
-	 * else (float/16-bit/exotic semantics when no plugin is loaded) goes through
-	 * the same FilterCore helper the plugin uses. */
+	 * exactly that layout, so the common path is a straight row copy.  JPEG and
+	 * most loaders hand back packed RGB8 or GRAY8; those get integer expansion
+	 * here instead of the generic float path, which used to run
+	 * FilterCore::ExtractPixelF() four times per pixel.  Anything else
+	 * (float/16-bit/exotic semantics) goes through the FilterCore helper. */
 	static void ToRgba8(const ImagePluginData& pd, std::vector<uint8_t>& out)
 	{
 		out.resize((size_t)pd.width * (size_t)pd.height * 4u);
@@ -793,6 +1000,38 @@ private:
 				std::memcpy(out.data() + (size_t)y * pd.width * 4u,
 				            pd.data  + (ptrdiff_t)y * pd.stride,
 				            (size_t)pd.width * 4u);
+			return;
+		}
+
+		if (IsPackedRgb8(pd.format)) {
+			for (int y = 0; y < pd.height; ++y) {
+				const uint8_t* src = pd.data + (ptrdiff_t)y * pd.stride;
+				uint8_t* dst = out.data() + (size_t)y * pd.width * 4u;
+				for (int x = 0; x < pd.width; ++x) {
+					dst[0] = src[0];
+					dst[1] = src[1];
+					dst[2] = src[2];
+					dst[3] = 255u;
+					src += 3;
+					dst += 4;
+				}
+			}
+			return;
+		}
+
+		if (IsPackedGray8(pd.format)) {
+			for (int y = 0; y < pd.height; ++y) {
+				const uint8_t* src = pd.data + (ptrdiff_t)y * pd.stride;
+				uint8_t* dst = out.data() + (size_t)y * pd.width * 4u;
+				for (int x = 0; x < pd.width; ++x) {
+					const uint8_t v = src[x];
+					dst[0] = v;
+					dst[1] = v;
+					dst[2] = v;
+					dst[3] = 255u;
+					dst += 4;
+				}
+			}
 			return;
 		}
 
@@ -809,8 +1048,9 @@ private:
 		}
 	}
 
-	/* One texture per phase frame.  A single-frame source uploads the same
-	 * pixels twice, so the alternation stays harmless. */
+	/* One texture per phase frame.  A single-frame source uploads once: the
+	 * second phase keeps pointing at the same texture through DrawImage(), and
+	 * the previous second-phase texture (from a PWM run) simply stays unused. */
 	void UploadTextures(const std::vector<uint8_t>& phaseA,
 	                    const std::vector<uint8_t>& phaseB,
 	                    int width, int height)
@@ -821,8 +1061,9 @@ private:
 			phaseB.empty() ? phaseA.data() : phaseB.data()
 		};
 
+		const int uploadCount = phaseB.empty() ? 1 : 2;
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-		for (int i = 0; i < 2; ++i)
+		for (int i = 0; i < uploadCount; ++i)
 		{
 			if (textures_[i].id == 0)
 				glGenTextures(1, &textures_[i].id);
@@ -839,19 +1080,78 @@ private:
 			textures_[i].height = height;
 		}
 		glBindTexture(GL_TEXTURE_2D, 0);
-		textureCount_ = phaseB.empty() ? 1 : 2;
+		textureCount_ = uploadCount;
 		if (IviewTraceEnabled())
 		{
 			char line[192];
-			std::snprintf(line, sizeof(line),
-			              "texture upload done (%dx%d, phases=%d, ids=%u,%u)",
-			              width, height, textureCount_,
-			              textures_[0].id, textures_[1].id);
+			if (textureCount_ > 1)
+				std::snprintf(line, sizeof(line),
+				              "texture upload done (%dx%d, phases=%d, ids=%u,%u)",
+				              width, height, textureCount_, textures_[0].id, textures_[1].id);
+			else
+				std::snprintf(line, sizeof(line),
+				              "texture upload done (%dx%d, phases=1, id=%u)",
+				              width, height, textures_[0].id);
 			IviewTrace(line);
 		}
 	}
 
+	/* Fast path for the common 8-bit layouts: upload the Image's own pixels with
+	 * glTexImage2D instead of converting to a separate RGBA8 frame.  A 24 MP RGB
+	 * image is 72 MB; converting it to RGBA8 costs a 96 MB allocation plus a full
+	 * pass over both buffers, which this avoids for the mode=none display path.
+	 * Returns false for layouts this path does not handle (the caller converts). */
+	bool TryUploadPackedSource(const Image& image)
+	{
+		GLint  internalFormat = 0;
+		GLenum sourceFormat   = 0;
+		if (IsPackedRgba8(image.format)) {
+			internalFormat = GL_RGBA8;
+			sourceFormat   = GL_RGBA;
+		} else if (IsPackedRgb8(image.format)) {
+			internalFormat = GL_RGB8;
+			sourceFormat   = GL_RGB;
+		} else {
+			return false;
+		}
+
+		IviewTrace("direct texture upload start");
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		const int bytesPerPixel = image.BytesPerPixel();
+		if (bytesPerPixel > 0 && image.stride != image.width * bytesPerPixel)
+			glPixelStorei(GL_UNPACK_ROW_LENGTH, image.stride / bytesPerPixel);
+
+		if (textures_[0].id == 0)
+			glGenTextures(1, &textures_[0].id);
+		glBindTexture(GL_TEXTURE_2D, textures_[0].id);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, image.width, image.height, 0,
+		             sourceFormat, GL_UNSIGNED_BYTE, image.data);
+
+		textures_[0].width  = image.width;
+		textures_[0].height = image.height;
+		textureCount_ = 1;
+		glBindTexture(GL_TEXTURE_2D, 0);
+		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+		IviewTrace("direct texture upload done");
+		return true;
+	}
+
 	/* ── Filter pipeline: compute (any thread) / upload (main thread) ──────── */
+
+	/* True when the options ask for no filtering at all.  Kept as one predicate
+	 * so the upload fast paths and ComputeFilteredFrames cannot disagree. */
+	static bool IsNoFilterOptions(const IWFilterOptions& opts) noexcept
+	{
+		return opts.argc == 0u || opts.argv == nullptr ||
+		       (opts.argc == 1u &&
+		        opts.argv[0].type == IW_FILTER_ARG_UINT32 &&
+		        std::strcmp(opts.argv[0].name, "mode") == 0 &&
+		        opts.argv[0].value.u32 == 0u);
+	}
 
 	/* Runs the plugin and converts at most two frames to packed RGBA8.
 	 *
@@ -870,7 +1170,12 @@ private:
 		if (image.width <= 0 || image.height <= 0)
 			throw std::runtime_error("the image is empty");
 
-		if (filterPlugin_.IsLoaded()) {
+		/* mode=none means "no filter".  Calling the filter plugin anyway made it
+		 * allocate and copy a full RGBA frame (pixman PIXMAN_OP_SRC) that was then
+		 * copied again by ToRgba8 below.  Skip the round trip entirely. */
+		const bool noFilter = IsNoFilterOptions(opts);
+
+		if (!noFilter && filterPlugin_.IsLoaded()) {
 			const ImagePluginData pd = MakePluginDataView(image);
 			/* 8 bits per channel, 4 channels: what the default framebuffer offers. */
 			const IWScreenInfo screen{ 8u, 4u };
@@ -1263,22 +1568,67 @@ private:
 
 public:
 	/* Initial load and file drop: compute here, upload here.  Kept under its
-	 * OpenGL name so the call sites do not change. */
+	 * OpenGL name so the call sites do not change.  `preserveView` keeps the
+	 * current zoom/pan when the new raster has the same dimensions as the one on
+	 * screen — used when a progressive preview is replaced by the full image. */
 	bool LoadTextures(
 		const Image& image,
 		const int /*segmentWidth*/,
 		const int /*segmentHeight*/,
 		const int /*redundantBorderSize*/,
 		const IWFilterOptions& opts = IWFilterOptions{
-			IW_FILTER_OPTIONS_VERSION, 0u, nullptr })
+			IW_FILTER_OPTIONS_VERSION, 0u, nullptr },
+		const bool preserveView = false)
 	{
 		IviewTrace("LoadTextures start");
+		const int previousWidth  = imageWidth_;
+		const int previousHeight = imageHeight_;
 		try
 		{
-			UploadFrameSet(ComputeFilteredFrames(image, opts));
+			/* mode=none with an 8-bit packed source goes straight to the GPU.
+			 * Filtered modes still run the plugin and upload its RGBA frames. */
+			if (IsNoFilterOptions(opts) && TryUploadPackedSource(image))
+			{
+				imageWidth_  = image.width;
+				imageHeight_ = image.height;
+			}
+			else
+			{
+				UploadFrameSet(ComputeFilteredFrames(image, opts));
+			}
 			appliedMode_ = 0;          /* LoadTextures always uploads mode=none */
-			CenterImage();
+			if (!(preserveView &&
+			      previousWidth  == imageWidth_ &&
+			      previousHeight == imageHeight_))
+				CenterImage();
 			IviewTrace("LoadTextures done");
+			return true;
+		}
+		catch (const std::exception& ex)
+		{
+			std::fprintf(stderr, "iview: %s\n", ex.what());
+			return false;
+		}
+	}
+
+	/* Upload a reduced-resolution preview but size it like the final image, so
+	 * the preview -> full swap changes only the texture, not the on-screen
+	 * rectangle.  Always mode=none: a filter run on the preview would be thrown
+	 * away moments later. */
+	bool LoadPreviewTextures(const Image& image, int displayWidth, int displayHeight)
+	{
+		IviewTrace("LoadPreviewTextures start");
+		try
+		{
+			IWFilterArg noneArgs[1];
+			const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
+			if (!TryUploadPackedSource(image))
+				UploadFrameSet(ComputeFilteredFrames(image, noneOpts));
+			imageWidth_  = displayWidth  > 0 ? displayWidth  : image.width;
+			imageHeight_ = displayHeight > 0 ? displayHeight : image.height;
+			appliedMode_ = 0;
+			CenterImage();
+			IviewTrace("LoadPreviewTextures done");
 			return true;
 		}
 		catch (const std::exception& ex)
@@ -1349,14 +1699,21 @@ public:
 
 		if (!HasImage()) return;
 
-		const Texture& tex = textures_[phase & 1u];
+		const Texture& tex = (textureCount_ <= 1) ? textures_[0]
+		                                            : textures_[phase & 1u];
 		if (tex.id == 0) return;
 
-		/* At 100 % or more show exact pixels, below that filter them. */
+		/* At 100 % or more show exact pixels, below that filter them.  A preview
+		 * texture can be smaller than the image dimensions it is stretched over;
+		 * it must stay linearly filtered even at 100 % so it does not look like a
+		 * mosaic while the full decode finishes. */
 		const double zoom = getZoom();
+		const bool exactPixels = zoom >= 1.0 &&
+		                         tex.width  == imageWidth_ &&
+		                         tex.height == imageHeight_;
 		glBindTexture(GL_TEXTURE_2D, tex.id);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-		                (zoom >= 1.0) ? GL_NEAREST : GL_LINEAR);
+		                exactPixels ? GL_NEAREST : GL_LINEAR);
 
 		const double imgW = imageWidth_ * zoom;
 		const double imgH = imageHeight_ * zoom;
@@ -1394,9 +1751,19 @@ public:
 		glBindVertexArray(0);
 	}
 
-	void Main(std::future<Image>&& imageFuture, std::filesystem::path imagePath)
+	void Main(ProgressiveImageLoad&& imageLoad, std::filesystem::path imagePath)
 	{
 		using Clock = std::chrono::steady_clock;
+
+		const std::filesystem::path initialPath = imagePath;
+		std::shared_ptr<ProgressiveImageState> initialState = std::move(imageLoad.state);
+		if (imageLoad.preview_worker.valid())
+			initial_preview_worker_ = std::move(imageLoad.preview_worker);
+		if (imageLoad.worker.valid())
+			initial_worker_ = std::move(imageLoad.worker);
+
+		bool initialPreviewShown = false;
+		bool initialComplete     = !initialState;
 
 		bool uploaded = false;
 		bool shown    = false;
@@ -1414,6 +1781,8 @@ public:
 		{
 			const auto frameStart = Clock::now();
 			glfwPollEvents();
+			/* Keep the persisted placement current without writing on resize ticks. */
+			TrackNormalGeometry();
 
 			if (firstLoop) { IviewTrace("first loop iteration"); firstLoop = false; }
 
@@ -1425,59 +1794,231 @@ public:
 				IviewTrace("image available before initial decode");
 			}
 
-			/* (1) Decode future.  Nothing blocks here: until it is ready the
-			 * loop just presents clear frames (the window is still hidden). */
-			if (!uploaded &&
-			    imageFuture.valid() &&
-			    imageFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
+			/* (1) Progressive initial load.  The worker publishes a preview first
+			 * and the full raster second; this loop uploads each stage as it lands.
+			 * Nothing blocks here: until the preview is ready the loop just presents
+			 * clear frames (the window is still hidden). */
+			if (initialState && !initialComplete)
 			{
-				IviewTrace("future ready");
-				try
+				bool previewReady = false;
+				bool previewDone  = false;
+				bool done         = false;
+				bool fullExpected = false;
+				int  fullW = 0;
+				int  fullH = 0;
+				std::optional<Image> previewImage;
+				std::optional<Image> fullImage;
+				std::exception_ptr loadError;
 				{
-					/* Retained for the lifetime of this file so the filter can be
-					 * re-run without decoding again (see source_image_). */
-					auto image = std::make_shared<Image>(imageFuture.get());
-
-					/* The first visible frame is always the plain 8-bit image.
-					 * A requested PWM mode is computed in the background and
-					 * swapped in by the block below once it is ready, so a
-					 * high-bit-depth source never delays start-up. */
-					IWFilterArg noneArgs[1];
-					const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
-					if (!LoadTextures(*image, 0, 0, 0, noneOpts))
-						throw std::runtime_error("the filter produced an unsupported frame count");
-					SetWindowTitle(imagePath);
-					ComputeReadout(*image, imagePath);
-					source_image_ = image;
-					current_path_ = imagePath;
-					++file_generation_;
-
-					/* Folder context.  A directory argument arrives here as its
-					 * first image, so the parent is always the right folder. */
-					try {
-						ScanFolder(imagePath);
-						nav_shown_index_  = folder_index_;
-						nav_target_index_ = folder_index_;
-					} catch (const std::exception& ex) {
-						folder_images_.clear();       /* stay single-file */
-						std::fprintf(stderr, "iview: %s\n", ex.what());
+					std::lock_guard<std::mutex> lock(initialState->mutex);
+					previewReady = initialState->preview_ready;
+					previewDone  = initialState->preview_done;
+					done         = initialState->done;
+					fullExpected = initialState->full_expected;
+					fullW        = initialState->full_width;
+					fullH        = initialState->full_height;
+					loadError    = initialState->error;
+					if (previewReady && !initialPreviewShown && initialState->preview)
+					{
+						previewImage.emplace(std::move(*initialState->preview));
+						initialState->preview.reset();
 					}
-					uploaded = true;
-					IviewTrace("image uploaded to the GPU");
-					/* Kicked after the window is on screen (see the show block
-					 * below): creating the worker before the first swap would
-					 * put thread start-up between the upload and the show. */
-					pendingDeferredFilter_ = true;
+					if (done && initialState->full)
+					{
+						fullImage.emplace(std::move(*initialState->full));
+						initialState->full.reset();
+					}
 				}
-				catch (std::exception& ex)
+
+				/* Preview stage.  Skipped when the full raster already won the race:
+				 * showing the sharper image first is strictly better. */
+				if (!initialComplete && previewImage && !fullImage)
 				{
+					const bool sameFile = current_path_.empty() || current_path_ == initialPath;
+					if (!sameFile)
+					{
+						IviewTrace("stale initial preview discarded");
+						initialComplete = true;
+					}
+					else
+					{
+						try
+						{
+							const int displayW = (fullW > 0) ? fullW : previewImage->width;
+							const int displayH = (fullH > 0) ? fullH : previewImage->height;
+							if (!LoadPreviewTextures(*previewImage, displayW, displayH))
+								throw std::runtime_error("the preview could not be uploaded");
+
+							SetWindowTitle(imagePath);
+							ComputeReadout(displayW, displayH, imagePath);
+							current_path_ = imagePath;
+
+							/* Folder context.  A directory argument arrives here as its
+							 * first image, so the parent is always the right folder. */
+							if (folder_images_.empty())
+							{
+								try {
+									ScanFolder(imagePath);
+									nav_shown_index_  = folder_index_;
+									nav_target_index_ = folder_index_;
+								} catch (const std::exception& ex) {
+									folder_images_.clear();       /* stay single-file */
+									std::fprintf(stderr, "iview: %s\n", ex.what());
+								}
+							}
+
+							uploaded = true;
+							initialPreviewShown = true;
+							IviewTrace("progressive preview uploaded");
+
+							/* A loader that returned a full-resolution raster from the
+							 * preview call has nothing sharper to offer. */
+							if (!fullExpected)
+							{
+								source_image_ = std::make_shared<Image>(std::move(*previewImage));
+								++file_generation_;
+								pendingDeferredFilter_ = true;
+								initialComplete = true;
+								IviewTrace("progressive load complete (preview was final)");
+							}
+						}
+						catch (std::exception& ex)
+						{
 #ifdef _WIN32
-					MessageBoxA(NULL, ex.what(), "Error", MB_OK | MB_ICONERROR);
+							MessageBoxA(NULL, ex.what(), "Error", MB_OK | MB_ICONERROR);
 #else
-					std::cerr << "Failed to process the request : " << ex.what() << std::endl;
+							std::cerr << "Failed to process the request : " << ex.what() << std::endl;
 #endif
+							break;
+						}
+					}
+				}
+
+				/* The full raster is ready before the preview was shown: either the
+				 * full decode won the race or the preview decode failed.  Show it now;
+				 * a later preview would add nothing. */
+				if (!initialComplete && !initialPreviewShown && fullImage)
+				{
+					const bool sameFile = current_path_.empty() || current_path_ == initialPath;
+					if (!sameFile)
+					{
+						IviewTrace("stale initial full (no preview) discarded");
+						initialComplete = true;
+					}
+					else
+					{
+						try
+						{
+							IWFilterArg noneArgs[1];
+							const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
+							if (!LoadTextures(*fullImage, 0, 0, 0, noneOpts))
+								throw std::runtime_error("the full image could not be uploaded");
+
+							SetWindowTitle(imagePath);
+							ComputeReadout(fullImage->width, fullImage->height, imagePath);
+							current_path_ = imagePath;
+							if (folder_images_.empty())
+							{
+								try {
+									ScanFolder(imagePath);
+									nav_shown_index_  = folder_index_;
+									nav_target_index_ = folder_index_;
+								} catch (const std::exception& ex) {
+									folder_images_.clear();
+									std::fprintf(stderr, "iview: %s\n", ex.what());
+								}
+							}
+							uploaded = true;
+							initialPreviewShown = true;
+							source_image_ = std::make_shared<Image>(std::move(*fullImage));
+							++file_generation_;
+							pendingDeferredFilter_ = true;
+							initialComplete = true;
+							IviewTrace("progressive full uploaded (first stage)");
+						}
+						catch (std::exception& ex)
+						{
+#ifdef _WIN32
+							MessageBoxA(NULL, ex.what(), "Error", MB_OK | MB_ICONERROR);
+#else
+							std::cerr << "Failed to process the request : " << ex.what() << std::endl;
+#endif
+							break;
+						}
+					}
+				}
+
+				/* Full stage.  Uploading here on the main thread keeps all GL calls
+				 * on one thread; the decode itself already happened on the worker. */
+				if (!initialComplete && initialPreviewShown && done)
+				{
+					if (fullImage)
+					{
+						if (current_path_ != initialPath)
+						{
+							IviewTrace("stale initial full discarded");
+						}
+						else
+						{
+							try
+							{
+								IWFilterArg noneArgs[1];
+								const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
+								/* The preview already sized the quad like the full image,
+								 * so the view (zoom and pan) survives the swap. */
+								if (!LoadTextures(*fullImage, 0, 0, 0, noneOpts, /*preserveView=*/true))
+									throw std::runtime_error("the full image could not be uploaded");
+
+								source_image_ = std::make_shared<Image>(std::move(*fullImage));
+								++file_generation_;
+								ComputeReadout(source_image_->width, source_image_->height, initialPath);
+								pendingDeferredFilter_ = true;
+								IviewTrace("progressive full uploaded");
+							}
+							catch (const std::exception& ex)
+							{
+								last_error_ = ex.what();
+								std::fprintf(stderr, "iview: progressive full upload failed: %s\n", ex.what());
+							}
+						}
+					}
+					else if (loadError)
+					{
+						/* The sharper stage failed; keep showing the preview. */
+						try { std::rethrow_exception(loadError); }
+						catch (const std::exception& ex)
+						{
+							last_error_ = std::string("Failed: ") + ex.what();
+							std::fprintf(stderr, "iview: progressive full decode failed: %s\n", ex.what());
+						}
+						catch (...) { last_error_ = "Failed: unknown error"; }
+					}
+					initialComplete = true;
+				}
+
+				/* Nothing at all could be decoded.  previewDone matters: the full
+				 * worker may fail while the preview is still decoding, and a late
+				 * preview is still worth showing. */
+				if (!initialComplete && done && previewDone &&
+				    !initialPreviewShown && !fullImage && loadError)
+				{
+					try { std::rethrow_exception(loadError); }
+					catch (std::exception& ex)
+					{
+#ifdef _WIN32
+						MessageBoxA(NULL, ex.what(), "Error", MB_OK | MB_ICONERROR);
+#else
+						std::cerr << "Failed to process the request : " << ex.what() << std::endl;
+#endif
+					}
 					break;
 				}
+
+				/* Release our reference once this load is fully consumed.  A worker
+				 * still finishing an abandoned load keeps the state alive through its
+				 * own shared_ptr, so this only drops the viewer's claim on it. */
+				if (initialComplete)
+					initialState.reset();
 			}
 
 			/* (1a) Navigation decode finished.  Everything happens on this thread;
@@ -1644,8 +2185,10 @@ public:
 				/* First ten frames: prove the A/B alternation (0,1,0,1,…). */
 				if (framesAfterUpload < 10)
 				{
+					const unsigned textureId =
+						textures_[(textureCount_ <= 1) ? 0 : (phase & 1u)].id;
 					std::fprintf(stderr, "IVIEW_FRAME %d phase=%u texture=%u\n",
-					             framesAfterUpload, phase & 1u, textures_[phase & 1u].id);
+					             framesAfterUpload, phase & 1u, textureId);
 					std::fflush(stderr);
 				}
 				++framesAfterUpload;
@@ -1658,14 +2201,14 @@ public:
 			 * window is shown for Settings only. */
 			if (uploaded && !shown)
 			{
-				glfwShowWindow(glfwWindow);
+				ShowInitialWindow();
 				shown = true;
 				windowShown = true;
 				IviewTrace("glfwShowWindow");
 			}
 			if (settings_open_ && !windowShown)
 			{
-				glfwShowWindow(glfwWindow);
+				ShowInitialWindow();
 				windowShown = true;
 				IviewTrace("glfwShowWindow (settings)");
 			}
@@ -1704,46 +2247,177 @@ public:
 		}
 
 		IviewTrace("main loop exit");
-		/* Save-on-exit only when something changed.  Window size is captured
-		 * once here, never on every resize tick. */
-		if (settings_.rememberWindowSize)
-		{
-			int windowWidth = 0;
-			int windowHeight = 0;
-			glfwGetWindowSize(glfwWindow, &windowWidth, &windowHeight);
-			if (windowWidth > 0 && windowHeight > 0 &&
-			    (settings_.windowWidth != windowWidth || settings_.windowHeight != windowHeight))
-			{
-				settings_.windowWidth = windowWidth;
-				settings_.windowHeight = windowHeight;
-				settings_dirty_ = true;
-			}
-		}
+		/* Save-on-exit only when something changed.  Placement is captured once
+		 * here, from the last normal-state geometry, so a maximized window keeps
+		 * both its maximized flag and the rect it un-maximizes to. */
+		if (CaptureWindowGeometry()) settings_dirty_ = true;
 		if (settings_dirty_) SaveSettings();
 		ShutdownImGui();
 	}
 
 private:
+	/* Restores the stored placement on the still-hidden window.  Order matters:
+	 * the normal rect is applied first and the maximize request comes second, so
+	 * the rect is what the window restores to when it is un-maximized. */
+	WindowPlacement ApplyInitialPlacement(const Config::Settings& settings)
+	{
+		FrameExtents frame;
+		glfwGetWindowFrameSize(glfwWindow, &frame.left, &frame.top, &frame.right, &frame.bottom);
+
+		WindowPlacement resolved;
+		resolved.width  = settings.windowWidth;
+		resolved.height = settings.windowHeight;
+		ClampSizeToDisplays(resolved.width, resolved.height, frame);
+
+		const bool haveSaved = settings.windowX != Config::kWindowPositionUnset &&
+		                       settings.windowY != Config::kWindowPositionUnset;
+		const WindowPlacement saved{settings.windowX, settings.windowY,
+		                            resolved.width, resolved.height};
+		resolved = (haveSaved && PlacementIsReachable(saved, frame))
+			? saved : CentreOnPrimary(resolved.width, resolved.height, frame);
+
+		if (resolved.width != settings.windowWidth || resolved.height != settings.windowHeight)
+			glfwSetWindowSize(glfwWindow, resolved.width, resolved.height);
+		/* Wayland does not let a client place its own toplevel; the call would only
+		 * emit GLFW_FEATURE_UNAVAILABLE. */
+		if (glfwGetPlatform() != GLFW_PLATFORM_WAYLAND)
+			glfwSetWindowPos(glfwWindow, resolved.x, resolved.y);
+
+		/* GLFW emulates maximize for a hidden window (Win32: WS_MAXIMIZE +
+		 * work-area rect).  ShowInitialWindow() then turns that into a real
+		 * maximized show with the restore rect attached. */
+		if (settings.windowMaximized) glfwMaximizeWindow(glfwWindow);
+		return resolved;
+	}
+
+	/* Wayland gives clients no global window position: glfwGetWindowPos() reports
+	 * (0,0) there, and glfwSetWindowPos() is a no-op.  Recording that (0,0) would
+	 * plant a bogus position that a later X11 session would happily honour, so the
+	 * position is simply not captured on Wayland — size and maximized state still
+	 * are. */
+	static bool PlatformCanPlaceWindows() noexcept
+	{
+		return glfwGetPlatform() != GLFW_PLATFORM_WAYLAND;
+	}
+
+	/* GLFW has no API for the restore rectangle of a maximized window, so the
+	 * normal geometry is sampled every frame while the window is normal.  Three
+	 * cheap queries, skipped outright when persistence is disabled. */
+	void TrackNormalGeometry()
+	{
+		if (!settings_.rememberWindowSize) return;
+		if (glfwGetWindowAttrib(glfwWindow, GLFW_MAXIMIZED) == GLFW_TRUE) return;
+		if (glfwGetWindowAttrib(glfwWindow, GLFW_ICONIFIED) == GLFW_TRUE) return;
+
+		int x = 0, y = 0, w = 0, h = 0;
+		glfwGetWindowPos(glfwWindow, &x, &y);
+		glfwGetWindowSize(glfwWindow, &w, &h);
+		if (w <= 0 || h <= 0) return;
+		if (PlatformCanPlaceWindows())
+		{
+			normalX_ = x;
+			normalY_ = y;
+		}
+		normalW_ = w;
+		normalH_ = h;
+		normalGeometryKnown_ = true;
+	}
+
+	/* Folds the live placement into settings_.  Returns true when a value
+	 * changed, so the caller can mark the config dirty. */
+	bool CaptureWindowGeometry()
+	{
+		if (!settings_.rememberWindowSize) return false;
+		/* A minimized window reports neither its normal rect nor its maximized
+		 * state reliably; keep the last good sample instead of overwriting it. */
+		if (glfwGetWindowAttrib(glfwWindow, GLFW_ICONIFIED) == GLFW_TRUE) return false;
+
+		const bool maximized = glfwGetWindowAttrib(glfwWindow, GLFW_MAXIMIZED) == GLFW_TRUE;
+		TrackNormalGeometry();
+
+		bool changed = false;
+		if (settings_.windowMaximized != maximized)
+		{
+			settings_.windowMaximized = maximized;
+			changed = true;
+		}
+		if (normalGeometryKnown_)
+		{
+			const bool positionable = PlatformCanPlaceWindows();
+			if (settings_.windowWidth  != normalW_ ||
+			    settings_.windowHeight != normalH_ ||
+			    (positionable && (settings_.windowX != normalX_ || settings_.windowY != normalY_)))
+			{
+				if (positionable)
+				{
+					settings_.windowX = normalX_;
+					settings_.windowY = normalY_;
+				}
+				settings_.windowWidth  = normalW_;
+				settings_.windowHeight = normalH_;
+				changed = true;
+			}
+		}
+		return changed;
+	}
+
+	/* Shows the window, maximized when it was left maximized.  On Windows the
+	 * show is folded into SetWindowPlacement so Windows records the normal rect
+	 * that belongs with the maximized state: GLFW's own "maximize a hidden
+	 * window" path only emulates the maximized look (WS_MAXIMIZE + work-area
+	 * rect) and leaves that bookkeeping alone, which makes a later un-maximize
+	 * land on a guessed rect. */
+	void ShowInitialWindow()
+	{
+#ifdef _WIN32
+		if (glfwGetWindowAttrib(glfwWindow, GLFW_MAXIMIZED) == GLFW_TRUE &&
+		    normalGeometryKnown_)
+		{
+			HWND const hwnd = glfwGetWin32Window(glfwWindow);
+			WINDOWPLACEMENT placement{};
+			placement.length = sizeof(placement);
+			if (hwnd != nullptr && GetWindowPlacement(hwnd, &placement) != 0)
+			{
+				int left = 0, top = 0, right = 0, bottom = 0;
+				glfwGetWindowFrameSize(glfwWindow, &left, &top, &right, &bottom);
+				/* rcNormalPosition is a frame rect; the viewer stores client coords. */
+				placement.showCmd = SW_SHOWMAXIMIZED;
+				placement.rcNormalPosition.left   = normalX_ - left;
+				placement.rcNormalPosition.top    = normalY_ - top;
+				placement.rcNormalPosition.right  = normalX_ + normalW_ + right;
+				placement.rcNormalPosition.bottom = normalY_ + normalH_ + bottom;
+				if (SetWindowPlacement(hwnd, &placement) != 0) return;
+			}
+		}
+#endif
+		glfwShowWindow(glfwWindow);
+	}
+
 	void SetWindowTitle(const std::filesystem::path& path)
 	{
 		const std::string title = "ImageViewer \xE2\x80\x94 " + Utf8Filename(path);
 		glfwSetWindowTitle(glfwWindow, title.c_str());
 	}
 
-	void ComputeReadout(const Image& image, const std::filesystem::path& path)
+	void ComputeReadout(int imageWidth, int imageHeight, const std::filesystem::path& path)
 	{
 		std::error_code ec;
 		const std::uintmax_t bytes = std::filesystem::file_size(path, ec);
 		if (ec)
 		{
-			readout_dims_ = std::format("{}\xC3\x97{}", image.width, image.height);
+			readout_dims_ = std::format("{}\xC3\x97{}", imageWidth, imageHeight);
 		}
 		else
 		{
 			const double megabytes = static_cast<double>(bytes) / (1024.0 * 1024.0);
 			readout_dims_ = std::format("{}\xC3\x97{} \xC2\xB7 {:.1f} MB",
-			                              image.width, image.height, megabytes);
+			                              imageWidth, imageHeight, megabytes);
 		}
+	}
+
+	void ComputeReadout(const Image& image, const std::filesystem::path& path)
+	{
+		ComputeReadout(image.width, image.height, path);
 	}
 
 	static std::string Utf8Filename(const std::filesystem::path& path)
@@ -2155,9 +2829,9 @@ private:
 		ImGui::TextWrapped("%s", settings_.savePath.empty()
 			? "(none)" : settings_.savePath.c_str());
 		ImGui::Separator();
-		if (ImGui::Checkbox("Remember window size", &settings_.rememberWindowSize))
+		if (ImGui::Checkbox("Remember window position and size", &settings_.rememberWindowSize))
 			MarkSettingsDirty();
-		ImGui::TextDisabled("Captured once when the window closes.");
+		ImGui::TextDisabled("Position, size and maximised state are captured when the window closes.");
 	}
 
 	/* The clear colour is consumed every frame by DrawImage, so this only has to
@@ -2170,7 +2844,8 @@ private:
 			settings_.canvasBg[i] = static_cast<int>(std::lround(canvasBg_[i] * 255.0f));
 	}
 
-	/* Reset all persisted settings except window size and the config paths. */
+	/* Reset all persisted settings except the window placement and the config
+	 * paths. */
 	void ApplyBuiltinDefaults()
 	{
 		const Config::Settings defaults{};
@@ -2178,12 +2853,18 @@ private:
 		const std::string savePath = settings_.savePath;
 		const int windowWidth = settings_.windowWidth;
 		const int windowHeight = settings_.windowHeight;
+		const int windowX = settings_.windowX;
+		const int windowY = settings_.windowY;
+		const bool windowMaximized = settings_.windowMaximized;
 
 		settings_ = defaults;
 		settings_.loadPath = loadPath;
 		settings_.savePath = savePath;
 		settings_.windowWidth = windowWidth;
 		settings_.windowHeight = windowHeight;
+		settings_.windowX = windowX;
+		settings_.windowY = windowY;
+		settings_.windowMaximized = windowMaximized;
 
 		fadeDelayMs_  = settings_.fadeDelayMs;
 		fadeMinAlpha_ = settings_.fadeMinAlpha;
@@ -2217,6 +2898,9 @@ private:
 	bool SaveSettings()
 	{
 		SyncSettingsFromLiveState();
+		/* An explicit Save should persist the placement too, not only the
+		 * controls the panel shows. */
+		CaptureWindowGeometry();
 		const bool ok = Config::Save(settings_);
 		settings_status_ok_ = ok;
 		if (ok)

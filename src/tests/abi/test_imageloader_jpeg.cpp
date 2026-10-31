@@ -28,6 +28,7 @@
 
 #include <doctest/doctest.h>   /* main() lives in main.cpp */
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -256,6 +257,157 @@ TEST_SUITE("JPEG loader ABI: EXIF orientation")
                 }
             }
         }
+
+        plugin.free(r.data);
+    }
+}
+
+TEST_SUITE("JPEG loader ABI: reduced-resolution preview")
+{
+    TEST_CASE("The optional preview export is present")
+    {
+        CHECK(Plugin().hasPreview());
+    }
+
+    TEST_CASE("Preview respects maxDimension and reports the upright full size")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+        int fullWidth = 0;
+        int fullHeight = 0;
+
+        /* orient6_3comp.jpg stores a 16x8 raster tagged Orientation=6, so the
+         * full upright image is 8x16.  Asking for at most 4 pixels per side
+         * selects the 1/4 DCT step (stored 4x2), then orientation makes the
+         * preview 2x4. */
+        ImagePluginResult r = plugin.preview(Fixture("orient6_3comp.jpg"), 4u,
+                                             &fullWidth, &fullHeight);
+
+        REQUIRE(r.code == IMAGE_PLUGIN_OK);
+        REQUIRE(r.data != nullptr);
+
+        const ImagePluginData& d = *r.data;
+        CHECK(fullWidth  == 8);
+        CHECK(fullHeight == 16);
+        CHECK(d.width  == 2);
+        CHECK(d.height == 4);
+        CHECK(d.format.componentCount == 3);
+        CHECK(d.format.bitsPerPixel   == 24);
+        CHECK(d.stride >= d.width * 3);
+        CHECK(d.size   == static_cast<size_t>(d.stride) *
+                           static_cast<size_t>(d.height));
+
+        const std::string problem = iwabi::DescriptorProblem(d);
+        INFO("descriptor problem: " << problem);
+        CHECK(problem.empty());
+        CHECK(std::max(d.width, d.height) <= 4);
+
+        /* Orientation must be applied to the preview as well: the stored left
+         * half is white and the right half black, so after the 90-degree turn
+         * the top rows are white and the bottom rows black. */
+        for (int x = 0; x < d.width; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const int top    = SampleComponent(d, c, x, 0);
+                const int bottom = SampleComponent(d, c, x, d.height - 1);
+                INFO("preview orientation: x=" << x << " ch" << c
+                     << " top=" << top << " bottom=" << bottom);
+                CHECK(top    >= 220);
+                CHECK(bottom <= 35);
+            }
+        }
+
+        plugin.free(r.data);
+    }
+
+    TEST_CASE("maxDimension 0 picks the fastest scale; pixels stay intact")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+        int fullWidth = 0;
+        int fullHeight = 0;
+
+        ImagePluginResult r = plugin.preview(Fixture("ycbcr_3comp.jpg"), 0u,
+                                             &fullWidth, &fullHeight);
+        REQUIRE(r.code == IMAGE_PLUGIN_OK);
+        REQUIRE(r.data != nullptr);
+
+        const ImagePluginData& d = *r.data;
+        CHECK(fullWidth  == 16);
+        CHECK(fullHeight == 16);
+        CHECK(d.width  == 2);    /* 16 / 8 */
+        CHECK(d.height == 2);
+
+        const std::string problem = iwabi::DescriptorProblem(d);
+        INFO("descriptor problem: " << problem);
+        CHECK(problem.empty());
+
+        /* The fixture is a flat mid-grey field; DCT scaling must not shift it. */
+        for (int y = 0; y < d.height; ++y) {
+            for (int x = 0; x < d.width; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    const int v = SampleComponent(d, c, x, y);
+                    INFO("preview: (" << x << "," << y << ") ch" << c << " = " << v);
+                    CHECK(v >= kMidGrey - kTolerance);
+                    CHECK(v <= kMidGrey + kTolerance);
+                }
+            }
+        }
+
+        plugin.free(r.data);
+    }
+
+    TEST_CASE("A preview request at least as large as the file returns the full raster")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+        int fullWidth = 0;
+        int fullHeight = 0;
+
+        ImagePluginResult r = plugin.preview(Fixture("ycbcr_3comp.jpg"), 4096u,
+                                             &fullWidth, &fullHeight);
+        REQUIRE(r.code == IMAGE_PLUGIN_OK);
+        REQUIRE(r.data != nullptr);
+
+        const ImagePluginData& d = *r.data;
+        CHECK(fullWidth  == 16);
+        CHECK(fullHeight == 16);
+        CHECK(d.width  == 16);
+        CHECK(d.height == 16);
+
+        const std::string problem = iwabi::DescriptorProblem(d);
+        INFO("descriptor problem: " << problem);
+        CHECK(problem.empty());
+
+        plugin.free(r.data);
+    }
+}
+
+TEST_SUITE("JPEG loader ABI: preview edge cases")
+{
+    TEST_CASE("Grayscale preview keeps the single-component descriptor")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+        int fullWidth = 0;
+        int fullHeight = 0;
+
+        ImagePluginResult r = plugin.preview(Fixture("gray_1comp.jpg"), 0u,
+                                             &fullWidth, &fullHeight);
+        REQUIRE(r.code == IMAGE_PLUGIN_OK);
+        REQUIRE(r.data != nullptr);
+
+        const ImagePluginData& d = *r.data;
+        CHECK(fullWidth  == 16);
+        CHECK(fullHeight == 16);
+        CHECK(d.width  == 2);
+        CHECK(d.height == 2);
+        CHECK(d.format.componentCount == 1);
+        CHECK(d.format.bitsPerPixel   == 8);
+        CHECK(d.format.components[0].semantic == IW_COMPONENT_SEMANTIC_GRAY);
+
+        const std::string problem = iwabi::DescriptorProblem(d);
+        INFO("descriptor problem: " << problem);
+        CHECK(problem.empty());
+
+        const int v = SampleComponent(d, 0, 0, 0);
+        CHECK(v >= kMidGrey - kTolerance);
+        CHECK(v <= kMidGrey + kTolerance);
 
         plugin.free(r.data);
     }

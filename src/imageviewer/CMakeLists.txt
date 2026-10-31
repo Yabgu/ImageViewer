@@ -396,26 +396,21 @@ if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
 
 endif()
 # ── Ship the plugins with the viewer ────────────────────────────────────────
-# The plugin libraries are built into the same directory as iview by default, but
-# nothing in the target graph said so: building only the iview target skipped the
-# plugins entirely, which left a Release folder with no loadable image loaders or
-# filter.  Make the dependency explicit and copy every plugin next to the
-# executable, so any build (single- or multi-config) ships a runnable viewer.
+# Nothing in the target graph used to say that iview needs the plugins, so
+# building only the iview target skipped them entirely and left a folder with no
+# loadable image loaders and no filter.  Make that dependency explicit.
+#
+# No copy step is needed: every plugin is add_library(SHARED) in this same
+# CMakeLists, so its runtime output directory is iview's, in every generator
+# and configuration (single-config: src/imageviewer; multi-config:
+# src/imageviewer/<CONFIG>).  A POST_BUILD copy here would copy each DLL onto
+# itself -- and, worse, CMake implements POST_BUILD by nesting `cmd.exe /C`
+# inside the link rule's own `cmd.exe /C`, which Wine's cmd cannot parse, so it
+# broke the LinSYS2 job's link step for no benefit.  `cmake --install` still
+# collects both via the install() rules below, and ci/package-msys2.sh packages
+# this same directory.
 if(_PLUGIN_TARGETS)
     add_dependencies(iview ${_PLUGIN_TARGETS})
-    set(_PLUGIN_FILES "")
-    foreach(_plugin IN LISTS _PLUGIN_TARGETS)
-        if(TARGET ${_plugin})
-            list(APPEND _PLUGIN_FILES "$<TARGET_FILE:${_plugin}>")
-        endif()
-    endforeach()
-    add_custom_command(TARGET iview POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${_PLUGIN_FILES}
-            $<TARGET_FILE_DIR:iview>
-        COMMAND_EXPAND_LISTS
-        VERBATIM
-    )
     message(STATUS "Plugins shipped with iview: ${_PLUGIN_TARGETS}")
 endif()
 

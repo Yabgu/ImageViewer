@@ -164,6 +164,17 @@ public:
         return p;
     }
 
+    /* Resolve an OPTIONAL export; returns nullptr when absent instead of
+     * throwing.  Used for loader capabilities that older plugins do not have. */
+    void* trySymbol(const char* name) const noexcept
+    {
+#ifdef _WIN32
+        return reinterpret_cast<void*>(GetProcAddress(handle_, name));
+#else
+        return ::dlsym(handle_, name);
+#endif
+    }
+
     template <class Fn>
     Fn function(const char* name) const
     {
@@ -190,6 +201,25 @@ public:
         load_  = lib_.function<LoadImageFromFileFunc>("LoadImageFromFile");
         free_  = lib_.function<FreeImageDataFunc>("FreeImageData");
         error_ = lib_.function<ImagePluginGetLastErrorFunc>("ImagePluginGetLastError");
+        /* Optional: only the JPEG loader currently decodes a cheap preview. */
+        preview_ = reinterpret_cast<LoadImagePreviewFromFileFunc>(
+            lib_.trySymbol("LoadImagePreviewFromFile"));
+    }
+
+    bool hasPreview() const noexcept { return preview_ != nullptr; }
+
+    ImagePluginResult preview(const std::filesystem::path& image,
+                              uint32_t maxDimension,
+                              int* fullWidth,
+                              int* fullHeight) const
+    {
+        if (!preview_)
+            throw std::runtime_error("plugin has no LoadImagePreviewFromFile export");
+#ifdef _WIN32
+        return preview_(image.wstring().c_str(), maxDimension, fullWidth, fullHeight);
+#else
+        return preview_(image.c_str(), maxDimension, fullWidth, fullHeight);
+#endif
     }
 
     ImagePluginResult load(const std::filesystem::path& image) const
@@ -219,6 +249,7 @@ private:
     LoadImageFromFileFunc        load_  = nullptr;
     FreeImageDataFunc            free_  = nullptr;
     ImagePluginGetLastErrorFunc  error_ = nullptr;
+    LoadImagePreviewFromFileFunc preview_ = nullptr;
 };
 
 // ─── Descriptor consistency ─────────────────────────────────────────────────

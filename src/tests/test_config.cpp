@@ -66,6 +66,9 @@ Config::Settings MakeNonDefault()
     s.pwmBits = 1;
     s.windowWidth = 1024;
     s.windowHeight = 768;
+    s.windowX = 120;
+    s.windowY = 60;
+    s.windowMaximized = true;
     s.initialZoomFit = false;
     s.chromeVisible = false;
     s.wheelAction = 1;
@@ -93,6 +96,9 @@ void CheckValuesEqual(const Config::Settings& a, const Config::Settings& b)
     CHECK(a.pwmBits == b.pwmBits);
     CHECK(a.windowWidth == b.windowWidth);
     CHECK(a.windowHeight == b.windowHeight);
+    CHECK(a.windowX == b.windowX);
+    CHECK(a.windowY == b.windowY);
+    CHECK(a.windowMaximized == b.windowMaximized);
     CHECK(a.initialZoomFit == b.initialZoomFit);
     CHECK(a.chromeVisible == b.chromeVisible);
     CHECK(a.wheelAction == b.wheelAction);
@@ -126,6 +132,9 @@ TEST_SUITE("Config")
         CHECK(s.pwmBits == 1u);
         CHECK(s.windowWidth == 1280);
         CHECK(s.windowHeight == 720);
+        CHECK(s.windowX == Config::kWindowPositionUnset);
+        CHECK(s.windowY == Config::kWindowPositionUnset);
+        CHECK_FALSE(s.windowMaximized);
         CHECK(s.initialZoomFit);
         CHECK(s.chromeVisible);
         CHECK(s.wheelAction == 0);
@@ -170,6 +179,9 @@ filter_mode = bluenoise
 pwm_bits = 1
 window_width = 1024
 window_height = 768
+window_x = 120
+window_y = 60
+window_maximized = true
 initial_zoom = 100
 chrome_visible_on_start = false
 wheel_action = next_prev
@@ -197,6 +209,9 @@ hdr_tone_map = false
         CHECK(s.pwmBits == 1u);
         CHECK(s.windowWidth == 1024);
         CHECK(s.windowHeight == 768);
+        CHECK(s.windowX == 120);
+        CHECK(s.windowY == 60);
+        CHECK(s.windowMaximized);
         CHECK_FALSE(s.initialZoomFit);
         CHECK_FALSE(s.chromeVisible);
         CHECK(s.wheelAction == 1);
@@ -269,6 +284,44 @@ hdr_peak_nits = nope
         CheckValuesEqual(original, loaded);
         CHECK(loaded.loadPath == path.string());
         CHECK(loaded.savePath == path.string());
+    }
+
+    TEST_CASE("an unset window position is not written and stays unset")
+    {
+        TempDir dir;
+        const std::filesystem::path path = dir.path / "iview.conf";
+        Config::Settings s;
+        s.savePath = path.string();
+
+        REQUIRE(Config::Save(s));
+
+        const std::string text = ReadFile(path);
+        CHECK(text.find("window_x") == std::string::npos);
+        CHECK(text.find("window_y") == std::string::npos);
+        CHECK(text.find("window_maximized = false") != std::string::npos);
+
+        const Config::Settings loaded = Config::Load(path.string(), false);
+        CHECK(loaded.windowX == Config::kWindowPositionUnset);
+        CHECK(loaded.windowY == Config::kWindowPositionUnset);
+    }
+
+    TEST_CASE("half a window position sanitizes to no position")
+    {
+        Config::Settings s;
+        s.windowX = 300;
+        s.windowY = Config::kWindowPositionUnset;
+
+        Config::Sanitize(s);
+
+        CHECK(s.windowX == Config::kWindowPositionUnset);
+        CHECK(s.windowY == Config::kWindowPositionUnset);
+
+        s.windowX = -99999;
+        s.windowY = 99999;
+        Config::Sanitize(s);
+
+        CHECK(s.windowX == -32768);
+        CHECK(s.windowY == 32767);
     }
 
     TEST_CASE("all eight filter modes round-trip")

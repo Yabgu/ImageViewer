@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cstdio>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <future>
 #include <iostream>
@@ -18,10 +19,11 @@
 import Image;
 import UserInterface;
 
-inline Image ProcessInput(const std::filesystem::path& path)
-{
-    return Image::FromFile(path);
-}
+/* Largest side of the first raster shown while the full JPEG decodes.  1920
+ * keeps a 1/4-scale decode of a 24 MP camera file within the on-screen size on
+ * a typical display; larger images fall to the 1/8 step.  Decoders without a
+ * preview export ignore this and still load normally. */
+constexpr uint32_t kPreviewMaxDimension = 1920u;
 
 #if defined(_MSC_VER)
 #define IVIEW_FORCEINLINE __forceinline
@@ -110,15 +112,16 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
 
     std::unique_ptr<Window> window;
 
-    /* Decode the image on a worker thread so that file I/O and decoder work
-     * overlaps window creation on this (main) thread.  The future is the only
-     * hand-off between the two: the worker writes the shared state, and Main()
-     * is the single consumer on this thread, so the Image is never touched
-     * concurrently.  std::launch::async guarantees a real thread (the default
-     * launch policy would silently run ProcessInput inline on this thread).
-     * The path is captured by value because `parsed` is not shared. */
+    /* Start the decode on a worker thread so file I/O and decoder work overlap
+     * window creation on this (main) thread.  The progressive state is the only
+     * hand-off: the worker publishes a preview and then the full raster under
+     * its mutex, and Main() is the single consumer on this thread, so no Image
+     * is ever touched concurrently.  Image::LoadProgressive uses
+     * std::launch::async internally, guaranteeing a real thread (the default
+     * launch policy would run the decode inline).  The path is captured by
+     * value because `parsed` is not shared. */
     std::filesystem::path imagePath = PathFromUtf8(parsed.imagePath);
-    std::future<Image> imageFuture;
+    ProgressiveImageLoad imageLoad;
 
     /* A directory argument opens its first image; the Window scans the folder
      * for prev/next navigation.  Done before the decode so the async launch
@@ -140,30 +143,10 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
                           imagePath.filename().string().c_str());
             IviewTrace(line);
         }
-        imageFuture = std::async(std::launch::async, [imagePath] {
-            IviewTrace("initial decode worker start");
-            try
-            {
-                Image image = ProcessInput(imagePath);
-                IviewTrace("initial decode worker done");
-                return image;
-            }
-            catch (const std::exception& ex)
-            {
-                if (IviewTraceEnabled())
-                {
-                    char line[512];
-                    std::snprintf(line, sizeof(line), "initial decode worker threw: %s", ex.what());
-                    IviewTrace(line);
-                }
-                throw;
-            }
-            catch (...)
-            {
-                IviewTrace("initial decode worker threw (unknown)");
-                throw;
-            }
-        });
+        /* Preview first, full raster second, both on one worker.  Window::Main
+         * polls the shared state and uploads each stage as it becomes ready;
+         * this call itself only starts the thread. */
+        imageLoad = Image::LoadProgressive(imagePath, kPreviewMaxDimension);
         IviewTrace("async decode launched");
     }
     else
@@ -218,7 +201,7 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
     const IWFilterOptions filterOpts = MakeFilterOptions(effective, filterArgs);
     window->SetFilterOptions(filterOpts);
 
-    window->Main(std::move(imageFuture), imagePath);
+    window->Main(std::move(imageLoad), imagePath);
     window.reset();
     Window::Deinitialize();
     return 0;
