@@ -118,10 +118,12 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
      * launch policy would silently run ProcessInput inline on this thread).
      * The path is captured by value because `parsed` is not shared. */
     std::filesystem::path imagePath = PathFromUtf8(parsed.imagePath);
+    std::future<Image> imageFuture;
 
     /* A directory argument opens its first image; the Window scans the folder
      * for prev/next navigation.  Done before the decode so the async launch
-     * order below is unchanged. */
+     * order below is unchanged.  --settings may run without an image. */
+    if (!imagePath.empty())
     {
         std::error_code dirEc;
         if (std::filesystem::is_directory(imagePath, dirEc)) {
@@ -131,12 +133,43 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
                 return 2;
             }
         }
-    }
 
-    std::future<Image> imageFuture = std::async(std::launch::async, [imagePath] {
-        return ProcessInput(imagePath);
-    });
-    IviewTrace("async decode launched");
+        {
+            char line[512];
+            std::snprintf(line, sizeof(line), "initial decode submit path=%s",
+                          imagePath.filename().string().c_str());
+            IviewTrace(line);
+        }
+        imageFuture = std::async(std::launch::async, [imagePath] {
+            IviewTrace("initial decode worker start");
+            try
+            {
+                Image image = ProcessInput(imagePath);
+                IviewTrace("initial decode worker done");
+                return image;
+            }
+            catch (const std::exception& ex)
+            {
+                if (IviewTraceEnabled())
+                {
+                    char line[512];
+                    std::snprintf(line, sizeof(line), "initial decode worker threw: %s", ex.what());
+                    IviewTrace(line);
+                }
+                throw;
+            }
+            catch (...)
+            {
+                IviewTrace("initial decode worker threw (unknown)");
+                throw;
+            }
+        });
+        IviewTrace("async decode launched");
+    }
+    else
+    {
+        IviewTrace("no image path; starting with Settings");
+    }
 
     /* Settings are read *after* the decode is running, so file I/O for the
      * config cannot delay the image.  Resolution order and validation live in
@@ -169,11 +202,13 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
      * handling on the thread that owns the context. */
     Window::Initialize();
     window = std::make_unique<Window>(settings.windowWidth, settings.windowHeight, settings);
+    if (parsed.settingsRequested) window->SetSettingsOpen(true);
     IviewTrace("window + renderer constructed");
 
     /* The decode keeps running on its worker thread: Main polls the future
-     * without blocking, uploads as soon as it is ready and only then shows the
-     * window, so the first frame ever presented is the decoded image.  The
+     * without blocking, uploads as soon as it is ready and normally only then
+     * shows the window.  With --settings the window may be shown earlier for
+     * Settings, so the image view stays blank until the decode lands.  The
      * filter options are copied into the Window, so `filterArgs` here does not
      * have to outlive Main(). */
     ViewerArgs effective = parsed;                    /* CLI, for spatial args */

@@ -58,7 +58,11 @@ private:
 	{
 		auto entry = manager.getPlugin(pluginPath);
 		if (!entry || !entry->loadFunc)
-			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string());
+		{
+			const std::string detail = manager.GetLastErrorText();
+			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string()
+			                         + (detail.empty() ? "" : " (" + detail + ")"));
+		}
 		return entry->loadFunc(imagePath.c_str());
 	}
 
@@ -83,7 +87,11 @@ private:
 	{
 		auto entry = manager.getPlugin(pluginPath);
 		if (!entry || !entry->freeFunc)
-			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string());
+		{
+			const std::string detail = manager.GetLastErrorText();
+			throw std::runtime_error("Failed to load or resolve plugin: " + pluginPath.string()
+			                         + (detail.empty() ? "" : " (" + detail + ")"));
+		}
 		entry->freeFunc(result.data);
 		result.data = nullptr;
 	}

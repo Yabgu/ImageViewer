@@ -2023,6 +2023,15 @@ TEST_SUITE("ViewerArgs parser")
         CHECK(a.imagePath.empty());
     }
 
+    TEST_CASE("--settings is accepted without an image path")
+    {
+        const ViewerArgs a = ParseCli({ "iview", "--settings" });
+        CHECK(a.settingsRequested);
+        CHECK(a.parseError.empty());
+        CHECK(a.imagePath.empty());
+        CHECK_FALSE(a.helpRequested);
+    }
+
     TEST_CASE("--help wins even when other arguments are invalid")
     {
         const ViewerArgs a = ParseCli({ "iview", "--filter=bogus", "--help" });

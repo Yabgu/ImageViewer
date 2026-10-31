@@ -2,9 +2,17 @@ find_package(doctest REQUIRED)
 
 add_executable(iview_tests
     test_iwimageformat.cpp
+    test_config.cpp
+    test_filter_job.cpp
 )
 
 set_property(TARGET iview_tests PROPERTY CXX_STANDARD 17)
+
+# Config.hpp includes <windows.h> on Windows; keep its min/max macros out of
+# the test translation units.
+if(WIN32)
+    target_compile_definitions(iview_tests PRIVATE NOMINMAX)
+endif()
 
 # Headers from the imageviewer source directory (ImagePluginDef.h, Utils.hpp)
 target_include_directories(iview_tests PRIVATE

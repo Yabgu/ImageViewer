@@ -61,6 +61,7 @@ struct ViewerArgs
     uint64_t     seed        = 0u; /* blue-noise tile offset                  */
     bool         filterSpecified = false; /* --filter given: CLI beats config */
     std::string  configPath;       /* --config=<path>; empty = search order   */
+    bool         settingsRequested = false; /* --settings: open Settings at startup */
     bool         helpRequested = false;
     std::string  parseError;       /* empty on success                       */
 };
@@ -70,7 +71,7 @@ struct ViewerArgs
 inline const char* UsageText() noexcept
 {
     return
-        "Usage: iview [options] <image|directory>\n"
+        "Usage: iview [options] [image|directory]\n"
         "\n"
         "Options:\n"
         "  --filter=MODE   none (default), ordered, floyd, pwm, bayer4x4, bayer8x8,\n"
@@ -81,6 +82,7 @@ inline const char* UsageText() noexcept
         "  --seed=N        Offset the blue-noise tile (unsigned, default 0)\n"
         "  --config=<path> Settings file to load (save goes here too); default\n"
         "                  %APPDATA%/ImageViewer/iview.conf or <exe_dir>/iview.conf\n"
+        "  --settings      Open the Settings window at startup; an image is optional\n"
         "  --help          Show this help and exit\n"
         "  --              Treat every remaining argument as a file name\n"
         "\n"
@@ -187,6 +189,11 @@ inline ViewerArgs ParseViewerArgs(int argc, const char* const* argv)
             continue;
         }
 
+        if (arg == "--settings") {
+            out.settingsRequested = true;
+            continue;
+        }
+
         if (arg == "--") { afterDoubleDash = true; continue; }
 
         if (arg == "--help") {
@@ -283,7 +290,7 @@ inline ViewerArgs ParseViewerArgs(int argc, const char* const* argv)
         return out;
     }
 
-    if (out.imagePath.empty()) {
+    if (out.imagePath.empty() && !out.settingsRequested) {
         out.parseError = "no image path given";
         return out;
     }
