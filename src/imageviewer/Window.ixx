@@ -13,6 +13,7 @@ module;
 #include <algorithm>
 #include <utility>
 #include <future>
+#include <mutex>
 #include <string>
 #include <format>
 #include <filesystem>
@@ -28,6 +29,7 @@ module;
 
 #ifdef _WIN32
 #include <windows.h>
+#include <share.h>
 #endif
 
 #include "imgui.h"
@@ -36,6 +38,7 @@ module;
 
 #include "FilterPluginDef.h"
 #include "FilterCore.hpp"
+#include "FilterJob.hpp"
 #include "Config.hpp"
 
 export module UserInterface;
@@ -46,9 +49,12 @@ import FilterPlugin;
 
 /* ── Startup trace ────────────────────────────────────────────────────────────
  *
- * Milliseconds since the first trace call in the process.  Enabled only when
- * IMAGEVIEWER_VK_TRACE is set to something other than "0" (the name predates the
- * OpenGL renderer; it is kept so existing probe scripts keep working).
+ * Milliseconds since the first trace call in the process.  Enabled when
+ * IVIEW_TRACE is set to something other than "0".  IMAGEVIEWER_VK_TRACE is
+ * still honored for existing probe scripts.  If IVIEW_TRACE_FILE is also set,
+ * lines are appended to that file as well as stderr; this is how GUI-subsystem
+ * runs (which have no usable stderr) are captured.
+ *
  * Exported because main_generic.hpp marks "async decode launched". */
 static const std::chrono::steady_clock::time_point& IviewTraceStart() noexcept
 {
@@ -57,10 +63,33 @@ static const std::chrono::steady_clock::time_point& IviewTraceStart() noexcept
 	return t0;
 }
 
+static std::mutex& IviewTraceMutex() noexcept
+{
+	static std::mutex mutex;
+	return mutex;
+}
+
+static FILE* IviewTraceFile() noexcept
+{
+	static FILE* file = [] {
+		const char* path = std::getenv("IVIEW_TRACE_FILE");
+		if (path == nullptr || path[0] == '\0') return static_cast<FILE*>(nullptr);
+#if defined(_WIN32)
+		/* _SH_DENYNO lets a diagnostics harness tail the file while the app runs. */
+		return _fsopen(path, "ab", _SH_DENYNO);
+#else
+		return std::fopen(path, "ab");
+#endif
+	}();
+	return file;
+}
+
 export bool IviewTraceEnabled() noexcept
 {
 	static const bool enabled = [] {
-		const char* v = std::getenv("IMAGEVIEWER_VK_TRACE");
+		const char* v = std::getenv("IVIEW_TRACE");
+		if (v == nullptr || v[0] == '\0' || std::strcmp(v, "0") == 0)
+			v = std::getenv("IMAGEVIEWER_VK_TRACE");
 		return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
 	}();
 	return enabled;
@@ -69,11 +98,24 @@ export bool IviewTraceEnabled() noexcept
 export void IviewTrace(const char* what) noexcept
 {
 	if (!IviewTraceEnabled()) return;
-	const auto t0 = IviewTraceStart();
-	const double ms = std::chrono::duration<double, std::milli>(
-		std::chrono::steady_clock::now() - t0).count();
-	std::fprintf(stderr, "IVIEW_TRACE +%8.2f ms  %s\n", ms, what);
-	std::fflush(stderr);
+	try
+	{
+		const auto t0 = IviewTraceStart();
+		const double ms = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - t0).count();
+		std::lock_guard<std::mutex> lock(IviewTraceMutex());
+		std::fprintf(stderr, "IVIEW_TRACE +%8.2f ms  %s\n", ms, what);
+		std::fflush(stderr);
+		if (FILE* file = IviewTraceFile())
+		{
+			std::fprintf(file, "IVIEW_TRACE +%8.2f ms  %s\n", ms, what);
+			std::fflush(file);
+		}
+	}
+	catch (...)
+	{
+		/* Diagnostics must never change behavior. */
+	}
 }
 
 /* Canvas background: mid-gray #808080 — the same glClearColor the OpenGL branch
@@ -91,6 +133,7 @@ struct WindowImGuiState
 	float alpha             = 0.0f;
 	std::string readout;              /* "1920x1080 . 3.2 MB", filled once on upload */
 	std::chrono::steady_clock::time_point lastMouseActivity{};
+	ImGuiStyle baseStyle{};           /* unscaled style, captured before ScaleAllSizes */
 };
 
 /* Two pre-quantised 8-bit frames as the filter plugin produced them.  Built on a
@@ -204,8 +247,13 @@ private:
 	/* Source pixels of the file currently shown, retained so a filter change can
 	 * be recomputed without decoding again.  This costs the decoded image for
 	 * the lifetime of the file — ~75 MB for a 4K 16-bit image, ~38 MB for 4K
-	 * RGB8 — which is the accepted price of live filter switching. */
-	std::unique_ptr<Image> source_image_;
+	 * RGB8 — which is the accepted price of live filter switching.
+	 *
+	 * shared_ptr<const Image>: an in-flight filter worker captures its own
+	 * reference, so navigation may replace this slot without freeing the image
+	 * out from under the worker.  const because ComputeFilteredFrames() only
+	 * reads the source. */
+	std::shared_ptr<const Image> source_image_;
 
 	/* Async filter re-run.  Only one compute may be in flight: the plugin is a
 	 * single DLL handle with no documented reentrancy, and its result is
@@ -227,7 +275,17 @@ private:
 	uint32_t pwmBits_       = 1;   /* temporal bits for PWM                  */
 	uint32_t spatialBits_   = 0;   /* preserved from the CLI, unused by PWM  */
 	uint64_t seed_          = 0;   /* preserved from the CLI                 */
-	bool     filter_panel_open_ = false;
+	bool     settings_open_ = false;
+	bool     settings_dirty_ = false;
+	bool     settings_focus_requested_ = false;
+	bool     settings_status_ok_ = true;
+	std::string settings_status_;
+
+	enum class SettingsTab { Interface, Viewing, Filter, Advanced };
+	SettingsTab settings_tab_request_ = SettingsTab::Interface;
+	SettingsTab active_settings_tab_ = SettingsTab::Interface;
+	bool settings_tab_request_pending_ = false;
+
 	/* Set when an image was uploaded in mode=none and the requested mode still
 	 * has to be computed; consumed once the window is visible. */
 	bool     pendingDeferredFilter_ = false;
@@ -256,7 +314,6 @@ private:
 	ZoomMode zoom_mode_ = ZoomMode::Fit;
 	/* One-shot UI rect logs, used by the automated strip/panel check. */
 	bool     stripRectsLogged_  = false;
-	bool     panelRectsLogged_  = false;
 	int      chromeFrames_      = 0;
 
 	/* ── GL resources ──────────────────────────────────────────────────────── */
@@ -382,7 +439,9 @@ public:
 
 	static void Deinitialize()
 	{
+		IviewTrace("glfwTerminate start");
 		glfwTerminate();
+		IviewTrace("glfwTerminate done");
 	}
 
 private:
@@ -451,11 +510,73 @@ public:
 		}
 	}
 
+	void SetSettingsOpen(bool open)
+	{
+		if (open) OpenSettings(SettingsTab::Interface, true);
+		else settings_open_ = false;
+	}
+
 	~Window()
 	{
 		if (glfwWindow == nullptr) return;
 
+		IviewTrace("window destroy start");
+		bool drain_ok = true;
+		std::string drain_failure;
+
+		/* Drain workers before GL/GLFW teardown.  The filter worker owns a
+		 * shared_ptr to its source image, but it still calls into the plugin and
+		 * into this Window; both must outlive the worker.  The GL context does
+		 * not need to outlive the workers today, but ordering the wait first
+		 * makes that invariant explicit and avoids a future GL-using job racing
+		 * glfwDestroyWindow(). */
+		if (filter_future_.valid())
+		{
+			IviewTrace("draining filter future");
+			try { filter_future_.wait(); (void)filter_future_.get(); }
+			catch (const std::exception& ex)
+			{
+				drain_ok = false;
+				drain_failure = std::string("filter future drain: ") + ex.what();
+				IviewTrace("filter future drain caught exception");
+			}
+			catch (...)
+			{
+				drain_ok = false;
+				drain_failure = "filter future drain: unknown exception";
+				IviewTrace("filter future drain caught exception");
+			}
+			filter_running_ = false;
+		}
+		if (nav_future_.valid())
+		{
+			IviewTrace("draining nav future");
+			try { nav_future_.wait(); (void)nav_future_.get(); }
+			catch (const std::exception& ex)
+			{
+				if (drain_ok)
+				{
+					drain_ok = false;
+					drain_failure = std::string("nav future drain: ") + ex.what();
+				}
+				IviewTrace("nav future drain caught exception");
+			}
+			catch (...)
+			{
+				if (drain_ok)
+				{
+					drain_ok = false;
+					drain_failure = "nav future drain: unknown exception";
+				}
+				IviewTrace("nav future drain caught exception");
+			}
+			nav_in_flight_ = false;
+		}
+		if (!drain_ok)
+			IviewTrace(("future drain failed: " + drain_failure).c_str());
+
 		ShutdownImGui();
+		IviewTrace("ImGui shutdown done");
 
 		for (Texture& t : textures_)
 		{
@@ -465,9 +586,11 @@ public:
 		if (vboPositions_ != 0) glDeleteBuffers(1, &vboPositions_);
 		if (vao_ != 0)          glDeleteVertexArrays(1, &vao_);
 		if (shaderProgram_ != 0) glDeleteProgram(shaderProgram_);
+		IviewTrace("GL resources deleted");
 
 		glfwDestroyWindow(glfwWindow);
 		glfwWindow = nullptr;
+		IviewTrace("GLFW window destroyed");
 	}
 
 private:
@@ -571,6 +694,20 @@ private:
 		glBindVertexArray(0);
 	}
 
+	/* Reset from the unscaled base on every change: ScaleAllSizes() is
+	 * cumulative, so calling it repeatedly would grow the UI. */
+	void ApplyUiScale(float scale)
+	{
+		if (!imgui_) return;
+		const float clamped = std::clamp(scale, Config::kMinUiScale, Config::kMaxUiScale);
+		ImGuiStyle style = imgui_->baseStyle;
+		style.Alpha = ImGui::GetStyle().Alpha;
+		style.ScaleAllSizes(clamped);
+		style.FontScaleMain = clamped;   /* text; GetFontSize() = FontSizeBase * this */
+		ImGui::GetStyle() = style;
+		settings_.uiScale = clamped;
+	}
+
 	void InitImGui()
 	{
 		imgui_ = std::make_unique<WindowImGuiState>();
@@ -585,11 +722,9 @@ private:
 		style.WindowBorderSize = 0.0f;
 		style.FrameRounding    = 3.0f;
 
-		/* All controls at 2x: the strip, panel and readout were too small at
-		 * 100 %.  ScaleAllSizes covers paddings, spacing, rounding and the
-		 * widget geometry; FontSizeBase scales the text with them. */
-		style.ScaleAllSizes(2.0f);
-		style.FontScaleMain = 2.0f;   /* text; GetFontSize() = FontSizeBase * this */
+		/* Remember the unscaled style before applying settings_.uiScale. */
+		imgui_->baseStyle = style;
+		ApplyUiScale(settings_.uiScale);
 
 		/* install_callbacks = true chains the GLFW callbacks installed above,
 		 * including the file drop callback. */
@@ -680,6 +815,7 @@ private:
 	                    const std::vector<uint8_t>& phaseB,
 	                    int width, int height)
 	{
+		IviewTrace("texture upload start");
 		const uint8_t* sources[2] = {
 			phaseA.data(),
 			phaseB.empty() ? phaseA.data() : phaseB.data()
@@ -704,6 +840,15 @@ private:
 		}
 		glBindTexture(GL_TEXTURE_2D, 0);
 		textureCount_ = phaseB.empty() ? 1 : 2;
+		if (IviewTraceEnabled())
+		{
+			char line[192];
+			std::snprintf(line, sizeof(line),
+			              "texture upload done (%dx%d, phases=%d, ids=%u,%u)",
+			              width, height, textureCount_,
+			              textures_[0].id, textures_[1].id);
+			IviewTrace(line);
+		}
 	}
 
 	/* ── Filter pipeline: compute (any thread) / upload (main thread) ──────── */
@@ -801,12 +946,49 @@ private:
 		filter_running_  = true;
 		filterStartTime_ = std::chrono::steady_clock::now();
 		filterGeneration_ = file_generation_;
-		const Image* const src = source_image_.get();
+		const std::shared_ptr<const Image> image = source_image_;
 		const IWFilterOptions opts = filterOptions_;     /* argv -> filterArgStorage_ */
-		filter_future_ = std::async(std::launch::async, [this, src, opts] {
-			return ComputeFilteredFrames(*src, opts);
+		const uint64_t generation = filterGeneration_;
+		if (IviewTraceEnabled())
+		{
+			char line[192];
+			std::snprintf(line, sizeof(line),
+			              "filter compute submit src=%p gen=%llu mode=%u",
+			              static_cast<const void*>(image.get()),
+			              static_cast<unsigned long long>(generation),
+			              filterMode_);
+			IviewTrace(line);
+		}
+		filter_future_ = FilterJob::Start(image, [this, opts, generation](const Image& source) {
+			IviewTrace("filter compute worker start");
+			try
+			{
+				FilterFrameSet result = ComputeFilteredFrames(source, opts);
+				if (IviewTraceEnabled())
+				{
+					char line[128];
+					std::snprintf(line, sizeof(line), "filter compute worker done gen=%llu",
+					              static_cast<unsigned long long>(generation));
+					IviewTrace(line);
+				}
+				return result;
+			}
+			catch (const std::exception& ex)
+			{
+				if (IviewTraceEnabled())
+				{
+					char line[512];
+					std::snprintf(line, sizeof(line), "filter compute worker threw: %s", ex.what());
+					IviewTrace(line);
+				}
+				throw;
+			}
+			catch (...)
+			{
+				IviewTrace("filter compute worker threw (unknown)");
+				throw;
+			}
 		});
-		IviewTrace("filter compute started");
 	}
 
 	/* Called once an image is on screen in mode=none: queue the requested mode in
@@ -826,14 +1008,16 @@ private:
 	 * the picture on screen stay untouched until the result arrives in Main. */
 	void RequestFilterChange(uint32_t mode)
 	{
-		if (!source_image_ || filter_running_) return;   /* selector is disabled */
+		if (filter_running_) return;   /* one plugin call at a time */
 		if (mode == filterMode_) return;
 
-		filterMode_    = mode;      /* the radio reflects the click immediately */
+		filterMode_    = mode;      /* the selector reflects the click immediately */
 		filter_failed_ = false;
 		filter_error_.clear();
 		RebuildFilterOptions();
-		StartFilterCompute();
+		/* Before an image exists the choice is persisted/queued; the deferred
+		 * run starts from MaybeStartDeferredFilter() once an image is uploaded. */
+		if (source_image_) StartFilterCompute();
 	}
 
 	/* ── Folder navigation ─────────────────────────────────────────────────── */
@@ -954,6 +1138,14 @@ private:
 		if (folder_images_.empty()) return;
 		if (target >= folder_images_.size()) target = folder_images_.size() - 1;
 		nav_target_index_ = target;
+		if (IviewTraceEnabled())
+		{
+			char line[160];
+			std::snprintf(line, sizeof(line),
+			              "nav request target=%zu shown=%zu in_flight=%d",
+			              target, nav_shown_index_, nav_in_flight_ ? 1 : 0);
+			IviewTrace(line);
+		}
 		if (!nav_in_flight_) StartNavDecode();
 	}
 
@@ -963,9 +1155,42 @@ private:
 		const size_t idx = nav_target_index_;
 		const std::filesystem::path p = folder_images_[idx];
 		/* TODO(prefetch): decode idx+1 while the user looks at idx. */
-		IviewTrace("nav decode started");
+		if (IviewTraceEnabled())
+		{
+			char line[512];
+			std::snprintf(line, sizeof(line), "nav decode submit idx=%zu path=%s",
+			              idx, p.filename().string().c_str());
+			IviewTrace(line);
+		}
 		nav_future_ = std::async(std::launch::async, [idx, p] {
-			return DecodeResult{ idx, Image::FromFile(p) };
+			IviewTrace("nav decode worker start");
+			try
+			{
+				Image image = Image::FromFile(p);
+				if (IviewTraceEnabled())
+				{
+					char line[192];
+					std::snprintf(line, sizeof(line), "nav decode worker done idx=%zu %dx%d",
+					              idx, image.width, image.height);
+					IviewTrace(line);
+				}
+				return DecodeResult{ idx, std::move(image) };
+			}
+			catch (const std::exception& ex)
+			{
+				if (IviewTraceEnabled())
+				{
+					char line[512];
+					std::snprintf(line, sizeof(line), "nav decode worker threw: %s", ex.what());
+					IviewTrace(line);
+				}
+				throw;
+			}
+			catch (...)
+			{
+				IviewTrace("nav decode worker threw (unknown)");
+				throw;
+			}
 		});
 	}
 
@@ -987,6 +1212,14 @@ private:
 		if (folder_images_.empty()) return;
 		const long long raw = static_cast<long long>(nav_target_index_) + delta;
 		if (raw < 0 || raw >= static_cast<long long>(folder_images_.size())) return;   /* clamp */
+		if (IviewTraceEnabled())
+		{
+			char line[160];
+			std::snprintf(line, sizeof(line),
+			              "next requested delta=%d target=%zu shown=%zu",
+			              delta, static_cast<size_t>(raw), nav_shown_index_);
+			IviewTrace(line);
+		}
 		NavigateRelativeTo(static_cast<size_t>(raw));
 	}
 
@@ -1039,11 +1272,13 @@ public:
 		const IWFilterOptions& opts = IWFilterOptions{
 			IW_FILTER_OPTIONS_VERSION, 0u, nullptr })
 	{
+		IviewTrace("LoadTextures start");
 		try
 		{
 			UploadFrameSet(ComputeFilteredFrames(image, opts));
 			appliedMode_ = 0;          /* LoadTextures always uploads mode=none */
 			CenterImage();
+			IviewTrace("LoadTextures done");
 			return true;
 		}
 		catch (const std::exception& ex)
@@ -1165,6 +1400,7 @@ public:
 
 		bool uploaded = false;
 		bool shown    = false;
+		bool windowShown = false;
 		bool firstLoop = true;
 		uint32_t phase = 0;
 		int framesAfterUpload = 0;
@@ -1181,6 +1417,14 @@ public:
 
 			if (firstLoop) { IviewTrace("first loop iteration"); firstLoop = false; }
 
+			/* A drop before the initial decode (possible with --settings and no
+			 * image) has already uploaded textures through HandleDrop(). */
+			if (!uploaded && HasImage())
+			{
+				uploaded = true;
+				IviewTrace("image available before initial decode");
+			}
+
 			/* (1) Decode future.  Nothing blocks here: until it is ready the
 			 * loop just presents clear frames (the window is still hidden). */
 			if (!uploaded &&
@@ -1192,7 +1436,7 @@ public:
 				{
 					/* Retained for the lifetime of this file so the filter can be
 					 * re-run without decoding again (see source_image_). */
-					auto image = std::make_unique<Image>(imageFuture.get());
+					auto image = std::make_shared<Image>(imageFuture.get());
 
 					/* The first visible frame is always the plain 8-bit image.
 					 * A requested PWM mode is computed in the background and
@@ -1204,7 +1448,7 @@ public:
 						throw std::runtime_error("the filter produced an unsupported frame count");
 					SetWindowTitle(imagePath);
 					ComputeReadout(*image, imagePath);
-					source_image_ = std::move(image);
+					source_image_ = image;
 					current_path_ = imagePath;
 					++file_generation_;
 
@@ -1241,6 +1485,7 @@ public:
 			if (nav_in_flight_ && nav_future_.valid() &&
 			    nav_future_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
 			{
+				IviewTrace("nav future ready");
 				nav_in_flight_ = false;
 				try
 				{
@@ -1255,7 +1500,17 @@ public:
 						const std::filesystem::path& shownPath = folder_images_[r.index];
 						SetWindowTitle(shownPath);
 						ComputeReadout(r.image, shownPath);
-						source_image_ = std::make_unique<Image>(std::move(r.image));
+						if (IviewTraceEnabled())
+						{
+							char line[224];
+							std::snprintf(line, sizeof(line),
+							              "nav upload replacing source old=%p gen=%llu target=%zu filter_running=%d",
+							              static_cast<const void*>(source_image_.get()),
+							              static_cast<unsigned long long>(file_generation_),
+							              r.index, filter_running_ ? 1 : 0);
+							IviewTrace(line);
+						}
+						source_image_ = std::make_shared<Image>(std::move(r.image));
 						current_path_ = shownPath;
 						++file_generation_;
 						nav_shown_index_ = r.index;
@@ -1284,12 +1539,22 @@ public:
 			if (filter_running_ && filter_future_.valid() &&
 			    filter_future_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
 			{
+				IviewTrace("filter future ready");
+				if (IviewTraceEnabled())
+				{
+					char line[192];
+					std::snprintf(line, sizeof(line),
+					              "filter result gen=%llu current_gen=%llu",
+					              static_cast<unsigned long long>(filterGeneration_),
+					              static_cast<unsigned long long>(file_generation_));
+					IviewTrace(line);
+				}
 				const double computeMs = std::chrono::duration<double, std::milli>(
 					Clock::now() - filterStartTime_).count();
 				try
 				{
 					FilterFrameSet fs = filter_future_.get();
-					if (filterGeneration_ != file_generation_)
+					if (!FilterJob::IsCurrentFilterResult(filterGeneration_, file_generation_))
 					{
 						/* The user navigated while this was computing: the result
 						 * belongs to a file that is no longer on screen. */
@@ -1297,8 +1562,10 @@ public:
 					}
 					else
 					{
+						IviewTrace("filter upload start");
 						const auto uploadStart = Clock::now();
 						UploadFrameSet(fs);
+						IviewTrace("filter upload done");
 						appliedMode_ = filterMode_;
 						const double uploadMs = std::chrono::duration<double, std::milli>(
 							Clock::now() - uploadStart).count();
@@ -1324,17 +1591,30 @@ public:
 				filter_running_ = false;
 			}
 
-			/* (2) The whole visible path: no dirty flag, no FBO, redraw every
-			 * frame from whichever phase texture is current. */
-			if (uploaded)
+			/* (2) The visible path.  Settings is deliberately outside
+			 * BuildChrome() so chrome fade/Tab cannot hide it, and it can be
+			 * present before the first image. */
+			bool uiActive = uploaded || settings_open_ || windowShown;
+			if (uiActive)
 			{
-				DrawImage(phase);
-				if (framesAfterUpload == 0) IviewTrace("first frame drawn");
+				DrawImage(phase);   /* clears the canvas when no image exists */
+				if (uploaded && framesAfterUpload == 0) IviewTrace("first frame drawn");
 
 				ImGui_ImplOpenGL3_NewFrame();
 				ImGui_ImplGlfw_NewFrame();
 				ImGui::NewFrame();
-				BuildChrome();
+
+				/* Ctrl+, must work while the chrome is hidden and while only
+				 * Settings is visible. */
+				if (ImGui::IsKeyPressed(ImGuiKey_Comma) && ImGui::GetIO().KeyCtrl)
+				{
+					if (!settings_open_) OpenSettings(SettingsTab::Interface, true);
+					else                 settings_focus_requested_ = true;
+				}
+
+				if (uploaded) BuildChrome();
+				BuildSettingsWindow();
+
 				ImGui::Render();
 				ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 			}
@@ -1348,6 +1628,14 @@ public:
 
 			/* (3) vsync: blocks until the next refresh, and is the only pacer. */
 			glfwSwapBuffers(glfwWindow);
+			if (IviewTraceEnabled())
+			{
+				char line[128];
+				std::snprintf(line, sizeof(line),
+				              "swap uploaded=%d phase=%u frames=%d",
+				              uploaded ? 1 : 0, phase, framesAfterUpload);
+				IviewTrace(line);
+			}
 
 			if (uploaded)
 			{
@@ -1365,12 +1653,21 @@ public:
 			}
 
 			/* (4) The image is already in the frame that was just swapped in;
-			 * only now does the window become visible. */
+			 * only then does the window normally become visible.  Settings may
+			 * be explicitly opened before an image exists, in which case the
+			 * window is shown for Settings only. */
 			if (uploaded && !shown)
 			{
 				glfwShowWindow(glfwWindow);
 				shown = true;
+				windowShown = true;
 				IviewTrace("glfwShowWindow");
+			}
+			if (settings_open_ && !windowShown)
+			{
+				glfwShowWindow(glfwWindow);
+				windowShown = true;
+				IviewTrace("glfwShowWindow (settings)");
 			}
 
 			/* Now that the plain image is on screen, queue the requested filter
@@ -1406,8 +1703,23 @@ public:
 			}
 		}
 
-		/* Persist the panel's state (spec: save on close). */
-		SaveSettings();
+		IviewTrace("main loop exit");
+		/* Save-on-exit only when something changed.  Window size is captured
+		 * once here, never on every resize tick. */
+		if (settings_.rememberWindowSize)
+		{
+			int windowWidth = 0;
+			int windowHeight = 0;
+			glfwGetWindowSize(glfwWindow, &windowWidth, &windowHeight);
+			if (windowWidth > 0 && windowHeight > 0 &&
+			    (settings_.windowWidth != windowWidth || settings_.windowHeight != windowHeight))
+			{
+				settings_.windowWidth = windowWidth;
+				settings_.windowHeight = windowHeight;
+				settings_dirty_ = true;
+			}
+		}
+		if (settings_dirty_) SaveSettings();
 		ShutdownImGui();
 	}
 
@@ -1476,172 +1788,347 @@ private:
 			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
 			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize;
 
-		/* Top-right readout: dimensions and on-disk size, computed once. */
-		ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 24.0f, vp->WorkPos.y + 20.0f),
-		                        ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.85f));
-		if (ImGui::Begin("##readout", nullptr, kChromeFlags | ImGuiWindowFlags_NoInputs))
+		if (settings_.showReadout)
 		{
-			/* States compose: counter, size, dithering, error. */
-			char counter[96] = {0};
-			std::string text;
-			if (!last_error_.empty())
+			/* Top-right readout: dimensions and on-disk size, computed once. */
+			ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 24.0f, vp->WorkPos.y + 20.0f),
+			                        ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.85f));
+			if (ImGui::Begin("##readout", nullptr, kChromeFlags | ImGuiWindowFlags_NoInputs))
 			{
-				text = last_error_;
-			}
-			else if (nav_in_flight_)
-			{
-				std::snprintf(counter, sizeof(counter), "Loading %zu / %zu",
-				              nav_target_index_ + 1, folder_images_.size());
-				text = counter;
-			}
-			else
-			{
-				if (folder_images_.size() > 1)
+				/* States compose: counter, size, dithering, error. */
+				char counter[96] = {0};
+				std::string text;
+				if (!last_error_.empty())
 				{
-					std::snprintf(counter, sizeof(counter), "%zu / %zu   ",
-					              nav_shown_index_ + 1, folder_images_.size());
+					text = last_error_;
+				}
+				else if (nav_in_flight_)
+				{
+					std::snprintf(counter, sizeof(counter), "Loading %zu / %zu",
+					              nav_target_index_ + 1, folder_images_.size());
 					text = counter;
 				}
-				text += readout_dims_;
-			}
-			if (filter_running_)
-				text += text.empty() ? "Dithering\xE2\x80\xA6" : " \xC2\xB7 Dithering\xE2\x80\xA6";
+				else
+				{
+					if (folder_images_.size() > 1)
+					{
+						std::snprintf(counter, sizeof(counter), "%zu / %zu   ",
+						              nav_shown_index_ + 1, folder_images_.size());
+						text = counter;
+					}
+					text += readout_dims_;
+				}
+				if (filter_running_)
+					text += text.empty() ? "Dithering\xE2\x80\xA6" : " \xC2\xB7 Dithering\xE2\x80\xA6";
 
-			ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.85f);
-			if (!last_error_.empty())
-			{
-				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
-				ImGui::TextUnformatted(text.c_str());
-				ImGui::PopStyleColor();
+				ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.85f);
+				if (!last_error_.empty())
+				{
+					ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
+					ImGui::TextUnformatted(text.c_str());
+					ImGui::PopStyleColor();
+				}
+				else
+				{
+					ImGui::TextUnformatted(text.c_str());
+				}
+				ImGui::PopFont();
 			}
-			else
-			{
-				ImGui::TextUnformatted(text.c_str());
-			}
-			ImGui::PopFont();
+			ImGui::End();
+			ImGui::PopStyleColor();
+			ImGui::PopStyleVar();
 		}
-		ImGui::End();
-		ImGui::PopStyleColor();
-		ImGui::PopStyleVar();
 
-		/* Bottom-centre control strip. */
-		ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
-		                               vp->WorkPos.y + vp->WorkSize.y - 24.0f),
-		                        ImGuiCond_Always, ImVec2(0.5f, 1.0f));
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 12.0f));
-		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 12.0f));
-		if (ImGui::Begin("##controls", nullptr, kChromeFlags))
+		if (settings_.showControlStrip)
 		{
-			ImVec2 r[5][2];
-			const bool hasFolder = folder_images_.size() > 1;
-			ImGui::BeginDisabled(!hasFolder || nav_shown_index_ == 0);
-			if (ImGui::Button("<")) NavigateRelative(-1);
-			ImGui::EndDisabled();
-			ImGui::SameLine();
-			if (ImGui::Button("Fit")) fitToWindow();
-			r[0][0] = ImGui::GetItemRectMin(); r[0][1] = ImGui::GetItemRectMax();
-			ImGui::SameLine();
-			if (ImGui::Button("1:1")) SetZoom1to1();
-			r[1][0] = ImGui::GetItemRectMin(); r[1][1] = ImGui::GetItemRectMax();
-
-			ImGui::SameLine(0.0f, 28.0f);
-			if (ImGui::Button("-")) adjustZoom(-10);
-			r[2][0] = ImGui::GetItemRectMin(); r[2][1] = ImGui::GetItemRectMax();
-			ImGui::SameLine();
-			char zoomLabel[16];
-			std::snprintf(zoomLabel, sizeof(zoomLabel), "%3d%%", getZoomPercent());
-			ImGui::AlignTextToFramePadding();
-			ImGui::TextUnformatted(zoomLabel);
-			ImGui::SameLine();
-			if (ImGui::Button("+")) adjustZoom(10);
-			r[3][0] = ImGui::GetItemRectMin(); r[3][1] = ImGui::GetItemRectMax();
-
-			ImGui::SameLine();
-			ImGui::BeginDisabled(!hasFolder || nav_shown_index_ + 1 >= folder_images_.size());
-			if (ImGui::Button(">")) NavigateRelative(+1);
-			ImGui::EndDisabled();
-
-			ImGui::SameLine(0.0f, 28.0f);
-			if (ImGui::Button("Filter"))
+			/* Bottom-centre control strip. */
+			ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
+			                               vp->WorkPos.y + vp->WorkSize.y - 24.0f),
+			                        ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 12.0f));
+			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 12.0f));
+			if (ImGui::Begin("##controls", nullptr, kChromeFlags))
 			{
-				filter_panel_open_ = !filter_panel_open_;
-				IviewTrace(filter_panel_open_ ? "action: filter panel open"
-				                              : "action: filter panel closed");
-			}
-			r[4][0] = ImGui::GetItemRectMin(); r[4][1] = ImGui::GetItemRectMax();
+				ImVec2 r[6][2];
+				const bool hasFolder = folder_images_.size() > 1;
+				ImGui::BeginDisabled(!hasFolder || nav_shown_index_ == 0);
+				if (ImGui::Button("<")) NavigateRelative(-1);
+				ImGui::EndDisabled();
+				ImGui::SameLine();
+				if (ImGui::Button("Fit")) fitToWindow();
+				r[0][0] = ImGui::GetItemRectMin(); r[0][1] = ImGui::GetItemRectMax();
+				ImGui::SameLine();
+				if (ImGui::Button("1:1")) SetZoom1to1();
+				r[1][0] = ImGui::GetItemRectMin(); r[1][1] = ImGui::GetItemRectMax();
 
-			/* One-shot: where the strip buttons landed, so a harness can click
-			 * them without a screenshot.  Trace only. */
-			if (IviewTraceEnabled() && !stripRectsLogged_ && chromeFrames_ > 20)
-			{
-				stripRectsLogged_ = true;
-				char line[256];
-				std::snprintf(line, sizeof(line),
-					"rects: fit=%.0f,%.0f one=%.0f,%.0f minus=%.0f,%.0f plus=%.0f,%.0f filter=%.0f,%.0f",
-					(r[0][0].x + r[0][1].x) * 0.5f, (r[0][0].y + r[0][1].y) * 0.5f,
-					(r[1][0].x + r[1][1].x) * 0.5f, (r[1][0].y + r[1][1].y) * 0.5f,
-					(r[2][0].x + r[2][1].x) * 0.5f, (r[2][0].y + r[2][1].y) * 0.5f,
-					(r[3][0].x + r[3][1].x) * 0.5f, (r[3][0].y + r[3][1].y) * 0.5f,
-					(r[4][0].x + r[4][1].x) * 0.5f, (r[4][0].y + r[4][1].y) * 0.5f);
-				IviewTrace(line);
-				const ImGuiIO& ioNow = ImGui::GetIO();
-				int fbw = 0, fbh = 0;
-				glfwGetFramebufferSize(glfwWindow, &fbw, &fbh);
-				std::snprintf(line, sizeof(line), "viewport: display=%.0fx%.0f fb=%dx%d",
-				              ioNow.DisplaySize.x, ioNow.DisplaySize.y, fbw, fbh);
-				IviewTrace(line);
+				ImGui::SameLine(0.0f, 28.0f);
+				if (ImGui::Button("-")) adjustZoom(-10);
+				r[2][0] = ImGui::GetItemRectMin(); r[2][1] = ImGui::GetItemRectMax();
+				ImGui::SameLine();
+				char zoomLabel[16];
+				std::snprintf(zoomLabel, sizeof(zoomLabel), "%3d%%", getZoomPercent());
+				ImGui::AlignTextToFramePadding();
+				ImGui::TextUnformatted(zoomLabel);
+				ImGui::SameLine();
+				if (ImGui::Button("+")) adjustZoom(10);
+				r[3][0] = ImGui::GetItemRectMin(); r[3][1] = ImGui::GetItemRectMax();
+
+				ImGui::SameLine();
+				ImGui::BeginDisabled(!hasFolder || nav_shown_index_ + 1 >= folder_images_.size());
+				if (ImGui::Button(">")) NavigateRelative(+1);
+				ImGui::EndDisabled();
+
+				ImGui::SameLine(0.0f, 28.0f);
+				if (ImGui::Button("Filter"))
+					OpenSettings(SettingsTab::Filter, true);
+				r[4][0] = ImGui::GetItemRectMin(); r[4][1] = ImGui::GetItemRectMax();
+
+				ImGui::SameLine(0.0f, 28.0f);
+				if (ImGui::Button("Settings"))
+					OpenSettings(SettingsTab::Interface, true);
+				r[5][0] = ImGui::GetItemRectMin(); r[5][1] = ImGui::GetItemRectMax();
+
+				/* One-shot: where the strip buttons landed, so a harness can click
+				 * them without a screenshot.  Trace only. */
+				if (IviewTraceEnabled() && !stripRectsLogged_ && chromeFrames_ > 20)
+				{
+					stripRectsLogged_ = true;
+					char line[256];
+					std::snprintf(line, sizeof(line),
+						"rects: fit=%.0f,%.0f one=%.0f,%.0f minus=%.0f,%.0f plus=%.0f,%.0f filter=%.0f,%.0f settings=%.0f,%.0f",
+						(r[0][0].x + r[0][1].x) * 0.5f, (r[0][0].y + r[0][1].y) * 0.5f,
+						(r[1][0].x + r[1][1].x) * 0.5f, (r[1][0].y + r[1][1].y) * 0.5f,
+						(r[2][0].x + r[2][1].x) * 0.5f, (r[2][0].y + r[2][1].y) * 0.5f,
+						(r[3][0].x + r[3][1].x) * 0.5f, (r[3][0].y + r[3][1].y) * 0.5f,
+						(r[4][0].x + r[4][1].x) * 0.5f, (r[4][0].y + r[4][1].y) * 0.5f,
+						(r[5][0].x + r[5][1].x) * 0.5f, (r[5][0].y + r[5][1].y) * 0.5f);
+					IviewTrace(line);
+					const ImGuiIO& ioNow = ImGui::GetIO();
+					int fbw = 0, fbh = 0;
+					glfwGetFramebufferSize(glfwWindow, &fbw, &fbh);
+					std::snprintf(line, sizeof(line), "viewport: display=%.0fx%.0f fb=%dx%d",
+					              ioNow.DisplaySize.x, ioNow.DisplaySize.y, fbw, fbh);
+					IviewTrace(line);
+				}
 			}
+			ImGui::End();
+			ImGui::PopStyleVar(2);
 		}
-		ImGui::End();
-		ImGui::PopStyleVar(2);
-
-		if (filter_panel_open_) BuildOptionsPanel();
 	}
 
-	/* Filter + viewing settings, opened by the strip's Filter button. */
-	void BuildOptionsPanel()
+	/* Open/focus the persistent Settings window. */
+	void OpenSettings(SettingsTab tab, bool focus)
 	{
-		if (!ImGui::Begin("Options", &filter_panel_open_,
-		                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse))
+		settings_open_ = true;
+		settings_tab_request_ = tab;
+		settings_tab_request_pending_ = true;
+		settings_focus_requested_ = focus;
+		IviewTrace("action: settings open");
+	}
+
+	void MarkSettingsDirty()
+	{
+		settings_dirty_ = true;
+		settings_status_.clear();
+		settings_status_ok_ = true;
+	}
+
+	/* Persistent Settings window.  Rendered outside BuildChrome() so chrome
+	 * fade and Tab cannot hide it. */
+	void BuildSettingsWindow()
+	{
+		if (!settings_open_) return;
+
+		if (settings_focus_requested_)
 		{
-			ImGui::End();
-			return;
+			ImGui::SetNextWindowFocus();
+			settings_focus_requested_ = false;
 		}
 
-		/* ── Filter ─────────────────────────────────────────────────────────── */
-		ImGui::TextUnformatted("Filter");
-		ImGui::Separator();
+		ImGui::SetNextWindowSize(ImVec2(520.0f, 560.0f), ImGuiCond_FirstUseEver);
+		ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
 
+		const bool open = ImGui::Begin("Settings", &settings_open_,
+		                               ImGuiWindowFlags_NoCollapse);
+
+		if (open)
+		{
+			const auto tabFlags = [&](SettingsTab tab) -> ImGuiTabItemFlags {
+				return (settings_tab_request_pending_ && settings_tab_request_ == tab)
+					? ImGuiTabItemFlags_SetSelected : 0;
+			};
+
+			if (ImGui::BeginTabBar("SettingsTabs"))
+			{
+				if (ImGui::BeginTabItem("Interface", nullptr, tabFlags(SettingsTab::Interface)))
+				{
+					active_settings_tab_ = SettingsTab::Interface;
+					BuildSettingsInterfaceTab();
+					ImGui::EndTabItem();
+				}
+				if (ImGui::BeginTabItem("Viewing", nullptr, tabFlags(SettingsTab::Viewing)))
+				{
+					active_settings_tab_ = SettingsTab::Viewing;
+					BuildSettingsViewingTab();
+					ImGui::EndTabItem();
+				}
+				if (ImGui::BeginTabItem("Filter", nullptr, tabFlags(SettingsTab::Filter)))
+				{
+					active_settings_tab_ = SettingsTab::Filter;
+					BuildSettingsFilterTab();
+					ImGui::EndTabItem();
+				}
+				if (ImGui::BeginTabItem("Advanced", nullptr, tabFlags(SettingsTab::Advanced)))
+				{
+					active_settings_tab_ = SettingsTab::Advanced;
+					BuildSettingsAdvancedTab();
+					ImGui::EndTabItem();
+				}
+				ImGui::EndTabBar();
+			}
+			settings_tab_request_pending_ = false;
+
+			ImGui::Separator();
+			if (ImGui::Button("Save")) SaveSettings();
+			ImGui::SameLine();
+			ImGui::BeginDisabled(filter_running_);
+			if (ImGui::Button("Reset to defaults"))
+				ImGui::OpenPopup("Reset to defaults?");
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (ImGui::Button("Close")) settings_open_ = false;
+
+			/* A failed write stays visible even though dirty remains true. */
+			if (!settings_status_.empty() && !settings_status_ok_)
+			{
+				ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s",
+				                   settings_status_.c_str());
+			}
+			else if (settings_dirty_)
+			{
+				ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Unsaved changes");
+			}
+			else if (!settings_status_.empty())
+			{
+				ImGui::TextUnformatted(settings_status_.c_str());
+			}
+
+			if (ImGui::BeginPopupModal("Reset to defaults?", nullptr,
+			                           ImGuiWindowFlags_AlwaysAutoResize))
+			{
+				ImGui::TextUnformatted("Reset all settings to builtin defaults?");
+				ImGui::TextDisabled("Window size and the config path are preserved.");
+				if (ImGui::Button("Reset"))
+				{
+					ApplyBuiltinDefaults();
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+				ImGui::EndPopup();
+			}
+		}
+
+		ImGui::End();
+		ImGui::PopStyleVar();
+	}
+
+	void BuildSettingsInterfaceTab()
+	{
+		float scale = settings_.uiScale;
+		if (ImGui::SliderFloat("UI scale", &scale, 1.0f, 3.0f, "%.1f"))
+		{
+			settings_.uiScale = std::round(scale * 10.0f) / 10.0f;
+			ApplyUiScale(settings_.uiScale);
+			MarkSettingsDirty();
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit())
+		{
+			/* ImGui 1.93 applies FontScaleMain at draw time; no atlas rebuild. */
+			IviewTrace("ui_scale committed (no font atlas rebuild needed)");
+		}
+
+		if (ImGui::Checkbox("Show readout", &settings_.showReadout)) MarkSettingsDirty();
+		if (ImGui::Checkbox("Show control strip", &settings_.showControlStrip)) MarkSettingsDirty();
+
+		int fadeDelay = fadeDelayMs_;
+		if (ImGui::SliderInt("Fade delay", &fadeDelay, 200, 5000, "%d ms"))
+		{
+			fadeDelayMs_ = fadeDelay;
+			settings_.fadeDelayMs = fadeDelay;
+			MarkSettingsDirty();
+		}
+		float minAlpha = fadeMinAlpha_;
+		if (ImGui::SliderFloat("Min alpha", &minAlpha, 0.0f, 1.0f, "%.2f"))
+		{
+			fadeMinAlpha_ = minAlpha;
+			settings_.fadeMinAlpha = minAlpha;
+			MarkSettingsDirty();
+		}
+		ImGui::TextDisabled("Tab hides the chrome; Settings stays visible.");
+	}
+
+	void BuildSettingsViewingTab()
+	{
+		float bg[3] = { canvasBg_[0], canvasBg_[1], canvasBg_[2] };
+		if (ImGui::ColorEdit3("Canvas background", bg, ImGuiColorEditFlags_NoInputs))
+		{
+			SetCanvasBackground(bg);
+			MarkSettingsDirty();
+		}
+
+		if (ImGui::Checkbox("Initial zoom: fit", &settings_.initialZoomFit))
+			MarkSettingsDirty();
+		ImGui::TextDisabled("Unchecked starts at 100%%.");
+
+		int wheel = settings_.wheelAction;
+		if (ImGui::RadioButton("Wheel: zoom", &wheel, 0))
+		{
+			settings_.wheelAction = 0;
+			MarkSettingsDirty();
+		}
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Wheel: prev/next", &wheel, 1))
+		{
+			settings_.wheelAction = 1;
+			MarkSettingsDirty();
+		}
+		if (ImGui::SliderFloat("Wheel nav threshold", &settings_.wheelNavThreshold,
+		                       0.1f, 100.0f, "%.1f"))
+			MarkSettingsDirty();
+
+		static const char* const kNavZoom[] = { "Preserve", "Fit", "100%" };
+		int nav = settings_.navZoomMode;
+		if (ImGui::Combo("Navigation zoom", &nav, kNavZoom, IM_ARRAYSIZE(kNavZoom)))
+		{
+			settings_.navZoomMode = nav;
+			MarkSettingsDirty();
+		}
+	}
+
+	void BuildSettingsFilterTab()
+	{
 		if (filter_running_)
 		{
-			ImGui::TextUnformatted("processing...");
+			ImGui::TextUnformatted("Processing...");
 			ImGui::BeginDisabled();
 		}
-		else if (!source_image_)
-		{
-			ImGui::BeginDisabled();          /* nothing to re-filter yet */
-		}
 
+		static const char* const kModes[] = {
+			"None", "Ordered (4x4 Bayer)", "Floyd-Steinberg", "PWM (temporal)",
+			"Bayer 4x4", "Bayer 8x8", "Blue noise", "Spatial + temporal"
+		};
 		int mode = static_cast<int>(filterMode_);
-		if (ImGui::RadioButton("None", &mode, 0))           RequestFilterChange(0u);
-		ImVec2 noneMin = ImGui::GetItemRectMin(), noneMax = ImGui::GetItemRectMax();
-		if (ImGui::RadioButton("PWM (temporal)", &mode, 3)) RequestFilterChange(3u);
-		ImVec2 pwmMin = ImGui::GetItemRectMin(), pwmMax = ImGui::GetItemRectMax();
-		/* One-shot rect log for the automated check (trace only). */
-		if (IviewTraceEnabled() && !panelRectsLogged_ && chromeFrames_ > 20)
+		if (ImGui::Combo("Filter mode", &mode, kModes, IM_ARRAYSIZE(kModes)))
 		{
-			panelRectsLogged_ = true;
-			char line[128];
-			std::snprintf(line, sizeof(line), "panel rects: none=%.0f,%.0f pwm=%.0f,%.0f",
-			              (noneMin.x + noneMax.x) * 0.5f, (noneMin.y + noneMax.y) * 0.5f,
-			              (pwmMin.x + pwmMax.x) * 0.5f, (pwmMin.y + pwmMax.y) * 0.5f);
-			IviewTrace(line);
+			RequestFilterChange(static_cast<uint32_t>(mode));
+			MarkSettingsDirty();
 		}
-		/* TODO(side-by-side): original next to the filtered result — deferred. */
+		ImGui::TextDisabled("PWM bits: 1 (N-phase output is not implemented)");
 
-		if (filter_running_ || !source_image_) ImGui::EndDisabled();
+		if (filter_running_) ImGui::EndDisabled();
 
 		if (filter_failed_ && !filter_error_.empty())
 		{
@@ -1651,31 +2138,26 @@ private:
 		}
 		else if (!source_image_)
 		{
-			ImGui::TextDisabled("no image loaded yet");
+			ImGui::TextDisabled("The selected mode is applied when an image loads.");
 		}
+		else if (filter_running_)
+		{
+			ImGui::TextDisabled("Recomputing...");
+		}
+	}
 
+	void BuildSettingsAdvancedTab()
+	{
+		ImGui::TextUnformatted("Loaded from");
+		ImGui::TextWrapped("%s", settings_.loadPath.empty()
+			? "(builtin defaults)" : settings_.loadPath.c_str());
+		ImGui::TextUnformatted("Save target");
+		ImGui::TextWrapped("%s", settings_.savePath.empty()
+			? "(none)" : settings_.savePath.c_str());
 		ImGui::Separator();
-		/* ── Viewing settings ───────────────────────────────────────────────── */
-		ImGui::TextUnformatted("Viewing");
-
-		float bg[3] = { canvasBg_[0], canvasBg_[1], canvasBg_[2] };
-		if (ImGui::ColorEdit3("Canvas background", bg, ImGuiColorEditFlags_NoInputs))
-			SetCanvasBackground(bg);
-
-		ImGui::SliderInt("Fade delay", &fadeDelayMs_, 200, 5000, "%d ms");
-		ImGui::SliderFloat("Min alpha", &fadeMinAlpha_, 0.0f, 1.0f, "%.2f");
-
-		int wheel = settings_.wheelAction;
-		if (ImGui::RadioButton("Wheel: zoom", &wheel, 0)) settings_.wheelAction = 0;
-		ImGui::SameLine();
-		if (ImGui::RadioButton("Wheel: prev/next", &wheel, 1)) settings_.wheelAction = 1;
-
-		ImGui::Separator();
-		if (ImGui::Button("Reset to defaults")) LoadBuiltinDefaults();
-		ImGui::SameLine();
-		if (ImGui::Button("Save")) SaveSettings();
-
-		ImGui::End();
+		if (ImGui::Checkbox("Remember window size", &settings_.rememberWindowSize))
+			MarkSettingsDirty();
+		ImGui::TextDisabled("Captured once when the window closes.");
 	}
 
 	/* The clear colour is consumed every frame by DrawImage, so this only has to
@@ -1688,25 +2170,40 @@ private:
 			settings_.canvasBg[i] = static_cast<int>(std::lround(canvasBg_[i] * 255.0f));
 	}
 
-	/* Panel-only reset: the filter mode and the live viewing knobs.  Window size
-	 * is start-up state and is left alone. */
-	void LoadBuiltinDefaults()
+	/* Reset all persisted settings except window size and the config paths. */
+	void ApplyBuiltinDefaults()
 	{
 		const Config::Settings defaults{};
-		fadeDelayMs_  = defaults.fadeDelayMs;
-		fadeMinAlpha_ = defaults.fadeMinAlpha;
+		const std::string loadPath = settings_.loadPath;
+		const std::string savePath = settings_.savePath;
+		const int windowWidth = settings_.windowWidth;
+		const int windowHeight = settings_.windowHeight;
+
+		settings_ = defaults;
+		settings_.loadPath = loadPath;
+		settings_.savePath = savePath;
+		settings_.windowWidth = windowWidth;
+		settings_.windowHeight = windowHeight;
+
+		fadeDelayMs_  = settings_.fadeDelayMs;
+		fadeMinAlpha_ = settings_.fadeMinAlpha;
 		for (int i = 0; i < 3; ++i)
-		{
-			canvasBg_[i]          = defaults.canvasBg[i] / 255.0f;
-			settings_.canvasBg[i] = defaults.canvasBg[i];
-		}
-		settings_.fadeDelayMs  = fadeDelayMs_;
-		settings_.fadeMinAlpha = fadeMinAlpha_;
-		settings_.initialZoomFit = defaults.initialZoomFit;
-		if (filterMode_ != defaults.filterMode) RequestFilterChange(defaults.filterMode);
+			canvasBg_[i] = settings_.canvasBg[i] / 255.0f;
+		pwmBits_ = settings_.pwmBits;
+		if (imgui_) imgui_->chromeEnabled = settings_.chromeVisible;
+		ApplyUiScale(settings_.uiScale);
+
+		filter_failed_ = false;
+		filter_error_.clear();
+		if (!filter_running_)
+			RequestFilterChange(settings_.filterMode);
+		else
+			settings_.filterMode = filterMode_;
+
+		MarkSettingsDirty();
 	}
 
-	void SaveSettings()
+	void SyncSettingsFromLiveState()
 	{
 		settings_.fadeDelayMs  = fadeDelayMs_;
 		settings_.fadeMinAlpha = fadeMinAlpha_;
@@ -1715,7 +2212,27 @@ private:
 		if (imgui_) settings_.chromeVisible = imgui_->chromeEnabled;
 		for (int i = 0; i < 3; ++i)
 			settings_.canvasBg[i] = static_cast<int>(std::lround(canvasBg_[i] * 255.0f));
-		Config::Save(settings_);
+	}
+
+	bool SaveSettings()
+	{
+		SyncSettingsFromLiveState();
+		const bool ok = Config::Save(settings_);
+		settings_status_ok_ = ok;
+		if (ok)
+		{
+			settings_dirty_ = false;
+			settings_status_ = settings_.savePath.empty()
+				? std::string("Saved (no config path)")
+				: ("Saved to " + settings_.savePath);
+		}
+		else
+		{
+			settings_status_ = settings_.savePath.empty()
+				? std::string("Write failed: no config path")
+				: ("Write failed: " + settings_.savePath);
+		}
+		return ok;
 	}
 
 	/* File drop: phase 1 reuses the same decode + upload path on the main
@@ -1727,6 +2244,12 @@ private:
 		 * enter the plugin from two threads.  Dropped files are simply ignored
 		 * for the ~100 ms a compute takes. */
 		if (filter_running_) return;
+		if (IviewTraceEnabled())
+		{
+			char line[128];
+			std::snprintf(line, sizeof(line), "drop start count=%d", count);
+			IviewTrace(line);
+		}
 
 		for (int i = 0; i < count; ++i)
 		{
@@ -1737,28 +2260,62 @@ private:
 				/* ACDSee behaviour: the dropped file's folder becomes the current
 				 * folder and the dropped file becomes the current index. */
 				ScanFolder(path);
+				if (IviewTraceEnabled())
+				{
+					char line[192];
+					std::snprintf(line, sizeof(line),
+					              "drop clearing nav_in_flight (was=%d) target=%zu",
+					              nav_in_flight_ ? 1 : 0, folder_index_);
+					IviewTrace(line);
+				}
+				if (nav_future_.valid())
+				{
+					IviewTrace("drop draining nav future");
+					try { nav_future_.wait(); (void)nav_future_.get(); }
+					catch (...) { IviewTrace("drop nav future drain caught exception"); }
+				}
 				nav_shown_index_  = folder_index_;
 				nav_target_index_ = folder_index_;
 				nav_in_flight_    = false;
 
-				auto image = std::make_unique<Image>(Image::FromFile(path));
+				auto image = std::make_shared<Image>(Image::FromFile(path));
 				IWFilterArg noneArgs[1];
 				const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
 				if (!LoadTextures(*image, 0, 0, 0, noneOpts))
 					continue;
 				SetWindowTitle(path);
 				ComputeReadout(*image, path);
-				source_image_ = std::move(image);
+				if (IviewTraceEnabled())
+				{
+					char line[192];
+					std::snprintf(line, sizeof(line),
+					              "drop replacing source old=%p gen=%llu",
+					              static_cast<const void*>(source_image_.get()),
+					              static_cast<unsigned long long>(file_generation_));
+					IviewTrace(line);
+				}
+				source_image_ = image;
 				current_path_ = path;
 				++file_generation_;
 				last_error_.clear();
 				MaybeStartDeferredFilter();
-				imgui_->chromeEnabled     = true;
+				IviewTrace("drop done");
+				if (!imgui_->chromeEnabled)
+				{
+					imgui_->chromeEnabled = true;
+					MarkSettingsDirty();
+				}
 				imgui_->lastMouseActivity = std::chrono::steady_clock::now();
 				return;
 			}
-			catch (const std::exception&)
+			catch (const std::exception& ex)
 			{
+				if (IviewTraceEnabled())
+				{
+					char line[512];
+					std::snprintf(line, sizeof(line), "drop failed: %s", ex.what());
+					IviewTrace(line);
+				}
 				/* Try the next dropped file. */
 			}
 		}
@@ -1882,6 +2439,7 @@ public:
 			if (key == GLFW_KEY_TAB && action == GLFW_PRESS && containerWindow->imgui_) {
 				containerWindow->imgui_->chromeEnabled = !containerWindow->imgui_->chromeEnabled;
 				containerWindow->imgui_->lastMouseActivity = std::chrono::steady_clock::now();
+				containerWindow->MarkSettingsDirty();
 				IviewTrace(containerWindow->imgui_->chromeEnabled ? "chrome shown (Tab)"
 				                                                  : "chrome hidden (Tab)");
 			}
