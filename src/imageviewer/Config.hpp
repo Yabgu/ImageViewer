@@ -78,6 +78,11 @@ inline constexpr float kMinUiScale = 1.0f;
 inline constexpr float kMaxUiScale = 3.0f;
 inline constexpr int   kMaxFadeDelayMs = 60000;
 
+/* window_x/window_y sentinel: "no position was saved yet", which makes the
+ * viewer centre the window instead of reusing a stale spot.  0 is a valid
+ * coordinate on multi-monitor desktops, so it cannot double as "unset". */
+inline constexpr int   kWindowPositionUnset = std::numeric_limits<int>::min();
+
 inline constexpr int kMinHdrSdrWhiteNits = 80;
 inline constexpr int kMaxHdrSdrWhiteNits = 1000;
 inline constexpr int kMinHdrPeakNits     = 100;
@@ -92,6 +97,12 @@ struct Settings
 	uint32_t    pwmBits       = 1;               /* capped at 1 for now */
 	int         windowWidth   = 1280;
 	int         windowHeight  = 720;
+	/* Client-area origin in screen coordinates (GLFW's convention).  Kept with
+	 * the size so a restart lands where the window was left; kWindowPositionUnset
+	 * means "no position saved" and the window is centred instead. */
+	int         windowX       = kWindowPositionUnset;
+	int         windowY       = kWindowPositionUnset;
+	bool        windowMaximized = false;
 	bool        initialZoomFit = true;  /* false = 100 %                    */
 	bool        chromeVisible = true;
 	int         wheelAction   = 0;      /* 0 = zoom, 1 = prev/next           */
@@ -297,6 +308,20 @@ inline void Sanitize(Settings& s)
 	s.windowWidth  = std::clamp(s.windowWidth, 64, 16384);
 	s.windowHeight = std::clamp(s.windowHeight, 64, 16384);
 
+	/* Half a position is no position: never place a window at (x,0) just because
+	 * one of the two keys was missing.  The range keeps every plausible
+	 * multi-monitor layout while rejecting a corrupted value outright. */
+	if (s.windowX == kWindowPositionUnset || s.windowY == kWindowPositionUnset)
+	{
+		s.windowX = kWindowPositionUnset;
+		s.windowY = kWindowPositionUnset;
+	}
+	else
+	{
+		s.windowX = std::clamp(s.windowX, -32768, 32767);
+		s.windowY = std::clamp(s.windowY, -32768, 32767);
+	}
+
 	if (s.wheelAction != 0 && s.wheelAction != 1) s.wheelAction = 0;
 	if (std::isnan(s.wheelNavThreshold)) s.wheelNavThreshold = kDefaultWheelNavThreshold;
 	s.wheelNavThreshold = std::clamp(s.wheelNavThreshold, 0.1f, 100.0f);
@@ -354,6 +379,14 @@ inline std::string Serialize(const Settings& s)
 	out << "pwm_bits = " << s.pwmBits << "\n";
 	out << "window_width = " << s.windowWidth << "\n";
 	out << "window_height = " << s.windowHeight << "\n";
+	/* Written only once a position has been observed: an absent pair means
+	 * "centre the window", which is not the same as placing it at (0,0). */
+	if (s.windowX != kWindowPositionUnset && s.windowY != kWindowPositionUnset)
+	{
+		out << "window_x = " << s.windowX << "\n";
+		out << "window_y = " << s.windowY << "\n";
+	}
+	out << "window_maximized = " << (s.windowMaximized ? "true" : "false") << "\n";
 	out << "initial_zoom = " << (s.initialZoomFit ? "fit" : "100") << "\n";
 	out << "chrome_visible_on_start = " << (s.chromeVisible ? "true" : "false") << "\n";
 	out << "wheel_action = " << (s.wheelAction == 1 ? "next_prev" : "zoom") << "\n";
@@ -457,6 +490,27 @@ inline bool ApplyLine(Settings& s, const std::string& key, const std::string& va
 		int v = 0;
 		if (!ParseInt(value, v)) return false;
 		s.windowHeight = v;
+		return true;
+	}
+	if (key == "window_x")
+	{
+		int v = 0;
+		if (!ParseInt(value, v)) return false;
+		s.windowX = v;
+		return true;
+	}
+	if (key == "window_y")
+	{
+		int v = 0;
+		if (!ParseInt(value, v)) return false;
+		s.windowY = v;
+		return true;
+	}
+	if (key == "window_maximized")
+	{
+		bool v = false;
+		if (!ParseBool(value, v)) return false;
+		s.windowMaximized = v;
 		return true;
 	}
 	if (key == "initial_zoom")
