@@ -36,9 +36,26 @@ re-deriving it from chat history.
   only on success and shows `Saved to <path>` / `Write failed: <path>`.
   `Config::Save()` remains atomic (sibling `.tmp` + rename) and idempotent.
 - All values pass through `Config::Sanitize()` before being persisted.
-- When `remember_window_size = true`, the actual GLFW window size is captured
-  once on close, never on every resize tick.  When false, the stored size is
-  left untouched.
+- When `remember_window_size = true`, the window's **placement** is captured
+  once on close: client size, client position and maximised state.  Nothing is
+  written on resize ticks.  When false, the stored placement is left untouched.
+  Placement lives in `window_width`, `window_height`, `window_x`, `window_y`
+  and `window_maximized`.
+- Restore order: normal rect first, then maximise, so un-maximising returns to
+  the rect the user left.  GLFW exposes no restore rectangle, so the viewer
+  samples the geometry while the window is normal; a window closed while
+  maximised therefore still restores both its maximised state and the rect
+  underneath it.
+- A saved position that no longer lands on a monitor work area (monitor
+  removed, layout changed) is ignored and the window is centred on the primary
+  monitor.  A saved size larger than every work area is clamped.  With no saved
+  position at all the window is centred rather than left to the OS default,
+  which can place it partly under the taskbar.
+- Wayland has no client-side window placement: `glfwGetWindowPos()` reports
+  `(0,0)` and `glfwSetWindowPos()` does nothing.  Position is therefore neither
+  captured nor applied on Wayland (size and maximised state still are), so a
+  Wayland session never writes a bogus `0,0` that a later X11 session would
+  honour.
 - `ui_scale` is applied from an unscaled base `ImGuiStyle` (`ScaleAllSizes()`
   is cumulative).  ImGui 1.93 applies `FontScaleMain` at draw time, so changing
   it does not require rebuilding the font atlas.
@@ -61,7 +78,10 @@ re-deriving it from chat history.
 - `ui_scale = 2.0` (clamped 1.0..3.0)
 - `show_readout = true`
 - `show_control_strip = true`
-- `remember_window_size = true`
+- `remember_window_size = true` (covers size, position and maximised state)
+- `window_x`, `window_y` (client origin in screen coordinates; omitted until a
+  position has been observed, which means "centre the window")
+- `window_maximized = false`
 - `hdr_mode = off` (`off`, `auto`, `force`)
 - `hdr_transfer = scrgb` (`scrgb`, `pq`)
 - `hdr_sdr_white_nits = 0` (0 = auto; otherwise 80..1000)
