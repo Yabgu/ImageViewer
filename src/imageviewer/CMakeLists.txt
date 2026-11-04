@@ -211,6 +211,10 @@ target_sources(imageviewer PUBLIC
         FilterPlugin.ixx
 )
 
+option(IMAGEVIEWER_GENERATE_ICON
+    "Generate the Windows .ico from assets/icon/iview.svg at build time (needs Python 3 and rsvg-convert)"
+    ON)
+
 if(WIN32)
     target_compile_definitions(iview PRIVATE
         WIN32_LEAN_AND_MEAN
@@ -227,8 +231,113 @@ if(WIN32)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         target_link_options(iview PRIVATE -municode)
     endif()
+
+    # ── Application icon ────────────────────────────────────────────────────
+    # resources/iview.rc embeds the .ico as the executable's icon (plus the
+    # named GLFW_ICON copy GLFW's Win32 backend loads for its window class).
+    #
+    # The .ico is normally generated from assets/icon/iview.svg at build time,
+    # so editing the SVG is all it takes to change the icon in the exe.  That
+    # step needs Python 3 and rsvg-convert; when either is unavailable the
+    # build falls back to the checked-in resources/iview.ico, which is also
+    # what keeps a source tarball buildable without librsvg.
+    #
+    # The .rc is rendered into the build tree with the icon's absolute path
+    # substituted.  That is deliberate: rc.exe searches the .rc file's own
+    # directory before its /I paths, so with a relative name a stale copy
+    # sitting beside the source .rc would win without any diagnostic.  An
+    # absolute path leaves the toolchains no room to disagree -- rc.exe,
+    # windres and llvm-windres all then read the same file.
+    #
+    # The .rc is produced by a build step (cmake/WriteIconRc.cmake) rather than
+    # configure_file(), so it is an ordinary build output that a cleaned build
+    # directory regenerates on its own.
+    set(_IVIEW_ICON_SVG "${CMAKE_SOURCE_DIR}/assets/icon/iview.svg")
+    set(_IVIEW_ICON_SCRIPT "${CMAKE_SOURCE_DIR}/src/tools/make_icon.py")
+    set(_IVIEW_ICON_FALLBACK "${CMAKE_CURRENT_SOURCE_DIR}/resources/iview.ico")
+    set(_IVIEW_ICON_DIR "${CMAKE_CURRENT_BINARY_DIR}/icon")
+    set(_IVIEW_ICON_GENERATED "${_IVIEW_ICON_DIR}/iview.ico")
+
+    set(IMAGEVIEWER_RSVG_CONVERT "" CACHE FILEPATH
+        "rsvg-convert used to rasterize the icon SVG (empty: search PATH)")
+
+    set(_IVIEW_ICON_ENV)
+    if(IMAGEVIEWER_RSVG_CONVERT)
+        set(_IVIEW_ICON_ENV "${CMAKE_COMMAND}" -E env
+            "RSVG_CONVERT=${IMAGEVIEWER_RSVG_CONVERT}")
+    endif()
+
+    set(_IVIEW_ICON_CAN_GENERATE OFF)
+    if(IMAGEVIEWER_GENERATE_ICON AND EXISTS "${_IVIEW_ICON_SVG}")
+        find_package(Python3 COMPONENTS Interpreter QUIET)
+        if(Python3_Interpreter_FOUND)
+            execute_process(
+                COMMAND ${_IVIEW_ICON_ENV} "${Python3_EXECUTABLE}"
+                        "${_IVIEW_ICON_SCRIPT}" --check
+                RESULT_VARIABLE _IVIEW_ICON_PROBE
+                OUTPUT_VARIABLE _IVIEW_ICON_RSVG
+                ERROR_QUIET
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+            if(_IVIEW_ICON_PROBE EQUAL 0)
+                set(_IVIEW_ICON_CAN_GENERATE ON)
+            endif()
+        endif()
+    endif()
+
+    if(_IVIEW_ICON_CAN_GENERATE)
+        add_custom_command(
+            OUTPUT "${_IVIEW_ICON_GENERATED}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${_IVIEW_ICON_DIR}"
+            COMMAND ${_IVIEW_ICON_ENV} "${Python3_EXECUTABLE}"
+                    "${_IVIEW_ICON_SCRIPT}"
+                    --svg "${_IVIEW_ICON_SVG}"
+                    --out "${_IVIEW_ICON_GENERATED}"
+            DEPENDS "${_IVIEW_ICON_SVG}" "${_IVIEW_ICON_SCRIPT}"
+            COMMENT "Generating iview.ico from assets/icon/iview.svg"
+            VERBATIM)
+        set(_IVIEW_ICON_FILE "${_IVIEW_ICON_GENERATED}")
+        message(STATUS "Icon: generating iview.ico with ${_IVIEW_ICON_RSVG}")
+    else()
+        set(_IVIEW_ICON_FILE "${_IVIEW_ICON_FALLBACK}")
+        message(STATUS
+            "Icon: using checked-in resources/iview.ico "
+            "(generation disabled or Python 3 / rsvg-convert not found)")
+    endif()
+
+    # Forward slashes, not native separators: rc.exe unescapes C-style
+    # sequences inside resource filenames, so a path containing \r (as in
+    # "...\resources\...") would be read as a carriage return and truncated.
+    # Forward slashes are accepted by rc.exe, windres and llvm-windres alike
+    # and never take part in that escape processing.
+    set(_IVIEW_ICON_RC "${_IVIEW_ICON_DIR}/iview.rc")
+    add_custom_command(
+        OUTPUT "${_IVIEW_ICON_RC}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_IVIEW_ICON_DIR}"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DIVIEW_ICON_FILE=${_IVIEW_ICON_FILE}"
+                "-DIVIEW_ICON_RC_TEMPLATE=${CMAKE_CURRENT_SOURCE_DIR}/resources/iview.rc"
+                "-DIVIEW_ICON_RC_OUTPUT=${_IVIEW_ICON_RC}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/WriteIconRc.cmake"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/iview.rc"
+            "${CMAKE_SOURCE_DIR}/cmake/WriteIconRc.cmake"
+        COMMENT "Writing iview.rc for the application icon"
+        VERBATIM)
+
     target_sources(iview PRIVATE
         main_windows.cpp
+        "${_IVIEW_ICON_RC}"
+    )
+    # Header search for ResourceIds.h; the .ico itself needs no include path.
+    target_include_directories(iview PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+    )
+
+    # rc.exe emits no depfile, so list the resource inputs explicitly: replacing
+    # the .ico or changing the shared icon ID must rebuild and relink the exe.
+    set_source_files_properties("${_IVIEW_ICON_RC}" PROPERTIES
+        OBJECT_DEPENDS
+            "${_IVIEW_ICON_FILE};${_IVIEW_ICON_RC};${CMAKE_CURRENT_SOURCE_DIR}/resources/ResourceIds.h"
     )
 else()
     target_sources(iview PRIVATE
