@@ -1,0 +1,26 @@
+// Windows resources for iview.exe.
+//
+// This file is a template.  cmake/WriteIconRc.cmake renders it into the build
+// tree (<build>/src/imageviewer/icon/iview.rc) as a build step, replacing
+// @IVIEW_ICON_FILE@ with the absolute path of the icon to embed -- the
+// generated .ico when Python 3 and rsvg-convert are available, otherwise the
+// checked-in resources/iview.ico.  The path is absolute on purpose: rc.exe
+// searches the .rc file's own directory before its /I paths, so a relative
+// name would let a stale copy win without any diagnostic.
+//
+// IVIEW_ICON_ID is the application icon group: the shell shows the
+// lowest-numbered RT_ICON group for the executable, so Explorer, shortcuts and
+// the taskbar all pick it up without any code.  The same ID is used by
+// Window.ixx to load the small title-bar icon.
+//
+// GLFW_ICON is a second copy under the name GLFW's Win32 backend looks up when
+// it registers its window class (see win32_window.c in GLFW), which gives the
+// window its large icon without any code.
+//
+// The artwork lives in assets/icon/iview.svg and is rasterized by
+// src/tools/make_icon.py -- do not edit the .ico by hand.
+
+#include "ResourceIds.h"
+
+IVIEW_ICON_ID ICON "@IVIEW_ICON_FILE@"
+GLFW_ICON ICON "@IVIEW_ICON_FILE@"

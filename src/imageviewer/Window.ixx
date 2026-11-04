@@ -46,6 +46,7 @@ module;
 #include "FilterCore.hpp"
 #include "FilterJob.hpp"
 #include "Config.hpp"
+#include "resources/ResourceIds.h"
 
 export module UserInterface;
 
@@ -559,6 +560,27 @@ private:
 			throw std::runtime_error("Failed to create window");
 
 		glfwSetWindowUserPointer(glfwWindow, (void*)containerWindow);
+
+#ifdef _WIN32
+		/* GLFW registers its Win32 window class with only the large icon, taken
+		 * from the GLFW_ICON resource in resources/iview.rc.  Without an explicit
+		 * small icon the title bar gets that 32 px bitmap downscaled, so load the
+		 * 16 px entry from the same icon group instead.  LR_SHARED keeps the
+		 * handle valid for the window's lifetime and needs no DestroyIcon. */
+		if (HWND const hwnd = glfwGetWin32Window(glfwWindow))
+		{
+			HICON const smallIcon = static_cast<HICON>(LoadImageW(
+				GetModuleHandleW(nullptr),
+				MAKEINTRESOURCEW(IVIEW_ICON_ID),
+				IMAGE_ICON,
+				GetSystemMetrics(SM_CXSMICON),
+				GetSystemMetrics(SM_CYSMICON),
+				LR_SHARED));
+			if (smallIcon != nullptr)
+				SendMessageW(hwnd, WM_SETICON, ICON_SMALL,
+					reinterpret_cast<LPARAM>(smallIcon));
+		}
+#endif
 
 		glfwSetWindowSizeCallback(glfwWindow, window_size_callback);
 		glfwSetFramebufferSizeCallback(glfwWindow, framebuffer_size_callback);
