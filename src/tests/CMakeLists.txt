@@ -4,6 +4,7 @@ add_executable(iview_tests
     test_iwimageformat.cpp
     test_config.cpp
     test_filter_job.cpp
+    test_zoom_scale.cpp
 )
 
 set_property(TARGET iview_tests PROPERTY CXX_STANDARD 17)
