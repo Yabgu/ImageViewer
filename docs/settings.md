@@ -22,6 +22,24 @@ re-deriving it from chat history.
 - `pwm_bits` is displayed as a fixed `1` readout; N-phase output is not
   implemented and the UI must not offer > 1.
 
+## Zoom scale
+
+- Zoom is stored as a linear magnification factor, but every user-facing step
+  is **geometric**: one wheel notch, one `+`/`-` press, or one toolbar step
+  multiplies the magnification by **2^(1/4) ≈ 1.189**, so the relative change
+  is the same at every level (100 → 119 → 141 → 168 → 200 %).
+- This replaces the old fixed +10 percentage points, which doubled the image at
+  10 % and changed it by only 6.7 % at 150 %.
+- Four steps per doubling keeps round stops reachable and makes steps exactly
+  reversible: four steps in, then four out, returns to the starting zoom.
+- Range is 1 % .. 3200 %.  Fit-to-window uses the limiting axis and clamps into
+  the same range.
+- Wheel zoom anchors on the cursor; keyboard and toolbar steps anchor on the
+  window centre.
+- The policy lives in `src/imageviewer/ZoomScale.hpp` and is covered by
+  `src/tests/test_zoom_scale.cpp`.  Change the ratio there and every input path
+  follows.
+
 ## Config format and persistence
 
 - Keep the existing flat `key = value` format and search order:

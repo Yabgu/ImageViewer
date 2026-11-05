@@ -46,6 +46,7 @@ module;
 #include "FilterCore.hpp"
 #include "FilterJob.hpp"
 #include "Config.hpp"
+#include "ZoomScale.hpp"
 #include "resources/ResourceIds.h"
 
 export module UserInterface;
@@ -221,25 +222,21 @@ protected:
 
 	void applyScroll(double /*xoffset*/, double yoffset)
 	{
-		constexpr int MIN_ZOOM_PERCENT = -90;
-		constexpr int MAX_ZOOM_PERCENT = 400;
-		constexpr double SCROLL_SENSITIVITY = 10;
-
 		double mouseX, mouseY;
 		glfwGetCursorPos(glfwWindow, &mouseX, &mouseY);
 
-		double newZoomLevel = (scroll + yoffset * SCROLL_SENSITIVITY + 100.0) / 100.0;
-		newZoomLevel = std::clamp(newZoomLevel,
-			(MIN_ZOOM_PERCENT + 100.0) / 100.0, (MAX_ZOOM_PERCENT + 100.0) / 100.0);
-
-		setZoom(newZoomLevel, mouseX, mouseY);
+		/* One wheel notch is one zoom-scale step; precise wheels send fractional
+		 * offsets and get a proportionally smaller step. */
+		setZoom(ZoomScale::Step(getZoom(), yoffset), mouseX, mouseY);
 	}
 
 private:
 	GLFWwindow* glfwWindow = nullptr;
 	int width;
 	int height;
-	int scroll;
+	/* Linear magnification; 1.0 = 100 %.  Every user-facing step is geometric
+	 * (see ZoomScale.hpp), and a double keeps repeated steps from quantising. */
+	double zoom_;
 	/* Last client-area geometry observed while the window was in its normal state
 	 * (neither maximized nor iconified).  GLFW exposes no restore rectangle, so
 	 * this sample is what gets persisted: a maximized window comes back maximized
@@ -360,11 +357,11 @@ private:
 	GLint  uniformTexture_    = -1;
 
 	double getZoom() const {
-		return (scroll + 100.0) / 100.0;
+		return zoom_;
 	}
 
 	int getZoomPercent() const noexcept {
-		return static_cast<int>(std::lround(getZoom() * 100.0));
+		return ZoomScale::Percent(zoom_);
 	}
 
 	bool HasImage() const noexcept { return imageWidth_ > 0 && imageHeight_ > 0; }
@@ -391,6 +388,37 @@ private:
 			panX = x;
 			panY = y;
 		}
+	}
+
+	/* Absolute zoom change that keeps the image point under (cursorX, cursorY)
+	 * in place.  setPanning() re-clamps the result, so an anchor outside the
+	 * image cannot push the view off it. */
+	void ZoomAround(double targetZoom, double cursorX, double cursorY)
+	{
+		const double currentZoom = getZoom();
+		zoom_ = ZoomScale::Clamp(targetZoom);
+
+		if (IviewTraceEnabled())
+		{
+			char line[64];
+			std::snprintf(line, sizeof(line), "zoom: %.1f%%", zoom_ * 100.0);
+			IviewTrace(line);
+		}
+
+		if (!HasImage() || !(currentZoom > 0.0)) return;
+
+		/* Where the anchor sits in image pixels before the change. */
+		const double imgX = (width  - imageWidth_  * currentZoom) * 0.5 + panX;
+		const double imgY = (height - imageHeight_ * currentZoom) * 0.5 + panY;
+		const double anchorImgX = (cursorX - imgX) / currentZoom;
+		const double anchorImgY = (cursorY - imgY) / currentZoom;
+
+		/* Pan that would centre the new size, before anchoring. */
+		const double newImgX = (width  - imageWidth_  * zoom_) * 0.5 + panX;
+		const double newImgY = (height - imageHeight_ * zoom_) * 0.5 + panY;
+
+		setPanning(panX + cursorX - (newImgX + anchorImgX * zoom_),
+		           panY + cursorY - (newImgY + anchorImgY * zoom_));
 	}
 
 	static void mouse_button_callback(GLFWwindow* window, int button, int action, int /*mods*/) {
@@ -617,7 +645,7 @@ public:
 		: glfwWindow(InitializeWindow(width, height, this)),
 		  width(width),
 		  height(height),
-		  scroll(0),
+		  zoom_(1.0),
 		  hotkeysHandler() {
 		/* Diagnostics must interleave truthfully with the driver's own stderr. */
 		std::setvbuf(stderr, nullptr, _IONBF, 0);
@@ -1701,10 +1729,8 @@ public:
 	{
 		setPanning(0.0, 0.0);
 		if (!HasImage()) return;
-		if (!settings_.initialZoomFit) { scroll = 0; return; }   /* 100 % */
-		const double minRatio = std::min<double>((double)width / imageWidth_,
-		                                         (double)height / imageHeight_);
-		this->scroll = static_cast<int>(minRatio * 100.0 - 100);
+		if (!settings_.initialZoomFit) { zoom_ = 1.0; return; }   /* 100 % */
+		zoom_ = ZoomScale::Fit(imageWidth_, imageHeight_, width, height);
 	}
 
 	/* ── Main loop ─────────────────────────────────────────────────────────── */
@@ -2560,7 +2586,7 @@ private:
 				r[1][0] = ImGui::GetItemRectMin(); r[1][1] = ImGui::GetItemRectMax();
 
 				ImGui::SameLine(0.0f, 28.0f);
-				if (ImGui::Button("-")) adjustZoom(-10);
+				if (ImGui::Button("-")) adjustZoom(-1);
 				r[2][0] = ImGui::GetItemRectMin(); r[2][1] = ImGui::GetItemRectMax();
 				ImGui::SameLine();
 				char zoomLabel[16];
@@ -2568,7 +2594,7 @@ private:
 				ImGui::AlignTextToFramePadding();
 				ImGui::TextUnformatted(zoomLabel);
 				ImGui::SameLine();
-				if (ImGui::Button("+")) adjustZoom(10);
+				if (ImGui::Button("+")) adjustZoom(1);
 				r[3][0] = ImGui::GetItemRectMin(); r[3][1] = ImGui::GetItemRectMax();
 
 				ImGui::SameLine();
@@ -3035,57 +3061,14 @@ public:
 	void setZoom(double zoomLevel, double cursorX, double cursorY) {
 		IviewTrace("action: set_zoom");
 		zoom_mode_ = ZoomMode::Manual;
-		const double currentZoom = getZoom();
-		const double newScroll = (zoomLevel * 100.0) - 100.0;
-		scroll = std::clamp(static_cast<int>(newScroll), -90, 400);
-
-		if (HasImage()) {
-			const double imgW = imageWidth_ * currentZoom;
-			const double imgH = imageHeight_ * currentZoom;
-			const double imgX = (width - imgW) * 0.5 + panX;
-			const double imgY = (height - imgH) * 0.5 + panY;
-
-			const double mouseImgXBefore = (cursorX - imgX) / currentZoom;
-			const double mouseImgYBefore = (cursorY - imgY) / currentZoom;
-
-			const double newZoom = getZoom();
-			const double newImgW = imageWidth_ * newZoom;
-			const double newImgH = imageHeight_ * newZoom;
-			const double newImgX = (width - newImgW) * 0.5 + panX;
-			const double newImgY = (height - newImgH) * 0.5 + panY;
-			const double mouseScreenXAfter = newImgX + mouseImgXBefore * newZoom;
-			const double mouseScreenYAfter = newImgY + mouseImgYBefore * newZoom;
-
-			setPanning(panX + cursorX - mouseScreenXAfter, panY + cursorY - mouseScreenYAfter);
-		}
+		ZoomAround(zoomLevel, cursorX, cursorY);
 	}
 
-	void adjustZoom(int zoomDelta) {
+	/* `steps` is zoom-scale steps (see ZoomScale.hpp), not percentage points:
+	 * positive zooms in.  Anchored on the window centre. */
+	void adjustZoom(int steps) {
 		IviewTrace("action: adjust_zoom");
-		const double currentZoom = getZoom();
-		scroll = std::clamp(scroll + zoomDelta, -90, 400);
-
-		if (HasImage()) {
-			const double imgW = imageWidth_ * currentZoom;
-			const double imgH = imageHeight_ * currentZoom;
-			const double imgX = (width - imgW) * 0.5 + panX;
-			const double imgY = (height - imgH) * 0.5 + panY;
-
-			const double centerX = width * 0.5;
-			const double centerY = height * 0.5;
-			const double mouseImgXBefore = (centerX - imgX) / currentZoom;
-			const double mouseImgYBefore = (centerY - imgY) / currentZoom;
-
-			const double newZoom = getZoom();
-			const double newImgW = imageWidth_ * newZoom;
-			const double newImgH = imageHeight_ * newZoom;
-			const double newImgX = (width - newImgW) * 0.5 + panX;
-			const double newImgY = (height - newImgH) * 0.5 + panY;
-			const double mouseScreenXAfter = newImgX + mouseImgXBefore * newZoom;
-			const double mouseScreenYAfter = newImgY + mouseImgYBefore * newZoom;
-
-			setPanning(panX + centerX - mouseScreenXAfter, panY + centerY - mouseScreenYAfter);
-		}
+		ZoomAround(ZoomScale::Step(getZoom(), steps), width * 0.5, height * 0.5);
 	}
 
 	void adjustPan(int dx, int dy) {
@@ -3095,11 +3078,7 @@ public:
 	void fitToWindow() {
 		IviewTrace("action: fit");
 		setPanning(0.0, 0.0);
-		if (HasImage()) {
-			const double minRatio = std::min(static_cast<double>(width) / imageWidth_,
-											 static_cast<double>(height) / imageHeight_);
-			scroll = static_cast<int>(minRatio * 100.0 - 100);
-		}
+		if (HasImage()) zoom_ = ZoomScale::Fit(imageWidth_, imageHeight_, width, height);
 	}
 
 	static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {

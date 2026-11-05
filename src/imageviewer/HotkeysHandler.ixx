@@ -33,11 +33,11 @@ public:
             switch (key) {
                 case GLFW_KEY_KP_ADD: // Numpad +
                 case GLFW_KEY_EQUAL: // Plus key
-                    if (zoomCallbackMember) zoomCallbackMember(10); // Zoom in
+                    if (zoomCallbackMember) zoomCallbackMember(1); // Zoom in one scale step
                     break;
                 case GLFW_KEY_KP_SUBTRACT: // Numpad -
                 case GLFW_KEY_MINUS: // Minus key
-                    if (zoomCallbackMember) zoomCallbackMember(-10); // Zoom out
+                    if (zoomCallbackMember) zoomCallbackMember(-1); // Zoom out one scale step
                     break;
                 case GLFW_KEY_UP: // Arrow up
                     if (panCallbackMember) panCallbackMember(0, 10); // Pan up
