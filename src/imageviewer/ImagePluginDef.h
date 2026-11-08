@@ -1,10 +1,35 @@
 #pragma once
+
+/*
+ * This header is consumed by both C++ (the viewer, the loaders) and C (embedders
+ * and the ABI tests).  The two standard headers that differ are selected here
+ * rather than assuming C++: the plugin ABI is a C ABI, and a header that only
+ * compiles as C++ cannot be handed to a C caller.
+ */
+#ifdef __cplusplus
 #include <cstdint>
 #include <cstddef>
+#else
+#include <stdint.h>
+#include <stddef.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/*
+ * Forward typedefs, so a C caller can name every type this ABI exposes.
+ *
+ * C has no implicit struct-to-typedef promotion: without these, a C caller can
+ * write `struct ImagePluginData*` but not `ImagePluginData*`, and the exported
+ * function typedefs below are unusable.  The definitions follow; the layouts
+ * are unchanged and the tags are the same ones the definitions use.
+ */
+typedef struct IWComponentDef     IWComponentDef;
+typedef struct IWImageFormat      IWImageFormat;
+typedef struct ImagePluginData    ImagePluginData;
+typedef struct ImagePluginResult  ImagePluginResult;
 
 /* Export macro for cross-platform symbol visibility */
 #ifndef IMAGEPLUGIN_API
@@ -68,12 +93,12 @@ enum {
 };
 
 /* ── Per-component layout descriptor ──────────────────────────────────────── */
-typedef struct IWComponentDef {
+struct IWComponentDef {
     IWComponentSemantic semantic;       /* what this component represents        */
     IWComponentClass    componentClass; /* how the stored bits are interpreted   */
     uint16_t            bitOffset;      /* bit offset from the start of a pixel (interleaved only) */
     uint16_t            bitWidth;       /* number of bits occupied               */
-} IWComponentDef;
+};
 
 /* Maximum number of components per pixel supported by the ABI */
 #define IW_MAX_COMPONENTS 8
@@ -128,12 +153,12 @@ enum {
  *   storageLayout  = IW_STORAGE_PLANAR
  *   components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 16 }
  */
-typedef struct IWImageFormat {
+struct IWImageFormat {
     uint16_t        componentCount;                 /* number of active components (<= IW_MAX_COMPONENTS) */
     uint16_t        bitsPerPixel;                   /* bits per pixel (interleaved) / per sample (planar) */
     IWStorageLayout storageLayout;                  /* how components are arranged in memory              */
     IWComponentDef  components[IW_MAX_COMPONENTS];  /* per-component descriptors                          */
-} IWImageFormat;
+};
 
 /*
  * Data block returned by a loader plugin.
@@ -202,6 +227,37 @@ typedef ImagePluginResult (*LoadImagePreviewFromFileFunc)(
     uint32_t maxDimension,
     int* fullWidth,
     int* fullHeight);
+
+/*
+ * OPTIONAL export: "LoadImageFromMemory".
+ *
+ * Decodes an image that is already in memory, for hosts that read assets
+ * from a container rather than a filesystem.  Same ImagePluginResult /
+ * ImagePluginData contract as LoadImageFromFile, released with the same
+ * FreeImageData; only the source differs.
+ *
+ *   data  must remain valid for the duration of the call.  The loader does
+ *         not retain it and does not take ownership; the returned pixels
+ *         are the loader's own allocation.
+ *   size  bytes available at data.  Zero is IMAGE_PLUGIN_FILE_ERROR.
+ *
+ * Absent on plugins that have not implemented it.  The host resolves it
+ * with dlsym/GetProcAddress and treats absence as "this loader is
+ * file-only", not as a load error.
+ */
+typedef ImagePluginResult (*LoadImageFromMemoryFunc)(const uint8_t* data, size_t size);
+
+/*
+ * OPTIONAL export: "LoadImagePreviewFromMemory".
+ *
+ * The memory counterpart of LoadImagePreviewFromFile, with the same preview
+ * contract (maxDimension, best effort, fullWidth/fullHeight may be 0).  Only
+ * the source differs.  A loader may implement the memory decode without the
+ * memory preview; the two are resolved independently.
+ */
+typedef ImagePluginResult (*LoadImagePreviewFromMemoryFunc)(
+    const uint8_t* data, size_t size, uint32_t maxDimension,
+    int* outWidth, int* outHeight);
 
 #ifdef __cplusplus
 }
