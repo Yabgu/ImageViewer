@@ -23,8 +23,14 @@
         "tiff"
       ]
     },
+    "plugin-gif": {
+      "description": "GIF image loader plugin (giflib)",
+      "dependencies": [
+        "giflib"
+      ]
+    },
     "plugin-stb": {
-      "description": "STB image loader plugin (BMP, TGA, GIF, HDR, PIC, PPM/PGM)",
+      "description": "STB image loader plugin (BMP, TGA, HDR, PIC, PPM/PGM)",
       "dependencies": [
         "stb"
       ]

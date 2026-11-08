@@ -36,7 +36,7 @@ if(IMAGEVIEWER_USE_VCPKG)
     # Activate the 'viewer' vcpkg feature and all per-plugin features when the GUI
     # is requested.  Without this, vcpkg will not install glad/glfw3/plugin libs.
     if(IMAGEVIEWER_BUILD_VIEWER)
-        set(_IW_FEATURES "viewer;plugin-jpeg;plugin-webp;plugin-tiff;plugin-stb;plugin-pixman")
+        set(_IW_FEATURES "viewer;plugin-jpeg;plugin-webp;plugin-tiff;plugin-gif;plugin-stb;plugin-pixman")
         if(NOT DEFINED VCPKG_MANIFEST_FEATURES)
             set(VCPKG_MANIFEST_FEATURES "${_IW_FEATURES}" CACHE STRING "Vcpkg manifest features to install")
         else()
