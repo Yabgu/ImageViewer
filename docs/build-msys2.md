@@ -304,12 +304,14 @@ Options, in order of robustness:
 ### 9.2 stb — a soft gap
 
 `find_package(Stb QUIET)` is used for the optional `ImageLoaderStb` plugin
-(BMP/TGA/GIF/HDR/PPM). MSYS2 ships **headers only** — no `StbConfig.cmake`.
+(BMP/TGA/HDR/PIC/PNM). MSYS2 ships **headers only** — no `StbConfig.cmake`.
 So `find_package(Stb)` fails and the plugin is silently skipped (the
 CMakeLists prints a `STATUS` line rather than failing).
 
 Consequence: an MSYS2 build produces a viewer **without** the stb-backed
-formats, and CI would still pass. That is exactly the class of silent
+formats, and CI would still pass. Note that GIF is no longer in that set: it
+moved to `ImageLoaderGif` (giflib), which needs `mingw-w64-clang-x86_64-giflib`
+and resolves through CMake's own `FindGIF` rather than a config package. That is exactly the class of silent
 degradation this project has been eliminating. Fix would be a small
 `FindStb.cmake` (find `stb/stb_image.h`), or `-DSTB_INCLUDE_DIR=...` plumbing.
 

@@ -13,13 +13,26 @@ module;
 
 /*
  * One format, one decoder: this plugin keeps only the formats nothing else in
- * the tree serves.  JPEG and PNG have loaders of their own, so their decoders
- * are compiled out; whatever remains here is served by stb and by nothing
- * else in the tree.
+ * the tree serves.  GIF moved to ImageLoaderGif (giflib), so its decoder comes
+ * out of this DSO and the parser a malformed file can reach shrinks with it.
+ *
+ * STBI_NO_PSD is deliberately NOT defined even though PSD is unrouted
+ * (Image::PluginPathFor has no .psd branch, and Window::IsSupportedImage does
+ * not list it).  In stb_image v2.30 the 16-bit conversion helper is guarded by
+ *
+ *     #if defined(STBI_NO_PNG) && defined(STBI_NO_PSD)   -> omit
+ *
+ * but the PNM loader's 16-bit path still calls it, so combining STBI_NO_PSD
+ * with the STBI_NO_PNG this file already sets fails to compile with
+ * "stbi__convert_format16 was not declared in this scope".  Verified with the
+ * preprocessor on the pinned header: NO_PSD alone breaks, NO_GIF alone is
+ * fine, NO_PSD compiles only once PNM is disabled too -- and PNM is routed.
+ * So PSD stays compiled until upstream's guard is fixed or stb goes away.
  */
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_JPEG
 #define STBI_NO_PNG
+#define STBI_NO_GIF
 #include <stb_image.h>
 
 export module ImageLoaderStb;

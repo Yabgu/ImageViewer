@@ -108,15 +108,26 @@ private:
 	static std::filesystem::path PluginPathFor(const std::filesystem::path& path)
 	{
 		auto extension = path.extension().string();
-		if (std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jfif", std::regex::icase)))
+		/* This table has to cover every extension Window::IsSupportedImage
+		 * accepts.  The folder scan uses that list to build the navigation set, so
+		 * an extension listed there but missing here is offered to the user and
+		 * then rejected by the fall-through throw below.  .jpe/.apng/.dib/.pnm/
+		 * .pbm were exactly that before; each is the same format as an extension
+		 * already routed (.jpg/.png/.bmp/.ppm/.pgm), so routing them costs one
+		 * alternation.  .avif/.heic/.heif/.exr are still in that position and
+		 * have no decoder at all -- see the note on IsSupportedImage. */
+		if (std::regex_match(extension, std::regex("\\.jpeg|\\.jpg|\\.jpe|\\.jfif", std::regex::icase)))
 			return PluginFileName("ImageLoaderJpeg");
-		if (std::regex_match(extension, std::regex("\\.png", std::regex::icase)))
+		if (std::regex_match(extension, std::regex("\\.png|\\.apng", std::regex::icase)))
 			return PluginFileName("ImageLoaderPng");
 		if (std::regex_match(extension, std::regex("\\.webp", std::regex::icase)))
 			return PluginFileName("ImageLoaderWebp");
 		if (std::regex_match(extension, std::regex("\\.tiff|\\.tif", std::regex::icase)))
 			return PluginFileName("ImageLoaderTiff");
-		if (std::regex_match(extension, std::regex("\\.bmp|\\.tga|\\.gif|\\.hdr|\\.pic|\\.ppm|\\.pgm", std::regex::icase)))
+		/* GIF has a decoder of its own (giflib), not a stb path. */
+		if (std::regex_match(extension, std::regex("\\.gif", std::regex::icase)))
+			return PluginFileName("ImageLoaderGif");
+		if (std::regex_match(extension, std::regex("\\.bmp|\\.dib|\\.tga|\\.hdr|\\.pic|\\.ppm|\\.pgm|\\.pnm|\\.pbm", std::regex::icase)))
 			return PluginFileName("ImageLoaderStb");
 		[[unlikely]] throw std::runtime_error("Unknown file extension");
 	}
