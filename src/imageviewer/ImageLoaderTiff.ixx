@@ -3,6 +3,7 @@ module;
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include "ImagePluginDef.h"
@@ -12,31 +13,112 @@ export module ImageLoaderTiff;
 
 static thread_local std::string lastError;
 
-export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const ImagePluginPath filePath)
+namespace {
+
+/*
+ * Where the compressed bytes come from.  Exactly one is set.
+ *
+ * libtiff is the only loader here that needs a *seekable stream* rather than a
+ * buffer, so the memory path is a TIFFClientOpen over a read/seek cursor
+ * instead of a direct pointer hand-off.
+ */
+struct Source
+{
+    const uint8_t*  span = nullptr;
+    size_t          size = 0;
+    ImagePluginPath path = nullptr;
+};
+
+/* Read cursor behind the libtiff client callbacks. */
+struct MemStream
+{
+    const uint8_t* p   = nullptr;
+    size_t         n   = 0;
+    size_t         off = 0;
+};
+
+/*
+ * Client callbacks.  Every one of them must be inside the span: libtiff asks
+ * for arbitrary offsets (it seeks to the IFD) and a callback that read past the
+ * end would be reading whatever follows the caller's buffer.  A short read or
+ * a refused seek is reported through the libtiff error path, which is where
+ * the caller's truncation check belongs.
+ */
+tmsize_t MemRead(thandle_t handle, void* buf, tmsize_t count)
+{
+    auto* s = static_cast<MemStream*>(handle);
+    if (s == nullptr || count <= 0) return 0;
+    const size_t want = static_cast<size_t>(count);
+    if (s->off >= s->n) return 0;
+    const size_t avail = s->n - s->off;
+    const size_t take  = (want < avail) ? want : avail;
+    std::memcpy(buf, s->p + s->off, take);
+    s->off += take;
+    return static_cast<tmsize_t>(take);
+}
+
+tmsize_t MemWrite(thandle_t, void*, tmsize_t) { return 0; }
+
+toff_t MemSeek(thandle_t handle, toff_t off, int whence)
+{
+    auto* s = static_cast<MemStream*>(handle);
+    if (s == nullptr) return static_cast<toff_t>(-1);
+
+    toff_t base = 0;
+    switch (whence)
+    {
+    case SEEK_SET: base = 0; break;
+    case SEEK_CUR: base = static_cast<toff_t>(s->off); break;
+    case SEEK_END: base = static_cast<toff_t>(s->n); break;
+    default: return static_cast<toff_t>(-1);
+    }
+
+    /* off is unsigned in effect; a negative request is not expressible and a
+     * seek past the end would satisfy every later read with nothing.  base is
+     * always <= n, but the subtraction is guarded so a future callback cannot
+     * turn a refused seek into a huge accepted one. */
+    if (base > static_cast<toff_t>(s->n)) return static_cast<toff_t>(-1);
+    if (off > static_cast<toff_t>(s->n) - base) return static_cast<toff_t>(-1);
+    s->off = static_cast<size_t>(base + off);
+    return static_cast<toff_t>(s->off);
+}
+
+int MemClose(thandle_t) { return 0; }
+
+toff_t MemSize(thandle_t handle)
+{
+    auto* s = static_cast<MemStream*>(handle);
+    return s ? static_cast<toff_t>(s->n) : 0;
+}
+
+/* Owns the TIFF handle so every exit path closes it exactly once, including a
+ * throw from the std::string lastError assignments. */
+struct TiffHandle
+{
+    TIFF* tif = nullptr;
+    explicit TiffHandle(TIFF* t) : tif(t) {}
+    ~TiffHandle() { if (tif) TIFFClose(tif); }
+    TiffHandle(const TiffHandle&)            = delete;
+    TiffHandle& operator=(const TiffHandle&) = delete;
+};
+
+ImagePluginResult DecodeTiff(TIFF* handle)
 {
     ImagePluginResult result = { .code = IMAGE_PLUGIN_UNKNOWN_ERROR, .data = nullptr };
     lastError.clear();
 
+    TiffHandle owned(handle);
+    TIFF* tif = owned.tif;
+
     try
     {
-#ifdef _WIN32
-        TIFF* tif = TIFFOpenW(filePath, "r");
-#else
-        TIFF* tif = TIFFOpen(filePath, "r");
-#endif
-        if (!tif)
-            throw std::runtime_error("Failed to open TIFF file");
-
         uint32_t width = 0;
         uint32_t height = 0;
         TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width);
         TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
 
         if (width == 0 || height == 0)
-        {
-            TIFFClose(tif);
             throw std::runtime_error("Invalid TIFF dimensions");
-        }
 
         // Read image metadata
         uint16_t bitsPerSample  = 8;
@@ -119,17 +201,12 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
             size_t pixelCount = static_cast<size_t>(width) * height;
             uint32_t* raster = static_cast<uint32_t*>(_TIFFmalloc(pixelCount * sizeof(uint32_t)));
             if (!raster)
-            {
-                TIFFClose(tif);
                 throw std::runtime_error("Failed to allocate raster buffer for tiled TIFF");
-            }
             if (!TIFFReadRGBAImageOriented(tif, width, height, raster, ORIENTATION_TOPLEFT, 0))
             {
                 _TIFFfree(raster);
-                TIFFClose(tif);
                 throw std::runtime_error("Tiled TIFF decode failed");
             }
-            TIFFClose(tif);
 
             constexpr int components = 4;
             size_t dataSize = pixelCount * components;
@@ -178,10 +255,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         size_t   dataSize     = packRowBytes * height;
         uint8_t* pixelData    = static_cast<uint8_t*>(std::malloc(dataSize));
         if (!pixelData)
-        {
-            TIFFClose(tif);
             throw std::runtime_error("Failed to allocate pixel buffer for TIFF scanline decode");
-        }
 
         // Temporary row buffer only needed when libtiff pads the scanline
         uint8_t* rowBuf = (tiffRowBytes > static_cast<tmsize_t>(packRowBytes))
@@ -189,7 +263,6 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         if (tiffRowBytes > static_cast<tmsize_t>(packRowBytes) && !rowBuf)
         {
             std::free(pixelData);
-            TIFFClose(tif);
             throw std::runtime_error("Failed to allocate row buffer for TIFF scanline decode");
         }
 
@@ -202,7 +275,6 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
                 {
                     std::free(rowBuf);
                     std::free(pixelData);
-                    TIFFClose(tif);
                     throw std::runtime_error("TIFF scanline read failed");
                 }
                 std::memcpy(dst, rowBuf, packRowBytes);
@@ -212,13 +284,11 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
                 if (TIFFReadScanline(tif, dst, row, 0) < 0)
                 {
                     std::free(pixelData);
-                    TIFFClose(tif);
                     throw std::runtime_error("TIFF scanline read failed");
                 }
             }
         }
         std::free(rowBuf);
-        TIFFClose(tif);
 
         ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
         if (!data)
@@ -244,7 +314,75 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
         lastError = e.what();
     }
 
-    return result;
+    return result;   /* owned closes the handle here and on every early return */
+}
+
+} // namespace
+
+/* Exceptions may not cross this boundary; see the note in ImageLoaderWebp. */
+export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const ImagePluginPath filePath)
+{
+    try
+    {
+#ifdef _WIN32
+        TIFF* tif = TIFFOpenW(filePath, "r");
+#else
+        TIFF* tif = TIFFOpen(filePath, "r");
+#endif
+        if (!tif)
+        {
+            lastError = "Failed to open TIFF file";
+            return ImagePluginResult{ IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
+        }
+        return DecodeTiff(tif);
+    }
+    catch (const std::bad_alloc&)
+    {
+        lastError = "Out of memory";
+        return ImagePluginResult{ IMAGE_PLUGIN_ALLOC_ERROR, nullptr };
+    }
+    catch (...)
+    {
+        lastError = "Unexpected failure";
+        return ImagePluginResult{ IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
+    }
+}
+
+export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromMemory(const uint8_t* data, size_t size)
+{
+    try
+    {
+        if (data == nullptr || size == 0)
+        {
+            lastError = "Empty input";
+            return ImagePluginResult{ IMAGE_PLUGIN_FILE_ERROR, nullptr };
+        }
+
+        MemStream stream{ data, size, 0 };
+        /* The name is what libtiff puts in its error messages; it must outlive
+         * the handle, so it is a literal rather than a temporary. */
+        TIFF* tif = TIFFClientOpen("memory:data", "r",
+                                   static_cast<thandle_t>(&stream),
+                                   MemRead, MemWrite,
+                                   MemSeek, MemClose, MemSize,
+                                   nullptr, nullptr);
+        if (!tif)
+        {
+            lastError = "Failed to open TIFF from memory";
+            return ImagePluginResult{ IMAGE_PLUGIN_DECODE_ERROR, nullptr };
+        }
+        return DecodeTiff(tif);
+    }
+    catch (const std::bad_alloc&)
+    {
+        lastError = "Out of memory";
+        return ImagePluginResult{ IMAGE_PLUGIN_ALLOC_ERROR, nullptr };
+    }
+    catch (...)
+    {
+        lastError = "Unexpected failure";
+        return ImagePluginResult{ IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
+    }
 }
 
 export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)

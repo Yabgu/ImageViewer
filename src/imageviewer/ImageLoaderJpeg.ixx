@@ -6,6 +6,7 @@ module;
 #include <cstdint>
 #include <algorithm>
 #include <memory>
+#include <new>
 #include <vector>
 #include <fstream>
 #include <filesystem>
@@ -31,6 +32,22 @@ struct my_error_mgr
  * still module-local and unexported, so linkage does not change. */
 namespace jpeg_detail {
 
+/*
+ * Where the compressed bytes come from.  Exactly one field is set: `span` for
+ * the memory entry points, `path` for the file ones.
+ *
+ * libjpeg is handed a memory source either way, so the difference is only
+ * whether this module has to read the file first.  The memory path copies
+ * nothing: jpeg_mem_src() takes the caller's buffer as const and reads it in
+ * place for the duration of the decode.
+ */
+struct Source
+{
+	const uint8_t*  span = nullptr;
+	size_t          size = 0;
+	ImagePluginPath path = nullptr;
+};
+
 /* Owns everything the decode allocates: the compressed file bytes first, then
  * the pixel storage, then the descriptor handed back to the caller on success.
  * libjpeg reports fatal errors by longjmp()ing out of the failing call, so this
@@ -44,7 +61,8 @@ namespace jpeg_detail {
  * DLL into libjpeg would cross a CRT boundary: in a Debug build the plugin uses
  * the debug CRT while the release libjpeg uses the release CRT, and fread() on
  * the foreign FILE* fails with FAST_FAIL_INVALID_ARG.  A memory source has no
- * such shared handle.
+ * such shared handle -- which is also why the memory entry points need no read
+ * at all, let alone a shared one.
  */
 struct OwnedImagePluginData
 {
@@ -134,7 +152,7 @@ static thread_local char lastError[256] = "";
  *
  * Both paths write the upright full-resolution dimensions into fullWidth and
  * fullHeight when those pointers are non-null. */
-static ImagePluginResult DecodeJpeg(ImagePluginPath filePath,
+static ImagePluginResult DecodeJpeg(const jpeg_detail::Source& src,
                                     bool preview,
                                     uint32_t maxDimension,
                                     int* fullWidth,
@@ -147,21 +165,49 @@ static ImagePluginResult DecodeJpeg(ImagePluginPath filePath,
 
 	/* Created before setjmp so the longjmp error path can still release it. */
 	const auto owned = std::make_unique<jpeg_detail::OwnedImagePluginData>();
-	owned->file = std::make_unique<std::vector<uint8_t>>();
 
-	if (!ReadWholeFile(filePath, *owned->file))
+	/* The compressed bytes, and who owns them.  On the memory path this is the
+	 * caller's own buffer: libjpeg reads it in place and nothing is copied. */
+	const uint8_t* jpegBytes = nullptr;
+	size_t         jpegSize  = 0;
+
+	if (src.span != nullptr)
 	{
-		snprintf(lastError, sizeof(lastError), "Failed to read file");
-		result.code = IMAGE_PLUGIN_FILE_ERROR;
-		return result;
+		/* jpeg_mem_src() takes an unsigned long, which is 32 bits on Windows.
+		 * Nothing this viewer opens is near that limit, so reject instead of
+		 * silently truncating.  The same bound the file path applies below. */
+		if (src.size == 0 || static_cast<unsigned long long>(src.size) > 0x7FFFFFFFull)
+		{
+			snprintf(lastError, sizeof(lastError), "Empty or too large input");
+			result.code = IMAGE_PLUGIN_FILE_ERROR;
+			return result;
+		}
+		jpegBytes = src.span;
+		jpegSize  = src.size;
+	}
+	else
+	{
+		owned->file = std::make_unique<std::vector<uint8_t>>();
+		if (!ReadWholeFile(src.path, *owned->file))
+		{
+			snprintf(lastError, sizeof(lastError), "Failed to read file");
+			result.code = IMAGE_PLUGIN_FILE_ERROR;
+			return result;
+		}
+		jpegBytes = owned->file->data();
+		jpegSize  = owned->file->size();
 	}
 
-	struct my_error_mgr jerr = {
-		.pub = {
-			.error_exit = my_error_exit } };
-
-	struct jpeg_decompress_struct cinfo = {
-		.err = jpeg_std_error(&jerr.pub) };
+	struct my_error_mgr jerr = {};
+	struct jpeg_decompress_struct cinfo = {};
+	cinfo.err = jpeg_std_error(&jerr.pub);
+	/* Installed AFTER jpeg_std_error(), not as a field initialiser: that
+	 * function fills every field of the error manager, including error_exit, so
+	 * an error_exit set beforehand is silently overwritten by libjpeg's default
+	 * -- which prints the message and calls exit(EXIT_FAILURE).  The symptom was
+	 * a truncated or corrupt JPEG killing the host process instead of returning
+	 * IMAGE_PLUGIN_DECODE_ERROR, with the setjmp below never taken. */
+	jerr.pub.error_exit = my_error_exit;
 
 	if (setjmp(jerr.setjmp_buffer))
 	{
@@ -172,8 +218,7 @@ static ImagePluginResult DecodeJpeg(ImagePluginPath filePath,
 	}
 
 	jpeg_create_decompress(&cinfo);
-	jpeg_mem_src(&cinfo, owned->file->data(),
-	             static_cast<unsigned long>(owned->file->size()));
+	jpeg_mem_src(&cinfo, jpegBytes, static_cast<unsigned long>(jpegSize));
 
 	/* Keep EXIF APP1 segments: libjpeg discards markers unless asked, and the
 	 * Orientation tag lives in one.  0xFFFF is the largest a marker can be. */
@@ -374,9 +419,59 @@ static ImagePluginResult DecodeJpeg(ImagePluginPath filePath,
 	return result;
 }
 
+/*
+ * Every export below is behind the same barrier: an exception escaping an
+ * extern "C" function calls std::terminate.  Inside DecodeJpeg the only
+ * thrower is std::make_unique (bad_alloc); libjpeg's own fatal path is a
+ * longjmp to the setjmp already inside DecodeJpeg, so it never reaches here.
+ * bad_alloc maps to the existing IMAGE_PLUGIN_ALLOC_ERROR.
+ */
 export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const ImagePluginPath filePath)
 {
-	return DecodeJpeg(filePath, false, 0u, nullptr, nullptr);
+	try
+	{
+		jpeg_detail::Source src;
+		src.path = filePath;
+		return DecodeJpeg(src, false, 0u, nullptr, nullptr);
+	}
+	catch (const std::bad_alloc&)
+	{
+		snprintf(lastError, sizeof(lastError), "Out of memory");
+		return ImagePluginResult{ IMAGE_PLUGIN_ALLOC_ERROR, nullptr };
+	}
+	catch (...)
+	{
+		snprintf(lastError, sizeof(lastError), "Unexpected failure");
+		return ImagePluginResult{ IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
+	}
+}
+
+export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromMemory(const uint8_t* data, size_t size)
+{
+	/* A null span is not a path and must not be treated as one: this entry
+	 * point has no filesystem fallback, so null is rejected like empty input. */
+	if (data == nullptr || size == 0)
+	{
+		snprintf(lastError, sizeof(lastError), "Empty input");
+		return ImagePluginResult{ IMAGE_PLUGIN_FILE_ERROR, nullptr };
+	}
+	try
+	{
+		jpeg_detail::Source src;
+		src.span = data;
+		src.size = size;
+		return DecodeJpeg(src, false, 0u, nullptr, nullptr);
+	}
+	catch (const std::bad_alloc&)
+	{
+		snprintf(lastError, sizeof(lastError), "Out of memory");
+		return ImagePluginResult{ IMAGE_PLUGIN_ALLOC_ERROR, nullptr };
+	}
+	catch (...)
+	{
+		snprintf(lastError, sizeof(lastError), "Unexpected failure");
+		return ImagePluginResult{ IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
+	}
 }
 
 export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImagePreviewFromFile(
@@ -385,7 +480,49 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImagePreviewFromFile(
 	int* fullWidth,
 	int* fullHeight)
 {
-	return DecodeJpeg(filePath, true, maxDimension, fullWidth, fullHeight);
+	try
+	{
+		jpeg_detail::Source src;
+		src.path = filePath;
+		return DecodeJpeg(src, true, maxDimension, fullWidth, fullHeight);
+	}
+	catch (const std::bad_alloc&)
+	{
+		snprintf(lastError, sizeof(lastError), "Out of memory");
+		return ImagePluginResult{ IMAGE_PLUGIN_ALLOC_ERROR, nullptr };
+	}
+	catch (...)
+	{
+		snprintf(lastError, sizeof(lastError), "Unexpected failure");
+		return ImagePluginResult{ IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
+	}
+}
+
+/* The DCT scale selection is source-independent, so the memory preview is the
+ * same decode with a different origin and no extra policy. */
+export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImagePreviewFromMemory(
+	const uint8_t* data, size_t size,
+	const uint32_t maxDimension,
+	int* fullWidth,
+	int* fullHeight)
+{
+	try
+	{
+		jpeg_detail::Source src;
+		src.span = data;
+		src.size = size;
+		return DecodeJpeg(src, true, maxDimension, fullWidth, fullHeight);
+	}
+	catch (const std::bad_alloc&)
+	{
+		snprintf(lastError, sizeof(lastError), "Out of memory");
+		return ImagePluginResult{ IMAGE_PLUGIN_ALLOC_ERROR, nullptr };
+	}
+	catch (...)
+	{
+		snprintf(lastError, sizeof(lastError), "Unexpected failure");
+		return ImagePluginResult{ IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
+	}
 }
 
 export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)
