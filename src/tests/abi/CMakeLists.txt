@@ -37,26 +37,35 @@
 # the report depends on DSO registration order rather than on these tests.  Leak
 # detection stays enabled and no suppression is added.
 
-set(_abi_sources main.cpp)
+# The memory-span TU compiles against whatever subset of loaders exists: each
+# of its cases is behind the same IW_<FMT>_PLUGIN_PATH define as the per-format
+# file, so a build with two loaders still links and still tests those two.
+set(_abi_sources main.cpp test_imageloader_memory.cpp)
 set(_abi_plugin_targets "")
 
-if(TARGET ImageLoaderJpeg)
-    list(APPEND _abi_sources test_imageloader_jpeg.cpp)
-    list(APPEND _abi_plugin_targets ImageLoaderJpeg)
-    set(_abi_have_jpeg TRUE)
-else()
-    message(STATUS "ABI tests: ImageLoaderJpeg not built — skipping JPEG ABI cases "
-                   "(enable IMAGEVIEWER_BUILD_VIEWER and the JPEG plugin to run them)")
-endif()
+macro(_abi_add_loader TARGET_ID SOURCE EXTRA_MESSAGE)
+    if(TARGET ${TARGET_ID})
+        list(APPEND _abi_sources ${SOURCE})
+        list(APPEND _abi_plugin_targets ${TARGET_ID})
+    else()
+        message(STATUS "ABI tests: ${TARGET_ID} not built — skipping its cases "
+                       "(${EXTRA_MESSAGE})")
+    endif()
+endmacro()
 
-if(TARGET FilterPixman)
-    list(APPEND _abi_sources test_filterpixman.cpp)
-    list(APPEND _abi_plugin_targets FilterPixman)
-    set(_abi_have_pixman TRUE)
-else()
-    message(STATUS "ABI tests: FilterPixman not built — skipping FilterPixman ABI cases "
-                   "(enable IMAGEVIEWER_BUILD_VIEWER and the pixman plugin to run them)")
-endif()
+_abi_add_loader(ImageLoaderJpeg test_imageloader_jpeg.cpp
+                "enable IMAGEVIEWER_BUILD_PLUGINS and find libjpeg-turbo")
+_abi_add_loader(ImageLoaderPng  test_imageloader_png.cpp
+                "enable IMAGEVIEWER_BUILD_PLUGINS and find libpng")
+_abi_add_loader(ImageLoaderWebp test_imageloader_webp.cpp
+                "enable IMAGEVIEWER_BUILD_PLUGINS and find libwebp")
+_abi_add_loader(ImageLoaderTiff test_imageloader_tiff.cpp
+                "enable IMAGEVIEWER_BUILD_PLUGINS and find libtiff")
+
+_abi_add_loader(ImageLoaderStb  test_imageloader_stb.cpp
+                "enable IMAGEVIEWER_BUILD_PLUGINS and find stb")
+_abi_add_loader(FilterPixman    test_filterpixman.cpp
+                "enable IMAGEVIEWER_BUILD_PLUGINS and find pixman")
 
 if(NOT _abi_plugin_targets)
     message(STATUS "ABI tests: no plugins available — skipping the ABI test target")
@@ -77,17 +86,36 @@ target_include_directories(iview_abi_tests PRIVATE
 # Paths are baked in at configure time so the tests do not depend on the
 # working directory ctest happens to use.  Each definition is only added when
 # the corresponding case file is compiled, because that file #errors without it.
-if(_abi_have_jpeg)
-    target_compile_definitions(iview_abi_tests PRIVATE
-        IW_JPEG_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderJpeg>"
-        IW_ABI_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
-    )
-endif()
+#
+# The fixture directory is unconditional: every per-format case file needs it,
+# including whichever ones exist in this build.
+target_compile_definitions(iview_abi_tests PRIVATE
+    IW_ABI_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+)
 
-if(_abi_have_pixman)
+if(TARGET ImageLoaderJpeg)
     target_compile_definitions(iview_abi_tests PRIVATE
-        IW_FILTERPIXMAN_PLUGIN_PATH="$<TARGET_FILE:FilterPixman>"
-    )
+        IW_JPEG_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderJpeg>")
+endif()
+if(TARGET ImageLoaderPng)
+    target_compile_definitions(iview_abi_tests PRIVATE
+        IW_PNG_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderPng>")
+endif()
+if(TARGET ImageLoaderWebp)
+    target_compile_definitions(iview_abi_tests PRIVATE
+        IW_WEBP_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderWebp>")
+endif()
+if(TARGET ImageLoaderTiff)
+    target_compile_definitions(iview_abi_tests PRIVATE
+        IW_TIFF_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderTiff>")
+endif()
+if(TARGET ImageLoaderStb)
+    target_compile_definitions(iview_abi_tests PRIVATE
+        IW_STB_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderStb>")
+endif()
+if(TARGET FilterPixman)
+    target_compile_definitions(iview_abi_tests PRIVATE
+        IW_FILTERPIXMAN_PLUGIN_PATH="$<TARGET_FILE:FilterPixman>")
 endif()
 
 # The plugins must exist before the test binary links (the paths above are
