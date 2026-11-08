@@ -33,6 +33,11 @@ public:
         /* Optional preview export; nullptr when the loader does not provide a
          * cheap reduced-resolution decode.  Callers must check before use. */
         LoadImagePreviewFromFileFunc previewFunc = nullptr;
+        /* Optional memory decode, for hosts that read assets out of a
+         * container instead of a filesystem.  nullptr means "this loader is
+         * file-only", which is a valid plugin, not a failure. */
+        LoadImageFromMemoryFunc       memoryFunc        = nullptr;
+        LoadImagePreviewFromMemoryFunc previewMemoryFunc = nullptr;
     };
 
     PluginManager() = default;
@@ -195,6 +200,14 @@ private:
         SetLastError(0);
         entry.previewFunc = (LoadImagePreviewFromFileFunc)GetProcAddress(
             handle, "LoadImagePreviewFromFile");
+        /* Optional, and independently optional from the file exports: a
+         * loader may decode a span without offering a preview. */
+        SetLastError(0);
+        entry.memoryFunc = (LoadImageFromMemoryFunc)GetProcAddress(
+            handle, "LoadImageFromMemory");
+        SetLastError(0);
+        entry.previewMemoryFunc = (LoadImagePreviewFromMemoryFunc)GetProcAddress(
+            handle, "LoadImagePreviewFromMemory");
 #else
         dlerror();
         entry.loadFunc = (LoadImageFromFileFunc)dlsym(handle, "LoadImageFromFile");
@@ -218,6 +231,15 @@ private:
         dlerror();
         entry.previewFunc = (LoadImagePreviewFromFileFunc)dlsym(
             handle, "LoadImagePreviewFromFile");
+        (void)dlerror();
+        /* Optional, and independently optional from the file exports: a
+         * loader may decode a span without offering a preview. */
+        dlerror();
+        entry.memoryFunc = (LoadImageFromMemoryFunc)dlsym(handle, "LoadImageFromMemory");
+        (void)dlerror();
+        dlerror();
+        entry.previewMemoryFunc = (LoadImagePreviewFromMemoryFunc)dlsym(
+            handle, "LoadImagePreviewFromMemory");
         (void)dlerror();
 #endif
         return true;
