@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "plugin_abi.hpp"
 
@@ -410,5 +411,50 @@ TEST_SUITE("JPEG loader ABI: preview edge cases")
         CHECK(v <= kMidGrey + kTolerance);
 
         plugin.free(r.data);
+    }
+}
+
+TEST_SUITE("JPEG loader ABI: preview from memory")
+{
+    TEST_CASE("The optional preview-from-memory export is present")
+    {
+        CHECK(Plugin().hasPreviewMemory());
+    }
+
+    TEST_CASE("A memory preview matches the file preview byte for byte")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+        const std::filesystem::path fixture = Fixture("orient6_3comp.jpg");
+        const std::vector<uint8_t> bytes = iwabi::ReadFileBytes(fixture);
+        REQUIRE(!bytes.empty());
+
+        int fileWidth = 0, fileHeight = 0;
+        int memWidth = 0, memHeight = 0;
+
+        ImagePluginResult fromFile = plugin.preview(fixture, 4u, &fileWidth, &fileHeight);
+        ImagePluginResult fromMemory = plugin.previewMemory(bytes.data(), bytes.size(), 4u,
+                                                            &memWidth, &memHeight);
+        REQUIRE(fromFile.code   == IMAGE_PLUGIN_OK);
+        REQUIRE(fromMemory.code == IMAGE_PLUGIN_OK);
+        REQUIRE(fromFile.data   != nullptr);
+        REQUIRE(fromMemory.data != nullptr);
+
+        CHECK(memWidth  == fileWidth);
+        CHECK(memHeight == fileHeight);
+
+        const std::string difference = iwabi::DecodeDifference(*fromFile.data, *fromMemory.data);
+        INFO("difference: " << difference);
+        CHECK(difference.empty());
+
+        /* The preview contract must survive the source change too: this fixture
+         * is stored 16x8 with EXIF Orientation 6, so an upright preview is 2x4
+         * and the full image is reported as 8x16. */
+        CHECK(fileWidth  == 8);
+        CHECK(fileHeight == 16);
+        CHECK(fromMemory.data->width  == 2);
+        CHECK(fromMemory.data->height == 4);
+
+        plugin.free(fromFile.data);
+        plugin.free(fromMemory.data);
     }
 }

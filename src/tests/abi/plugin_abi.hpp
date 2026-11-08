@@ -15,10 +15,14 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ImagePluginDef.h"
 #include "FilterPluginDef.h"
@@ -204,9 +208,23 @@ public:
         /* Optional: only the JPEG loader currently decodes a cheap preview. */
         preview_ = reinterpret_cast<LoadImagePreviewFromFileFunc>(
             lib_.trySymbol("LoadImagePreviewFromFile"));
+        /* Optional, resolved the same way PluginManager resolves it. */
+        memory_ = reinterpret_cast<LoadImageFromMemoryFunc>(
+            lib_.trySymbol("LoadImageFromMemory"));
+        previewMemory_ = reinterpret_cast<LoadImagePreviewFromMemoryFunc>(
+            lib_.trySymbol("LoadImagePreviewFromMemory"));
     }
 
     bool hasPreview() const noexcept { return preview_ != nullptr; }
+
+    /* True when the loader exports LoadImageFromMemory.  A loader without it is
+     * still a valid plugin -- it is file-only -- so callers check this rather
+     * than assuming the symbol exists. */
+    bool hasMemory() const noexcept { return memory_ != nullptr; }
+
+    /* True when the loader exports LoadImagePreviewFromMemory.  Independent of
+     * hasPreview(): a loader may decode a span without offering a preview. */
+    bool hasPreviewMemory() const noexcept { return previewMemory_ != nullptr; }
 
     ImagePluginResult preview(const std::filesystem::path& image,
                               uint32_t maxDimension,
@@ -231,6 +249,24 @@ public:
 #endif
     }
 
+    /* Decode a span through LoadImageFromMemory.  Throws when the plugin does
+     * not export it: that is a test bug, not a runtime condition. */
+    ImagePluginResult loadMemory(const uint8_t* data, size_t size) const
+    {
+        if (!memory_)
+            throw std::runtime_error("plugin has no LoadImageFromMemory export");
+        return memory_(data, size);
+    }
+
+    ImagePluginResult previewMemory(const uint8_t* data, size_t size,
+                                    uint32_t maxDimension,
+                                    int* fullWidth, int* fullHeight) const
+    {
+        if (!previewMemory_)
+            throw std::runtime_error("plugin has no LoadImagePreviewFromMemory export");
+        return previewMemory_(data, size, maxDimension, fullWidth, fullHeight);
+    }
+
     void free(ImagePluginData* data) const
     {
         if (data) free_(data);
@@ -250,7 +286,66 @@ private:
     FreeImageDataFunc            free_  = nullptr;
     ImagePluginGetLastErrorFunc  error_ = nullptr;
     LoadImagePreviewFromFileFunc preview_ = nullptr;
+    LoadImageFromMemoryFunc      memory_        = nullptr;
+    LoadImagePreviewFromMemoryFunc previewMemory_ = nullptr;
 };
+
+// ─── Fixture and comparison helpers ──────────────────────────────────────────
+
+/* Whole-file read, for driving LoadImageFromMemory with the same bytes the
+ * file path sees.  This is what makes "file decode == memory decode" a real
+ * assertion rather than a claim. */
+inline std::vector<uint8_t> ReadFileBytes(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        throw std::runtime_error("cannot read fixture: " + path.string());
+    return std::vector<uint8_t>(std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>());
+}
+
+/*
+ * Compare two decodes of the same bytes.  Returns an empty string when they
+ * agree on geometry, colour space, the whole IWImageFormat descriptor and
+ * every pixel byte, otherwise a human-readable reason.
+ *
+ * The point of comparing the *descriptor* as bytes is that a rename, a
+ * reordered field or a changed unused slot shows up here; comparing only
+ * width/height would let a mislabelled channel order through.
+ */
+inline std::string DecodeDifference(const ImagePluginData& a, const ImagePluginData& b)
+{
+    if (a.width  != b.width)  return "width differs";
+    if (a.height != b.height) return "height differs";
+    if (a.stride != b.stride) return "stride differs";
+    if (a.size   != b.size)   return "size differs";
+    if (a.colorSpace != b.colorSpace) return "colorSpace differs";
+    if (std::memcmp(&a.format, &b.format, sizeof(IWImageFormat)) != 0)
+        return "IWImageFormat differs";
+    if (a.data == nullptr || b.data == nullptr) return "null pixel buffer";
+    if (std::memcmp(a.data, b.data, a.size) != 0) return "pixel bytes differ";
+    return {};
+}
+
+/* One component of one pixel, honouring the descriptor's own bit offset, so
+ * it works for GRAY-at-0 and R-at-0 alike.  Interleaved layouts only. */
+inline uint32_t PixelComponent(const ImagePluginData& d, int ch, int x, int y)
+{
+    const IWComponentDef& c = d.format.components[ch];
+    const int bpp = static_cast<int>((d.format.bitsPerPixel + 7u) / 8u);
+    const uint8_t* pixel = d.data + static_cast<std::ptrdiff_t>(y) * d.stride +
+                           static_cast<std::ptrdiff_t>(x) * bpp;
+    const int byteStart = c.bitOffset / 8;
+    const int bitStart  = c.bitOffset % 8;
+    const int need      = (bitStart + c.bitWidth + 7) / 8;
+    uint64_t word = 0;
+    for (int i = 0; i < need && i < 5; ++i)
+        word |= static_cast<uint64_t>(pixel[byteStart + i]) << (i * 8);
+    word >>= bitStart;
+    const uint64_t mask = (c.bitWidth < 64u)
+                          ? ((uint64_t{1} << c.bitWidth) - 1u) : ~uint64_t{0};
+    return static_cast<uint32_t>(word & mask);
+}
 
 // ─── Descriptor consistency ─────────────────────────────────────────────────
 
