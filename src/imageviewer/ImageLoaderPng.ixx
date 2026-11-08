@@ -4,6 +4,7 @@ module;
 #include <stdexcept>
 #include <cstring>
 #include <cstdint>
+#include <new>
 #include <png.h>
 #include <filesystem>
 #include <format>
@@ -13,19 +14,80 @@ export module ImageLoaderPng;
 
 static thread_local char lastError[256] = "";
 
-export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const ImagePluginPath filePath)
+namespace {
+
+/*
+ * Where the compressed bytes come from.  Exactly one is set.
+ *
+ * Unlike JPEG and WebP this loader never buffered the file: it handed a FILE*
+ * straight to libpng.  The memory path therefore needs a read callback instead
+ * of an io pointer, and the file path keeps png_init_io so its behaviour is
+ * unchanged.
+ */
+struct Source
+{
+    const uint8_t*  span = nullptr;
+    size_t          size = 0;
+    ImagePluginPath path = nullptr;
+};
+
+/* Read cursor handed to libpng through png_set_read_fn. */
+struct ReadCtx
+{
+    const uint8_t* p   = nullptr;
+    size_t         n   = 0;
+    size_t         off = 0;
+};
+
+/*
+ * libpng read callback over a caller-owned span.
+ *
+ * A short read must fail through the png_jmpbuf path, not return fewer bytes:
+ * libpng treats a read callback that fills less than asked as an error only if
+ * the callback *reports* it.  png_error() longjmp()s to the setjmp in
+ * DecodePng, which is the error path this loader already has.
+ */
+void SpanRead(png_structp png, png_bytep out, png_size_t count)
+{
+    auto* ctx = static_cast<ReadCtx*>(png_get_io_ptr(png));
+    if (ctx == nullptr)
+    {
+        png_error(png, "PNG read callback has no context");
+        return;
+    }
+    if (ctx->off > ctx->n || count > ctx->n - ctx->off)
+    {
+        png_error(png, "Truncated PNG data");
+        return;
+    }
+    std::memcpy(out, ctx->p + ctx->off, count);
+    ctx->off += count;
+}
+
+ImagePluginResult DecodePng(const Source& src)
 {
     ImagePluginResult result = { IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
     lastError[0] = '\0';
+
     FILE* file = nullptr;
-#ifdef _WIN32
-    auto err = _wfopen_s(&file, filePath, L"rb");
-#else
-    file = std::fopen(filePath, "rb");
-#endif
-    if (file == nullptr)
+    if (src.span == nullptr)
     {
-        snprintf(lastError, sizeof(lastError), "Failed to open file");
+#ifdef _WIN32
+        auto err = _wfopen_s(&file, src.path, L"rb");
+        (void)err;
+#else
+        file = std::fopen(src.path, "rb");
+#endif
+        if (file == nullptr)
+        {
+            snprintf(lastError, sizeof(lastError), "Failed to open file");
+            result.code = IMAGE_PLUGIN_FILE_ERROR;
+            return result;
+        }
+    }
+    else if (src.size == 0)
+    {
+        snprintf(lastError, sizeof(lastError), "Empty input");
         result.code = IMAGE_PLUGIN_FILE_ERROR;
         return result;
     }
@@ -33,7 +95,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
     if (!png_ptr)
     {
-        fclose(file);
+        if (file) fclose(file);
         snprintf(lastError, sizeof(lastError), "Failed to create PNG read struct");
         result.code = IMAGE_PLUGIN_ALLOC_ERROR;
         return result;
@@ -43,7 +105,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     if (!info_ptr)
     {
         png_destroy_read_struct(&png_ptr, nullptr, nullptr);
-        fclose(file);
+        if (file) fclose(file);
         snprintf(lastError, sizeof(lastError), "Failed to create PNG info struct");
         result.code = IMAGE_PLUGIN_ALLOC_ERROR;
         return result;
@@ -51,14 +113,30 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
 
     if (setjmp(png_jmpbuf(png_ptr)))
     {
+        /* libpng has already reported through png_error/png_warning.  The
+         * read context lives on this frame, so nothing else to release. */
         png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
-        fclose(file);
+        if (file) fclose(file);
         snprintf(lastError, sizeof(lastError), "PNG decode failed");
         result.code = IMAGE_PLUGIN_DECODE_ERROR;
         return result;
     }
 
-    png_init_io(png_ptr, file);
+    /* Declared here, not inside the else branch below: libpng stores the
+     * pointer and uses it for the rest of the decode, so the cursor has to live
+     * until the read struct is destroyed.  Scoped inside the branch it would be
+     * a dangling pointer for every png_read_* call after it. */
+    ReadCtx ctx{ src.span, src.size, 0 };
+
+    if (file)
+    {
+        png_init_io(png_ptr, file);
+    }
+    else
+    {
+        png_set_read_fn(png_ptr, &ctx, SpanRead);
+    }
+
     png_read_info(png_ptr, info_ptr);
 
     int width      = png_get_image_width(png_ptr, info_ptr);
@@ -72,7 +150,7 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     if (width <= 0 || height <= 0 || bit_depth <= 0)
     {
         png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
-        fclose(file);
+        if (file) fclose(file);
         snprintf(lastError, sizeof(lastError),
                  "Invalid PNG header: width=%d height=%d bit depth=%d",
                  width, height, bit_depth);
@@ -156,19 +234,41 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     int    strideBytes = width * componentsPerPixel * bpc;
     size_t dataSize    = static_cast<size_t>(height) * strideBytes;
 
-    ImagePluginData* data = new ImagePluginData{
-        .width             = width,
-        .height            = height,
-        .stride            = strideBytes,
-        .colorSpace        = colorSpace,
-        .size              = dataSize,
-        .data              = new uint8_t[dataSize],
-        .format            = fmt
-    };
-    if (!data->data) {
+    /* Allocated before the descriptor is populated: `new` throws on failure,
+     * so a null return is not a test that can succeed, and a throw here must
+     * not leak the read struct. */
+    uint8_t* pixels = nullptr;
+    try
+    {
+        pixels = new uint8_t[dataSize];
+    }
+    catch (const std::bad_alloc&)
+    {
         png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
-        fclose(file);
-        delete data;
+        if (file) fclose(file);
+        snprintf(lastError, sizeof(lastError), "Failed to allocate image buffer");
+        result.code = IMAGE_PLUGIN_ALLOC_ERROR;
+        return result;
+    }
+
+    ImagePluginData* data = nullptr;
+    try
+    {
+        data = new ImagePluginData{
+            .width             = width,
+            .height            = height,
+            .stride            = strideBytes,
+            .colorSpace        = colorSpace,
+            .size              = dataSize,
+            .data              = pixels,
+            .format            = fmt
+        };
+    }
+    catch (const std::bad_alloc&)
+    {
+        delete[] pixels;
+        png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+        if (file) fclose(file);
         snprintf(lastError, sizeof(lastError), "Failed to allocate image buffer");
         result.code = IMAGE_PLUGIN_ALLOC_ERROR;
         return result;
@@ -181,10 +281,61 @@ export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const Imag
     }
 
     png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
-    fclose(file);
+    if (file) fclose(file);
     result.code = IMAGE_PLUGIN_OK;
     result.data = data;
     return result;
+}
+
+} // namespace
+
+/* Exceptions may not cross this boundary; see the note in ImageLoaderWebp. */
+export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromFile(const ImagePluginPath filePath)
+{
+    try
+    {
+        Source src;
+        src.path = filePath;
+        return DecodePng(src);
+    }
+    catch (const std::bad_alloc&)
+    {
+        snprintf(lastError, sizeof(lastError), "Out of memory");
+        return ImagePluginResult{ IMAGE_PLUGIN_ALLOC_ERROR, nullptr };
+    }
+    catch (...)
+    {
+        snprintf(lastError, sizeof(lastError), "Unexpected failure");
+        return ImagePluginResult{ IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
+    }
+}
+
+export extern "C" IMAGEPLUGIN_API ImagePluginResult LoadImageFromMemory(const uint8_t* data, size_t size)
+{
+    /* A null span is not a path and must not be treated as one: this entry
+     * point has no filesystem fallback, so null is rejected like empty input. */
+    if (data == nullptr || size == 0)
+    {
+        snprintf(lastError, sizeof(lastError), "Empty input");
+        return ImagePluginResult{ IMAGE_PLUGIN_FILE_ERROR, nullptr };
+    }
+    try
+    {
+        Source src;
+        src.span = data;
+        src.size = size;
+        return DecodePng(src);
+    }
+    catch (const std::bad_alloc&)
+    {
+        snprintf(lastError, sizeof(lastError), "Out of memory");
+        return ImagePluginResult{ IMAGE_PLUGIN_ALLOC_ERROR, nullptr };
+    }
+    catch (...)
+    {
+        snprintf(lastError, sizeof(lastError), "Unexpected failure");
+        return ImagePluginResult{ IMAGE_PLUGIN_UNKNOWN_ERROR, nullptr };
+    }
 }
 
 export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)
