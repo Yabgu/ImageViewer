@@ -49,6 +49,16 @@ else()
     message(STATUS "Plugin: ImageLoaderStb skipped (stb not found)")
 endif()
 
+# giflib.  CMake ships FindGIF, so no local module is needed and there is no
+# vcpkg-config-only failure mode like the one Stb has (see docs/build-msys2.md
+# §9.2).  QUIET for the same reason the others are: the plugin is optional and
+# a build without libgif simply has no GIF loader rather than failing.
+find_package(GIF QUIET)
+if(GIF_FOUND)
+    message(STATUS "Plugin: ImageLoaderGif enabled (giflib found)")
+else()
+    message(STATUS "Plugin: ImageLoaderGif skipped (giflib not found)")
+endif()
 
 if(CMAKE_CROSSCOMPILING)
     if(DEFINED VCPKG_INSTALLED_DIR AND NOT "${VCPKG_INSTALLED_DIR}" STREQUAL "")
@@ -230,6 +240,18 @@ if(TIFF_FOUND)
     )
 endif()
 
+# GIF Plugin DLL — only when giflib is available
+if(GIF_FOUND)
+    add_library(ImageLoaderGif SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderGif)
+    target_sources(ImageLoaderGif PUBLIC
+        FILE_SET gifloader TYPE CXX_MODULES
+        FILES
+            ImageLoaderGif.ixx
+    )
+    set_property(TARGET ImageLoaderGif PROPERTY CXX_STANDARD 23)
+    target_link_libraries(ImageLoaderGif PRIVATE GIF::GIF)
+endif()
 
 # Stb Plugin DLL — only when stb is available
 if(Stb_FOUND)

@@ -61,7 +61,8 @@ _abi_add_loader(ImageLoaderWebp test_imageloader_webp.cpp
                 "enable IMAGEVIEWER_BUILD_PLUGINS and find libwebp")
 _abi_add_loader(ImageLoaderTiff test_imageloader_tiff.cpp
                 "enable IMAGEVIEWER_BUILD_PLUGINS and find libtiff")
-
+_abi_add_loader(ImageLoaderGif  test_imageloader_gif.cpp
+                "enable IMAGEVIEWER_BUILD_PLUGINS and find giflib")
 _abi_add_loader(ImageLoaderStb  test_imageloader_stb.cpp
                 "enable IMAGEVIEWER_BUILD_PLUGINS and find stb")
 _abi_add_loader(FilterPixman    test_filterpixman.cpp
@@ -108,6 +109,10 @@ endif()
 if(TARGET ImageLoaderTiff)
     target_compile_definitions(iview_abi_tests PRIVATE
         IW_TIFF_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderTiff>")
+endif()
+if(TARGET ImageLoaderGif)
+    target_compile_definitions(iview_abi_tests PRIVATE
+        IW_GIF_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderGif>")
 endif()
 if(TARGET ImageLoaderStb)
     target_compile_definitions(iview_abi_tests PRIVATE

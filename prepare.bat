@@ -42,7 +42,7 @@ rem with vcpkg.json and with .github/workflows/build.yml.
 call :CALL_CMAKE %~dp0 ^
     -DCMAKE_TOOLCHAIN_FILE="%CMAKE_TOOLCHAIN_FILE%" ^
     -DIMAGEVIEWER_USE_VCPKG=ON ^
-    -DVCPKG_MANIFEST_FEATURES="viewer;plugin-jpeg;plugin-webp;plugin-tiff;plugin-stb;plugin-pixman" ^
+    -DVCPKG_MANIFEST_FEATURES="viewer;plugin-jpeg;plugin-webp;plugin-tiff;plugin-gif;plugin-stb;plugin-pixman" ^
     && call :CALL_CMAKE --build .
 popd
 goto :EOF
