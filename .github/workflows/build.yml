@@ -19,17 +19,109 @@ jobs:
         with:
           submodules: recursive
 
+      # VIEWER=OFF has always meant "no GUI toolchain here", not "no plugins":
+      # the plugins have never needed GLFW/GLAD.  Before the
+      # IMAGEVIEWER_BUILD_PLUGINS split they were gated on the viewer anyway, so
+      # this job built no plugin and ran no ABI test.  Both options are now
+      # passed explicitly so the intent is in the job rather than in a default.
       - name: Configure
         run: |
           mkdir -p build-linux-native
           cd build-linux-native
-          cmake .. -DIMAGEVIEWER_BUILD_VIEWER=OFF -G Ninja
+          cmake .. -G Ninja \
+            -DIMAGEVIEWER_BUILD_VIEWER=OFF \
+            -DIMAGEVIEWER_BUILD_PLUGINS=ON | tee configure.log
+
+      # A skipped plugin is a silent coverage hole: the ABI suite still passes,
+      # just with fewer cases.  Say which ones were configured so a missing
+      # loader is visible in the log instead of inferred from a test count.
+      - name: Report configured plugins
+        run: grep -E "^-- Plugin:" build-linux-native/configure.log || true
 
       - name: Build
         run: cmake --build build-linux-native -j$(nproc)
 
       - name: Run tests
         run: ctest --test-dir build-linux-native --output-on-failure
+
+      # The ABI suite is the only thing that proves the plugin C ABI works, and
+      # it is the only consumer of the plugin DSOs as artefacts.  Run it on its
+      # own so a failure there is named rather than buried in the aggregate.
+      - name: Run plugin ABI tests
+        run: ctest --test-dir build-linux-native -R iview_abi_tests --output-on-failure
+
+  # A guaranteed-plugin-coverage job.
+  #
+  # build-linux-native above runs on a self-hosted runner whose library set is
+  # whatever that image carries, and every format dependency there is optional
+  # (find_package(... QUIET)), so a loader can be skipped without failing
+  # anything.  This job installs the format libraries itself, so the ABI suite
+  # is known to exercise JPEG, PNG, WebP, TIFF and the filter on Linux.
+  #
+  # stb is the exception: there is no cmake/FindStb.cmake in this tree and the
+  # distro ships stb headers without a CMake config, so find_package(Stb) finds
+  # nothing here.  stb coverage comes from the vcpkg job
+  # (build-windows-msvc, plugin-stb), which is reported by the same suite.
+  build-linux-headless-plugins:
+    name: Build (Linux / headless plugins + ABI tests)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build cmake \
+            libjpeg-dev libpng-dev libwebp-dev libtiff-dev \
+            libpixman-1-dev doctest-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-headless -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DIMAGEVIEWER_BUILD_VIEWER=OFF \
+            -DIMAGEVIEWER_BUILD_PLUGINS=ON | tee configure.log
+
+      - name: Report configured plugins
+        run: |
+          grep -E "^-- Plugin:" configure.log || true
+          # Every non-stb loader plus the filter must be present here; the job
+          # installs them, so a skip means the dependency or the find call is
+          # wrong.  stb is documented above as coming from the vcpkg job.
+          for plugin in ImageLoaderJpeg ImageLoaderPng ImageLoaderWebp ImageLoaderTiff FilterPixman; do
+            if ! grep -q "Plugin: ${plugin} enabled" configure.log; then
+              echo "::error::${plugin} was not configured in the headless build"
+              exit 1
+            fi
+          done
+
+      - name: Build
+        run: cmake --build build-headless -j$(nproc)
+
+      # No GLFW, GLAD or imgui on this machine at all: if a plugin has grown a
+      # GUI dependency, the build above fails rather than this check.
+      - name: Assert no plugin links a GUI stack
+        run: |
+          for so in build-headless/src/imageviewer/lib*.so; do
+            if readelf -d "$so" | grep -qE "NEEDED.*(glfw|libGL\.so|libglad)"; then
+              echo "::error::$so links a GUI library"
+              readelf -d "$so" | grep NEEDED
+              exit 1
+            fi
+          done
+          echo "no plugin links GLFW/GLAD/libGL"
+
+      - name: Run plugin ABI tests
+        run: ctest --test-dir build-headless -R iview_abi_tests --output-on-failure
+
+      - name: Run the rest of the suite
+        run: ctest --test-dir build-headless --output-on-failure
 
   # Windows build with the *real* MSYS2 toolchain, run through LinSYS2
   # (https://github.com/wszqkzqk/LinSYS2: MSYS2 packages executed under Wine).

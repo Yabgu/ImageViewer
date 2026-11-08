@@ -15,19 +15,15 @@
 # it via target_compile_options()/target_link_libraries() rather than to
 # CMAKE_CXX_FLAGS, and apply identical flags to every module importer.
 
-if(NOT IMAGEVIEWER_BUILD_VIEWER)
-    message(STATUS "IMAGEVIEWER_BUILD_VIEWER=OFF — skipping GUI viewer build")
-    return()
-endif()
+# ── Image-loader and filter plugins ─────────────────────────────────────────
+#
+# The loaders and the filter need their own format libraries and nothing
+# else.  They do NOT need GLFW, GLAD or imgui, so they are gated on
+# IMAGEVIEWER_BUILD_PLUGINS rather than on the GUI: a machine with no
+# display stack can still build and test every plugin, which is what makes
+# the plugin ABI testable in CI.
 
-if(IMAGEVIEWER_USE_VCPKG)
-    find_package(glfw3 CONFIG REQUIRED)
-    set(_GLFW_TARGET glfw)
-else()
-    list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-    find_package(GLFW3 REQUIRED)
-    set(_GLFW_TARGET glfw3::glfw3)
-endif()
+find_package(PNG REQUIRED)
 
 # ── Per-plugin optional dependencies (QUIET — skip plugin if not found) ────────
 
@@ -52,6 +48,7 @@ if(Stb_FOUND)
 else()
     message(STATUS "Plugin: ImageLoaderStb skipped (stb not found)")
 endif()
+
 
 if(CMAKE_CROSSCOMPILING)
     if(DEFINED VCPKG_INSTALLED_DIR AND NOT "${VCPKG_INSTALLED_DIR}" STREQUAL "")
@@ -146,6 +143,152 @@ else()
     message(STATUS "Plugin: FilterPixman skipped (pixman not found)")
 endif()
 
+# ── Plugin host ─────────────────────────────────────────────────────────────
+#
+# PluginManager owns dlopen/LoadLibrary and the cached handle table.  It is
+# a target of its own so that a headless consumer can import it without
+# inheriting the GLFW/GLAD/imgui requirements the imageviewer archive
+# carries into anything that links it.
+
+add_library(iw_plugin_host STATIC)
+
+target_sources(iw_plugin_host PUBLIC
+    FILE_SET plugin_host TYPE CXX_MODULES
+    FILES
+        PluginManager.ixx
+)
+
+target_include_directories(iw_plugin_host PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+set_property(TARGET iw_plugin_host PROPERTY CXX_STANDARD 23)
+
+# ── Plugin DSOs ─────────────────────────────────────────────────────────────
+set(_PLUGIN_TARGETS "")
+if(IMAGEVIEWER_BUILD_PLUGINS)
+
+# JPEG Plugin DLL — only when libjpeg-turbo is available
+if(IMAGEVIEWER_JPEG_TARGET)
+    add_library(ImageLoaderJpeg SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderJpeg)
+    target_sources(ImageLoaderJpeg PUBLIC
+        FILE_SET jpegloader TYPE CXX_MODULES
+        FILES
+            ImageLoaderJpeg.ixx
+    )
+    set_property(TARGET ImageLoaderJpeg PROPERTY CXX_STANDARD 23)
+    target_link_libraries(ImageLoaderJpeg PRIVATE
+        ${IMAGEVIEWER_JPEG_TARGET}
+    )
+endif()
+
+# PNG Plugin DLL — always built (libpng is a default vcpkg dep)
+add_library(ImageLoaderPng SHARED)
+list(APPEND _PLUGIN_TARGETS ImageLoaderPng)
+target_sources(ImageLoaderPng PUBLIC
+    FILE_SET pngloader TYPE CXX_MODULES
+    FILES
+        ImageLoaderPng.ixx
+)
+set_property(TARGET ImageLoaderPng PROPERTY CXX_STANDARD 23)
+target_include_directories(ImageLoaderPng PRIVATE
+    ${PNG_INCLUDE_DIRS}
+)
+target_link_libraries(ImageLoaderPng PRIVATE
+    PNG::PNG
+)
+
+# WebP Plugin DLL — only when libwebp is available
+if(WebP_FOUND)
+    add_library(ImageLoaderWebp SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderWebp)
+    target_sources(ImageLoaderWebp PUBLIC
+        FILE_SET webploader TYPE CXX_MODULES
+        FILES
+            ImageLoaderWebp.ixx
+    )
+    set_property(TARGET ImageLoaderWebp PROPERTY CXX_STANDARD 23)
+    target_link_libraries(ImageLoaderWebp PRIVATE
+        WebP::webp
+        WebP::webpdecoder
+    )
+endif()
+
+# TIFF Plugin DLL — only when libtiff is available
+if(TIFF_FOUND)
+    add_library(ImageLoaderTiff SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderTiff)
+    target_sources(ImageLoaderTiff PUBLIC
+        FILE_SET tiffloader TYPE CXX_MODULES
+        FILES
+            ImageLoaderTiff.ixx
+    )
+    set_property(TARGET ImageLoaderTiff PROPERTY CXX_STANDARD 23)
+    target_link_libraries(ImageLoaderTiff PRIVATE
+        TIFF::TIFF
+    )
+endif()
+
+
+# Stb Plugin DLL — only when stb is available
+if(Stb_FOUND)
+    add_library(ImageLoaderStb SHARED)
+    list(APPEND _PLUGIN_TARGETS ImageLoaderStb)
+    target_sources(ImageLoaderStb PUBLIC
+        FILE_SET stbloader TYPE CXX_MODULES
+        FILES
+            ImageLoaderStb.ixx
+    )
+    set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
+    target_include_directories(ImageLoaderStb PRIVATE ${Stb_INCLUDE_DIR})
+endif()
+
+# FilterPixman Plugin DLL — only when pixman is available
+if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
+    add_library(FilterPixman SHARED)
+    list(APPEND _PLUGIN_TARGETS FilterPixman)
+    target_sources(FilterPixman PUBLIC
+        FILE_SET filterpixman TYPE CXX_MODULES
+        FILES
+            FilterPluginPixman.ixx
+    )
+    set_property(TARGET FilterPixman PROPERTY CXX_STANDARD 23)
+    target_include_directories(FilterPixman PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET})
+
+endif()
+
+# Packaging path for the plugins: `cmake --install` collects them next to
+# iview.exe.  Installed here rather than with the viewer so a headless
+# build installs them too.
+if(_PLUGIN_TARGETS)
+    install(TARGETS ${_PLUGIN_TARGETS} RUNTIME DESTINATION .)
+endif()
+
+else()
+    message(STATUS "IMAGEVIEWER_BUILD_PLUGINS=OFF — skipping image-loader and filter plugins")
+endif()
+
+# ── GUI viewer ──────────────────────────────────────────────────────────────
+# Everything below needs GLFW, GLAD and imgui.
+
+if(NOT IMAGEVIEWER_BUILD_VIEWER)
+    message(STATUS "IMAGEVIEWER_BUILD_VIEWER=OFF — skipping GUI viewer build")
+    return()
+endif()
+
+if(IMAGEVIEWER_USE_VCPKG)
+    find_package(glfw3 CONFIG REQUIRED)
+    set(_GLFW_TARGET glfw)
+else()
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+    find_package(GLFW3 REQUIRED)
+    set(_GLFW_TARGET glfw3::glfw3)
+endif()
+
 # ── GL loader (glad) ────────────────────────────────────────────────────────
 # Exactly one GL loader in the process: glad.  ImGui's OpenGL3 backend is built
 # with IMGUI_IMPL_OPENGL_LOADER_CUSTOM and force-includes glad/glad.h, so it
@@ -198,7 +341,6 @@ else()
     add_executable(iview)
 endif()
 
-
 add_library(imageviewer)
 
 target_sources(imageviewer PUBLIC
@@ -207,9 +349,9 @@ target_sources(imageviewer PUBLIC
         Window.ixx
         Image.ixx
         HotkeysHandler.ixx
-        PluginManager.ixx
         FilterPlugin.ixx
 )
+
 
 option(IMAGEVIEWER_GENERATE_ICON
     "Generate the Windows .ico from assets/icon/iview.svg at build time (needs Python 3 and rsvg-convert)"
@@ -345,17 +487,17 @@ else()
     )
 endif()
 
-
 set_property(TARGET imageviewer PROPERTY CXX_STANDARD 23)
 set_property(TARGET iview PROPERTY CXX_STANDARD 23)
-
-find_package(PNG REQUIRED)
 
 target_link_libraries(imageviewer PRIVATE
     ${_GLFW_TARGET}
     ${_GLAD_TARGET}
     imgui
 )
+
+# PluginManager lives in its own archive; the viewer imports it.
+target_link_libraries(imageviewer PRIVATE iw_plugin_host)
 
 target_link_libraries(iview PRIVATE
     ${_GLFW_TARGET}
@@ -413,97 +555,6 @@ if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
     endif()
 endif()
 
-# JPEG Plugin DLL — only when libjpeg-turbo is available
-if(IMAGEVIEWER_JPEG_TARGET)
-    add_library(ImageLoaderJpeg SHARED)
-    list(APPEND _PLUGIN_TARGETS ImageLoaderJpeg)
-    target_sources(ImageLoaderJpeg PUBLIC
-        FILE_SET jpegloader TYPE CXX_MODULES
-        FILES
-            ImageLoaderJpeg.ixx
-    )
-    set_property(TARGET ImageLoaderJpeg PROPERTY CXX_STANDARD 23)
-    target_link_libraries(ImageLoaderJpeg PRIVATE
-        ${IMAGEVIEWER_JPEG_TARGET}
-    )
-endif()
-
-# PNG Plugin DLL — always built (libpng is a default vcpkg dep)
-add_library(ImageLoaderPng SHARED)
-list(APPEND _PLUGIN_TARGETS ImageLoaderPng)
-target_sources(ImageLoaderPng PUBLIC
-    FILE_SET pngloader TYPE CXX_MODULES
-    FILES
-        ImageLoaderPng.ixx
-)
-set_property(TARGET ImageLoaderPng PROPERTY CXX_STANDARD 23)
-target_include_directories(ImageLoaderPng PRIVATE
-    ${PNG_INCLUDE_DIRS}
-)
-target_link_libraries(ImageLoaderPng PRIVATE
-    PNG::PNG
-)
-
-# WebP Plugin DLL — only when libwebp is available
-if(WebP_FOUND)
-    add_library(ImageLoaderWebp SHARED)
-    list(APPEND _PLUGIN_TARGETS ImageLoaderWebp)
-    target_sources(ImageLoaderWebp PUBLIC
-        FILE_SET webploader TYPE CXX_MODULES
-        FILES
-            ImageLoaderWebp.ixx
-    )
-    set_property(TARGET ImageLoaderWebp PROPERTY CXX_STANDARD 23)
-    target_link_libraries(ImageLoaderWebp PRIVATE
-        WebP::webp
-        WebP::webpdecoder
-    )
-endif()
-
-# TIFF Plugin DLL — only when libtiff is available
-if(TIFF_FOUND)
-    add_library(ImageLoaderTiff SHARED)
-    list(APPEND _PLUGIN_TARGETS ImageLoaderTiff)
-    target_sources(ImageLoaderTiff PUBLIC
-        FILE_SET tiffloader TYPE CXX_MODULES
-        FILES
-            ImageLoaderTiff.ixx
-    )
-    set_property(TARGET ImageLoaderTiff PROPERTY CXX_STANDARD 23)
-    target_link_libraries(ImageLoaderTiff PRIVATE
-        TIFF::TIFF
-    )
-endif()
-
-# Stb Plugin DLL — only when stb is available
-if(Stb_FOUND)
-    add_library(ImageLoaderStb SHARED)
-    list(APPEND _PLUGIN_TARGETS ImageLoaderStb)
-    target_sources(ImageLoaderStb PUBLIC
-        FILE_SET stbloader TYPE CXX_MODULES
-        FILES
-            ImageLoaderStb.ixx
-    )
-    set_property(TARGET ImageLoaderStb PROPERTY CXX_STANDARD 23)
-    target_include_directories(ImageLoaderStb PRIVATE ${Stb_INCLUDE_DIR})
-endif()
-
-# FilterPixman Plugin DLL — only when pixman is available
-if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
-    add_library(FilterPixman SHARED)
-    list(APPEND _PLUGIN_TARGETS FilterPixman)
-    target_sources(FilterPixman PUBLIC
-        FILE_SET filterpixman TYPE CXX_MODULES
-        FILES
-            FilterPluginPixman.ixx
-    )
-    set_property(TARGET FilterPixman PROPERTY CXX_STANDARD 23)
-    target_include_directories(FilterPixman PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-    )
-    target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET})
-
-endif()
 # ── Ship the plugins with the viewer ────────────────────────────────────────
 # Nothing in the target graph used to say that iview needs the plugins, so
 # building only the iview target skipped them entirely and left a folder with no
@@ -518,7 +569,7 @@ endif()
 # broke the LinSYS2 job's link step for no benefit.  `cmake --install` still
 # collects both via the install() rules below, and ci/package-msys2.sh packages
 # this same directory.
-if(_PLUGIN_TARGETS)
+if(TARGET iview AND _PLUGIN_TARGETS)
     add_dependencies(iview ${_PLUGIN_TARGETS})
     message(STATUS "Plugins shipped with iview: ${_PLUGIN_TARGETS}")
 endif()
@@ -526,6 +577,3 @@ endif()
 # Packaging path: `cmake --install` produces a folder containing iview.exe and
 # every plugin (the runtime DLLs beside them come from vcpkg's applocal step).
 install(TARGETS iview RUNTIME DESTINATION .)
-if(_PLUGIN_TARGETS)
-    install(TARGETS ${_PLUGIN_TARGETS} RUNTIME DESTINATION .)
-endif()

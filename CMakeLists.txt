@@ -13,11 +13,22 @@ option(IMAGEVIEWER_USE_VCPKG
     "Use vcpkg for dependency management instead of system libraries"
     OFF)
 
-# Build the GUI viewer and its image-loader plugins.
-# Set IMAGEVIEWER_BUILD_VIEWER=OFF to compile only the format library and tests
-# (e.g. for native Linux CI that lacks GLFW/GLAD and X11 headers).
+# Build the GUI viewer.
+# Set IMAGEVIEWER_BUILD_VIEWER=OFF to compile only the format library, the
+# plugins and the tests (e.g. on a machine with no GLFW/GLAD/X11).
 option(IMAGEVIEWER_BUILD_VIEWER
-    "Build the ImageViewer GUI application and image-loader plugins (requires GLFW, GLAD)"
+    "Build the ImageViewer GUI application (requires GLFW, GLAD)"
+    ON)
+
+# Build the image-loader and filter plugins.
+#
+# Independent of IMAGEVIEWER_BUILD_VIEWER: the plugins need their own format
+# libraries (libjpeg, libpng, libwebp, libtiff, stb, pixman) and no GUI
+# toolchain.  A headless build (-DIMAGEVIEWER_BUILD_VIEWER=OFF
+# -DIMAGEVIEWER_BUILD_PLUGINS=ON) produces all six DSOs and the ABI tests,
+# which is what the Linux CI job runs.
+option(IMAGEVIEWER_BUILD_PLUGINS
+    "Build the image-loader and filter plugin libraries"
     ON)
 
 # Only configure vcpkg if explicitly enabled.
