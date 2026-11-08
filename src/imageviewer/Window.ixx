@@ -1379,6 +1379,13 @@ private:
 
 	static bool IsSupportedImage(const std::filesystem::path& p)
 	{
+		/* Every entry here must also be routed by Image::PluginPathFor, or the
+		 * folder scan offers a file the decoder cannot open.  Four are known to be
+		 * in that state: .avif, .heic, .heif and .exr have no decoder in this
+		 * tree.  They are kept because an HEIF/AVIF/EXR decoder is wanted and
+		 * listing them is a visible reminder; opening one fails with "Unknown
+		 * file extension" rather than silently skipping it.  Remove an entry here
+		 * when a decoder lands, not before -- the two lists move together. */
 		static const char* const kExtensions[] = {
 			".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".apng", ".bmp", ".dib",
 			".tif", ".tiff", ".webp", ".gif", ".avif", ".heic", ".heif", ".hdr",
