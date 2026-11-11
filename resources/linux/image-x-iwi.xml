@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  IWI ("ImageViewer Image") — the container Tension writes its 2D textures,
+  font atlases and sprite sheets in.
+
+  Recognised by both a glob and the container's own magic, so an .iwi file is
+  still identified correctly when it arrives without its extension (extracted
+  from an archive, downloaded, generated into a temp name).  The magic is
+  "IWI1" at offset 0; see src/imageviewer/ImageLoaderIWI.ixx and
+  Tension's tension-core/src/render2d/iwi.rs for the full 74-byte header.
+
+  Two globs rather than <glob case-sensitive="false">: that attribute needs
+  shared-mime-info 2.3+, and this file is installed on whatever the user's
+  distro ships.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="image/x-iwi">
+    <comment>ImageViewer Texture</comment>
+    <comment xml:lang="en">ImageViewer Texture</comment>
+    <generic-icon name="image-x-generic"/>
+    <magic priority="50">
+      <match value="IWI1" type="string" offset="0"/>
+    </magic>
+    <glob pattern="*.iwi"/>
+    <glob pattern="*.IWI"/>
+  </mime-type>
+</mime-info>
