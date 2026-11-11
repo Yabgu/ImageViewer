@@ -1,8 +1,8 @@
 /*
  * test_imageloader_memory.cpp — the memory-span contract, across every loader.
  *
- * The per-format files (test_imageloader_{png,webp,tiff,stb}.cpp, and the JPEG
- * file that predates them) each test one loaders's own descriptor policy.  This
+ * The per-format files (test_imageloader_{png,webp,tiff,stb,iwi}.cpp, and the
+ * JPEG file that predates them) each test one loaders's own descriptor policy.  This
  * file tests the property that is common to all of them and that a host reading
  * assets out of a container depends on:
  *
@@ -112,6 +112,18 @@ TEST_SUITE("memory-span contract: file and memory agree")
         const std::string difference = CompareBothPaths(
             iwabi::DeployedPluginPath(std::filesystem::path{ IW_PNG_PLUGIN_PATH }),
             Fixture("rgba_4x4.png"), &f, &m);
+        INFO("file code " << static_cast<int>(f) << ", memory code " << static_cast<int>(m));
+        CHECK(difference.empty());
+    }
+#endif
+
+#if defined(IW_IWI_PLUGIN_PATH)
+    TEST_CASE("IWI: memory decode equals file decode")
+    {
+        ImagePluginResultCode f = IMAGE_PLUGIN_UNKNOWN_ERROR, m = IMAGE_PLUGIN_UNKNOWN_ERROR;
+        const std::string difference = CompareBothPaths(
+            iwabi::DeployedPluginPath(std::filesystem::path{ IW_IWI_PLUGIN_PATH }),
+            Fixture("rgba_4x4.iwi"), &f, &m);
         INFO("file code " << static_cast<int>(f) << ", memory code " << static_cast<int>(m));
         CHECK(difference.empty());
     }
