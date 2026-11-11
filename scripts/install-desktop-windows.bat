@@ -50,8 +50,9 @@ rem  file type that has no handler of its own -- which is the point.
 rem
 rem  # How iview.exe is located
 rem
-rem  %~dp0 first, for a packaged install where this script sits beside
-rem  iview.exe.  Otherwise the build trees in this repository are probed,
+rem  %~dp0 first, for a packaged install: the exe beside this script, at the
+rem  archive root (script inside scripts/), or in ..\bin.  Otherwise the build
+rem  trees in this repository are probed,
 rem  preferring a tree that has ImageLoaderIWI.dll beside the exe: iview loads
 rem  .iwi through that plugin, and registering a build without it produces an
 rem  association that opens a window with an error.  --binary PATH overrides
@@ -266,10 +267,16 @@ echo error: --binary path does not exist: "%IW_BINARY%"
 exit /b 1
 
 :rb_script_dir
-if not exist "%~dp0iview.exe" goto :rb_trees
-for %%F in ("%~dp0iview.exe") do set "IW_EXE=%%~fF"
-echo   source: next to this script
-exit /b 0
+rem A released zip can put the exe beside this script, at the archive root
+rem (script inside scripts/), or in bin/.  Probe all three before falling back
+rem to a build tree, so a packaged install does not depend on the names of
+rem the directories in this repository.
+call :probe_relative "%~dp0iview.exe" "next to this script"
+if defined IW_EXE exit /b 0
+call :probe_relative "%~dp0..\iview.exe" "at the archive root"
+if defined IW_EXE exit /b 0
+call :probe_relative "%~dp0..\bin\iview.exe" "in ..\bin"
+if defined IW_EXE exit /b 0
 
 :rb_trees
 for %%D in ("%~dp0..") do set "IW_ROOT=%%~fD"
@@ -312,6 +319,14 @@ if not exist "%~1\iview.exe" exit /b 0
 if "%2"=="1" if not exist "%~1\ImageLoaderIWI.dll" exit /b 0
 for %%F in ("%~1\iview.exe") do set "IW_EXE=%%~fF"
 set "IW_EXE_SOURCE=%~1"
+exit /b 0
+
+:probe_relative
+rem %1 = candidate exe path, %2 = where it was found, echoed to the user
+if defined IW_EXE exit /b 0
+if not exist "%~1" exit /b 0
+for %%F in ("%~1") do set "IW_EXE=%%~fF"
+echo   source: %~2
 exit /b 0
 
 :reg_write
