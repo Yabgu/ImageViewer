@@ -1389,7 +1389,7 @@ private:
 		static const char* const kExtensions[] = {
 			".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".apng", ".bmp", ".dib",
 			".tif", ".tiff", ".webp", ".gif", ".avif", ".heic", ".heif", ".hdr",
-			".exr", ".pic", ".ppm", ".pgm", ".pbm", ".pnm", ".tga"
+			".exr", ".pic", ".ppm", ".pgm", ".pbm", ".pnm", ".tga", ".iwi"
 		};
 		std::string ext = p.extension().string();
 		for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

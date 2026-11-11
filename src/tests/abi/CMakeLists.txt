@@ -57,6 +57,8 @@ _abi_add_loader(ImageLoaderJpeg test_imageloader_jpeg.cpp
                 "enable IMAGEVIEWER_BUILD_PLUGINS and find libjpeg-turbo")
 _abi_add_loader(ImageLoaderPng  test_imageloader_png.cpp
                 "enable IMAGEVIEWER_BUILD_PLUGINS and find libpng")
+_abi_add_loader(ImageLoaderIWI  test_imageloader_iwi.cpp
+                "enable IMAGEVIEWER_BUILD_PLUGINS (IWI has no external dependency)")
 _abi_add_loader(ImageLoaderWebp test_imageloader_webp.cpp
                 "enable IMAGEVIEWER_BUILD_PLUGINS and find libwebp")
 _abi_add_loader(ImageLoaderTiff test_imageloader_tiff.cpp
@@ -101,6 +103,10 @@ endif()
 if(TARGET ImageLoaderPng)
     target_compile_definitions(iview_abi_tests PRIVATE
         IW_PNG_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderPng>")
+endif()
+if(TARGET ImageLoaderIWI)
+    target_compile_definitions(iview_abi_tests PRIVATE
+        IW_IWI_PLUGIN_PATH="$<TARGET_FILE:ImageLoaderIWI>")
 endif()
 if(TARGET ImageLoaderWebp)
     target_compile_definitions(iview_abi_tests PRIVATE

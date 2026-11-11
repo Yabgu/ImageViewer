@@ -3,7 +3,7 @@
  * directory.
  *
  * These are the inputs for the per-format ABI tests (test_imageloader_png.cpp,
- * _webp.cpp, _tiff.cpp, _stb.cpp) and for test_imageloader_memory.cpp.  Their
+ * _webp.cpp, _tiff.cpp, _stb.cpp, _iwi.cpp) and for test_imageloader_memory.cpp.  Their
  * job is not to probe format edges; it is to give each loader one small,
  * known-property file whose decoded bytes can be compared between the file
  * path and the memory path, and against the numbers asserted below.
@@ -83,6 +83,76 @@ static void fill_rgba(uint8_t *rgba) /* W*H*4, top-down */
         }
     }
 }
+
+static void put_u16le(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static void put_u32le(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void put_u64le(uint8_t *p, uint64_t v)
+{
+    for (int i = 0; i < 8; ++i)
+        p[i] = (uint8_t)((v >> (8 * i)) & 0xFFu);
+}
+
+/*
+ * IWI: the 74-byte header ImageLoaderIWI parses, written field by field.
+ *
+ * `components` is 3 (RGB, opaque) or 4 (RGBA, with the alpha ramp).  Both
+ * fixtures carry exactly the same RGB samples as the other formats' fixtures,
+ * so the tests can hold every loader to the same numbers; the RGBA one adds
+ * A = 240 + x, which is what distinguishes a loader that reads the alpha
+ * component from one that synthesises 255.
+ *
+ * Semantics are written as R=1, G=2, B=3, A=4 and class as UNORM=2, matching
+ * the container Tension's writer (apps/docs/tools/lib/iwi.mjs) produces.
+ */
+static int write_iwi_components(const char *path, int components)
+{
+    uint8_t buf[74 + W * H * 4];
+    memset(buf, 0, 74);
+
+    memcpy(buf + 0, "IWI1", 4);
+    put_u32le(buf + 4, W);
+    put_u32le(buf + 8, H);
+    buf[12] = 0;                              /* sRGB */
+    put_u16le(buf + 13, (uint16_t)components);
+    put_u16le(buf + 15, (uint16_t)(components * 8));
+    buf[17] = 0;                              /* interleaved */
+
+    for (int i = 0; i < components; ++i) {
+        uint8_t *rec = buf + 18 + i * 6;
+        rec[0] = (uint8_t)(i + 1);            /* R, G, B[, A] */
+        rec[1] = 2;                           /* UNORM */
+        put_u16le(rec + 2, (uint16_t)(i * 8));
+        put_u16le(rec + 4, 8);
+    }
+
+    const size_t bytes = (size_t)W * H * (size_t)components;
+    put_u64le(buf + 66, (uint64_t)bytes);
+    if (components == 4)
+        fill_rgba(buf + 74);
+    else
+        fill_rgb(buf + 74);
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return 1;
+    const size_t written = fwrite(buf, 1, 74 + bytes, f);
+    fclose(f);
+    return written == 74 + bytes ? 0 : 1;
+}
+
+static int write_iwi_rgba(const char *path) { return write_iwi_components(path, 4); }
+static int write_iwi_rgb(const char *path)  { return write_iwi_components(path, 3); }
 
 static int write_png(const char *path)
 {
@@ -336,6 +406,8 @@ int main(int argc, char **argv)
         { "rgb_4x4.tif",             write_tiff },
         { "rgb_4x4.bmp",             write_bmp },
         { "gif_4x4.gif",             write_gif },
+        { "rgba_4x4.iwi",            write_iwi_rgba },
+        { "rgb_4x4.iwi",             write_iwi_rgb },
     };
 
     int failures = 0;

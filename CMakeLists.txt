@@ -24,9 +24,9 @@ option(IMAGEVIEWER_BUILD_VIEWER
 #
 # Independent of IMAGEVIEWER_BUILD_VIEWER: the plugins need their own format
 # libraries (libjpeg, libpng, libwebp, libtiff, stb, pixman) and no GUI
-# toolchain.  A headless build (-DIMAGEVIEWER_BUILD_VIEWER=OFF
-# -DIMAGEVIEWER_BUILD_PLUGINS=ON) produces all six DSOs and the ABI tests,
-# which is what the Linux CI job runs.
+# toolchain.  IWI is parsed inline and needs no library at all.  A headless
+# build (-DIMAGEVIEWER_BUILD_VIEWER=OFF -DIMAGEVIEWER_BUILD_PLUGINS=ON)
+# produces all seven DSOs and the ABI tests, which is what the Linux CI job runs.
 option(IMAGEVIEWER_BUILD_PLUGINS
     "Build the image-loader and filter plugin libraries"
     ON)

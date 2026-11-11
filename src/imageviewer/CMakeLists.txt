@@ -209,6 +209,18 @@ target_link_libraries(ImageLoaderPng PRIVATE
     PNG::PNG
 )
 
+# IWI Plugin DLL — Tension's texture container, parsed inline.
+# Always built: IWI is a documented struct-of-bytes, so this loader needs no
+# third-party decoder and has nothing to conditionally find.
+add_library(ImageLoaderIWI SHARED)
+list(APPEND _PLUGIN_TARGETS ImageLoaderIWI)
+target_sources(ImageLoaderIWI PUBLIC
+    FILE_SET iwiloader TYPE CXX_MODULES
+    FILES
+        ImageLoaderIWI.ixx
+)
+set_property(TARGET ImageLoaderIWI PROPERTY CXX_STANDARD 23)
+
 # WebP Plugin DLL — only when libwebp is available
 if(WebP_FOUND)
     add_library(ImageLoaderWebp SHARED)
