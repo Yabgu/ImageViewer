@@ -34,6 +34,12 @@
  * cost nothing: clang lowers `iwi_rd32` to a single `movl (%rcx), %eax` at
  * -O2, identical to the cast.  Precision here is free.
  *
+ * Note that "the file is little-endian" is the format's only byte-order rule:
+ * big-endian hosts are out of scope by design, not by accident.  The reasoning
+ * is in IwiFile.h; the short version is that byte reads make this wrapper
+ * *report* the same values on any host, but nothing here swaps bytes for a
+ * big-endian machine, and nothing promises to.
+ *
  * # Why there is still a parse() and not just a read()
  *
  * Reading is the caller's job, and it has to stay that way.  The Windows shell

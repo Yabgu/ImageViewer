@@ -36,7 +36,8 @@
 
 /* Byte-wise little-endian reads.  Deliberately not memcpy into a u32: that
  * would inherit host endianness, and this container is little-endian
- * everywhere. */
+ * everywhere.  Big-endian hosts are out of scope by design, so there is no
+ * swap path to select here; see the byte-order note in IwiFile.h. */
 static uint16_t iwi_rd16(const uint8_t* p)
 {
     return (uint16_t)((uint16_t)p[0] | (uint16_t)((uint16_t)p[1] << 8u));

@@ -42,6 +42,8 @@
  *   fields this build may not be able to *render* (planar, sub-8-bit, HDR).
  *   Deciding what is displayable is the caller's job; the loader and the
  *   thumbnail provider make different choices and both are legitimate.
+ * - Little-endian, always.  Big-endian hosts are out of scope; see the
+ *   byte-order note below the field offsets.
  */
 
 #include <stddef.h>
@@ -111,6 +113,44 @@ extern "C" {
 #define IWI_FILE_COMP_OFF_CLASS      1u
 #define IWI_FILE_COMP_OFF_BIT_OFFSET 2u
 #define IWI_FILE_COMP_OFF_BIT_WIDTH  4u
+
+/*
+ * Byte order: the container is little-endian, always.
+ *
+ * Every multi-byte field (width, height, componentCount, bitsPerPixel, the
+ * component table's bitOffset and bitWidth, pixelDataSize) is stored least
+ * significant byte first, and the pixel payload carries no byte-order marker
+ * either.  The format is not endian-agnostic and does not carry a flag to
+ * become so.
+ *
+ * # Big-endian hosts are not supported, on purpose
+ *
+ * This is a deliberate simplicity trade, not an oversight.  Supporting a
+ * big-endian reader would mean a per-access swap policy threaded through every
+ * consumer — this header, the loader, the shell thumbnail provider, Tension's
+ * Rust reader and its JS writer — and the last big-endian consumer platform
+ * this format could plausibly meet is PowerPC-era macOS.  The cost is a
+ * permanent tax on every reader; the benefit is a platform nobody will run
+ * this on.
+ *
+ * # What that means for implementers
+ *
+ * The reads below (see the iwi_rd* helpers in IwiFile.c) are byte-wise and
+ * therefore *host-independent*: they define a little-endian interpretation no
+ * matter what the host is.  So this header is correct on a big-endian machine
+ * in the sense that it reports the same values there as on x86-64 — it just
+ * describes a file that no big-endian build is expected to be written for.
+ *
+ * Do not replace those reads with `reinterpret_cast` / pointer casts to a
+ * packed struct.  A cast inherits *host* byte order, so a big-endian host
+ * would silently misread every field past the magic; and two fields sit on
+ * odd offsets (componentCount@13, bitsPerPixel@15), which is an unaligned
+ * 16-bit load that costs an extra instruction on aarch64.  Byte reads are free
+ * here — clang fuses them into a single load at -O2.
+ *
+ * A big-endian host that wants to read these files must swap after copying.
+ * Nothing in this API does that for it, and nothing promises to.
+ */
 
 /*
  * Result of a parse.  OK is 0 so a caller can test `if (status)`.

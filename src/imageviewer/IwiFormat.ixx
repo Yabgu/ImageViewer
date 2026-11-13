@@ -49,6 +49,9 @@ export module IwiFormat;
  *       66     8  pixelDataSize   u64
  *       74     *  pixelData       u8[]
  *
+ * Every multi-byte field above is little-endian.  Big-endian hosts are out of
+ * scope by design — the reasoning is in IwiFile.h, next to the offsets.
+ *
  * # What is *not* decided here
  *
  * Colour space.  The header carries one and it is reported as-is; whether sRGB,
