@@ -83,29 +83,34 @@ std::vector<uint8_t> MakeIwi(const Spec& spec,
                              std::size_t trailingSlack = 0)
 {
     const std::size_t declared = pixels.size() + trailingSlack;
-    std::vector<uint8_t> b(iwi::kHeaderBytes + declared, 0);
+    std::vector<uint8_t> b(iwi::toSize(iwi::Extent::Header) + declared, 0);
 
-    std::memcpy(b.data(), "IWI1", 4);
-    PutU32(b, iwi::kOffWidth, spec.width);
-    PutU32(b, iwi::kOffHeight, spec.height);
-    b[iwi::kOffColorSpace] = spec.colorSpace;
-    PutU16(b, iwi::kOffComponentNum, spec.components);
-    PutU16(b, iwi::kOffBitsPerPixel,
+    std::memcpy(b.data(), iwi::kMagic, iwi::toSize(iwi::Extent::Magic));
+    PutU32(b, iwi::toSize(iwi::Offset::Width), spec.width);
+    PutU32(b, iwi::toSize(iwi::Offset::Height), spec.height);
+    b[iwi::toSize(iwi::Offset::ColorSpace)] = spec.colorSpace;
+    PutU16(b, iwi::toSize(iwi::Offset::ComponentCount), spec.components);
+    PutU16(b, iwi::toSize(iwi::Offset::BitsPerPixel),
           static_cast<uint16_t>(spec.components * 8u));
-    b[iwi::kOffStorage] = IW_STORAGE_INTERLEAVED;
+    b[iwi::toSize(iwi::Offset::Storage)] = IW_STORAGE_INTERLEAVED;
 
     for (uint16_t i = 0; i < spec.components; ++i) {
-        const std::size_t rec = iwi::kOffComponents +
-                                static_cast<std::size_t>(i) * iwi::kComponentStride;
-        b[rec + iwi::kCompOffSemantic] = static_cast<uint8_t>(i + 1);
-        b[rec + iwi::kCompOffClass]    = IW_COMPONENT_CLASS_UNORM;
-        PutU16(b, rec + iwi::kCompOffBitOff,
+        const std::size_t rec =
+            iwi::toSize(iwi::Offset::ComponentTable)
+            + static_cast<std::size_t>(i)
+                  * iwi::toSize(iwi::Extent::Component);
+        b[iwi::recordField(rec, iwi::ComponentOffset::Semantic)] =
+            static_cast<uint8_t>(i + 1);
+        b[iwi::recordField(rec, iwi::ComponentOffset::Class)] =
+            IW_COMPONENT_CLASS_UNORM;
+        PutU16(b, iwi::recordField(rec, iwi::ComponentOffset::BitOffset),
                static_cast<uint16_t>(i * 8u));
-        PutU16(b, rec + iwi::kCompOffBitWidth, 8);
+        PutU16(b, iwi::recordField(rec, iwi::ComponentOffset::BitWidth), 8);
     }
 
-    PutU64(b, iwi::kOffPixelBytes, declared);
-    std::memcpy(b.data() + iwi::kHeaderBytes, pixels.data(), pixels.size());
+    PutU64(b, iwi::toSize(iwi::Offset::PixelBytes), declared);
+    std::memcpy(b.data() + iwi::toSize(iwi::Extent::Header),
+                pixels.data(), pixels.size());
     return b;
 }
 
@@ -515,7 +520,7 @@ TEST_SUITE("IWI thumbnail: refusals")
                                              Pixels3(2, 2, [](uint32_t, uint32_t, int) {
                                                  return static_cast<uint8_t>(1);
                                              }));
-        bytes[iwi::kOffStorage] = IW_STORAGE_PLANAR;
+        bytes[iwi::toSize(iwi::Offset::Storage)] = IW_STORAGE_PLANAR;
 
         MemorySource source(std::move(bytes));
         iwi::ThumbnailImage image;
@@ -749,7 +754,7 @@ TEST_SUITE("IWI thumbnail: real files on disk")
         REQUIRE_FALSE(path.empty());
 
         std::vector<uint8_t> bytes = ReadFileBytes(path);
-        REQUIRE(bytes.size() > iwi::kHeaderBytes);
+        REQUIRE(bytes.size() > iwi::toSize(iwi::Extent::Header));
         bytes.pop_back();
 
         const std::filesystem::path broken =

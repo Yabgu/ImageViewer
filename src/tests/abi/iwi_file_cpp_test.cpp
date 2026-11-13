@@ -13,12 +13,73 @@
 
 #include "IwiFile.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include <type_traits>
+
+/*
+ * The enums restate the C `#define`s.  That claim is cheap to make in a comment
+ * and expensive to be wrong about, so it is a compile-time check: a value
+ * edited on one side and not the other does not build.
+ */
+static_assert(std::is_same_v<std::underlying_type_t<iwi_file::Offset>,
+                             std::size_t>);
+static_assert(std::is_same_v<std::underlying_type_t<iwi_file::Extent>,
+                             std::size_t>);
+static_assert(std::is_same_v<std::underlying_type_t<iwi_file::ComponentOffset>,
+                             std::size_t>);
+
+static_assert(iwi_file::toSize(iwi_file::Offset::Magic) == IWI_FILE_OFF_MAGIC);
+static_assert(iwi_file::toSize(iwi_file::Offset::Width) == IWI_FILE_OFF_WIDTH);
+static_assert(iwi_file::toSize(iwi_file::Offset::Height) == IWI_FILE_OFF_HEIGHT);
+static_assert(iwi_file::toSize(iwi_file::Offset::ColorSpace)
+              == IWI_FILE_OFF_COLOR_SPACE);
+static_assert(iwi_file::toSize(iwi_file::Offset::ComponentCount)
+              == IWI_FILE_OFF_COMPONENTS);
+static_assert(iwi_file::toSize(iwi_file::Offset::BitsPerPixel)
+              == IWI_FILE_OFF_BITS_PER_PX);
+static_assert(iwi_file::toSize(iwi_file::Offset::Storage)
+              == IWI_FILE_OFF_STORAGE);
+static_assert(iwi_file::toSize(iwi_file::Offset::ComponentTable)
+              == IWI_FILE_OFF_COMPONENT_TAB);
+static_assert(iwi_file::toSize(iwi_file::Offset::PixelBytes)
+              == IWI_FILE_OFF_PIXEL_BYTES);
+
+static_assert(iwi_file::toSize(iwi_file::Extent::Magic)
+              == IWI_FILE_MAGIC_BYTES);
+static_assert(iwi_file::toSize(iwi_file::Extent::Header)
+              == IWI_FILE_HEADER_BYTES);
+static_assert(iwi_file::toSize(iwi_file::Extent::Component)
+              == IWI_FILE_COMPONENT_BYTES);
+static_assert(iwi_file::toSize(iwi_file::Extent::MaxComponents)
+              == IWI_FILE_MAX_COMPONENTS);
+
+static_assert(iwi_file::toSize(iwi_file::ComponentOffset::Semantic)
+              == IWI_FILE_COMP_OFF_SEMANTIC);
+static_assert(iwi_file::toSize(iwi_file::ComponentOffset::Class)
+              == IWI_FILE_COMP_OFF_CLASS);
+static_assert(iwi_file::toSize(iwi_file::ComponentOffset::BitOffset)
+              == IWI_FILE_COMP_OFF_BIT_OFFSET);
+static_assert(iwi_file::toSize(iwi_file::ComponentOffset::BitWidth)
+              == IWI_FILE_COMP_OFF_BIT_WIDTH);
+
+/* The record layout the enums describe has to be self-consistent: a record
+ * starts at the table, and its last field must still end inside the header. */
+static_assert(iwi_file::toSize(iwi_file::Offset::ComponentTable)
+                  + iwi_file::toSize(iwi_file::Extent::MaxComponents)
+                        * iwi_file::toSize(iwi_file::Extent::Component)
+              == iwi_file::toSize(iwi_file::Offset::PixelBytes));
+
+/* recordField is the documented spelling of "base plus field". */
+static_assert(iwi_file::recordField(
+                  iwi_file::toSize(iwi_file::Offset::ComponentTable),
+                  iwi_file::ComponentOffset::BitWidth)
+              == iwi_file::toSize(iwi_file::Offset::ComponentTable) + 4u);
 namespace {
 
 int failures = 0;
@@ -41,29 +102,41 @@ std::vector<std::uint8_t> makeIwi(std::uint32_t width,
 {
     const std::size_t payload =
         static_cast<std::size_t>(width) * height * components;
-    std::vector<std::uint8_t> b(iwi_file::kHeaderBytes + payload, 0);
+    std::vector<std::uint8_t> b(
+        iwi_file::toSize(iwi_file::Extent::Header) + payload, 0);
 
-    std::memcpy(b.data(), iwi_file::kMagic, iwi_file::kMagicBytes);
-    b[iwi_file::kOffWidth]  = static_cast<std::uint8_t>(width);
-    b[iwi_file::kOffHeight] = static_cast<std::uint8_t>(height);
-    b[iwi_file::kOffColorSpace] = 0;
-    b[iwi_file::kOffComponents]     = static_cast<std::uint8_t>(components);
-    b[iwi_file::kOffBitsPerPixel]   = static_cast<std::uint8_t>(components * 8u);
-    b[iwi_file::kOffStorage]        = IW_STORAGE_INTERLEAVED;
+    std::memcpy(b.data(), iwi_file::kMagic,
+                iwi_file::toSize(iwi_file::Extent::Magic));
+    b[iwi_file::toSize(iwi_file::Offset::Width)] =
+        static_cast<std::uint8_t>(width);
+    b[iwi_file::toSize(iwi_file::Offset::Height)] =
+        static_cast<std::uint8_t>(height);
+    b[iwi_file::toSize(iwi_file::Offset::ColorSpace)] = 0;
+    b[iwi_file::toSize(iwi_file::Offset::ComponentCount)] =
+        static_cast<std::uint8_t>(components);
+    b[iwi_file::toSize(iwi_file::Offset::BitsPerPixel)] =
+        static_cast<std::uint8_t>(components * 8u);
+    b[iwi_file::toSize(iwi_file::Offset::Storage)] = IW_STORAGE_INTERLEAVED;
 
     for (std::uint16_t i = 0; i < components; ++i) {
-        const std::size_t at = iwi_file::kOffComponentTab
-                             + static_cast<std::size_t>(i) * iwi_file::kComponentBytes;
-        b[at + iwi_file::kCompOffSemantic] = static_cast<std::uint8_t>(i + 1u);
-        b[at + iwi_file::kCompOffClass]    = IW_COMPONENT_CLASS_UNORM;
-        b[at + iwi_file::kCompOffBitOffset] = static_cast<std::uint8_t>(i * 8u);
-        b[at + iwi_file::kCompOffBitWidth]  = 8;
+        const std::size_t rec =
+            iwi_file::toSize(iwi_file::Offset::ComponentTable)
+            + static_cast<std::size_t>(i)
+                  * iwi_file::toSize(iwi_file::Extent::Component);
+        b[iwi_file::recordField(rec, iwi_file::ComponentOffset::Semantic)] =
+            static_cast<std::uint8_t>(i + 1u);
+        b[iwi_file::recordField(rec, iwi_file::ComponentOffset::Class)] =
+            IW_COMPONENT_CLASS_UNORM;
+        b[iwi_file::recordField(rec, iwi_file::ComponentOffset::BitOffset)] =
+            static_cast<std::uint8_t>(i * 8u);
+        b[iwi_file::recordField(rec, iwi_file::ComponentOffset::BitWidth)] = 8;
     }
 
-    b[iwi_file::kOffPixelBytes] = static_cast<std::uint8_t>(payload);
+    b[iwi_file::toSize(iwi_file::Offset::PixelBytes)] =
+        static_cast<std::uint8_t>(payload);
     b[67] = static_cast<std::uint8_t>(payload >> 8);
     for (std::size_t i = 0; i < payload; ++i)
-        b[iwi_file::kHeaderBytes + i] = 0x5A;
+        b[iwi_file::toSize(iwi_file::Extent::Header) + i] = 0x5A;
     return b;
 }
 
@@ -126,7 +199,7 @@ int main()
     /* --- The malformed/unsupported split a caller relies on ------------- */
     {
         std::vector<std::uint8_t> planar = makeIwi(2, 2, 4);
-        planar[iwi_file::kOffStorage] = IW_STORAGE_PLANAR;
+        planar[iwi_file::toSize(iwi_file::Offset::Storage)] = IW_STORAGE_PLANAR;
 
         const iwi_file::Result r = iwi_file::parse(planar);
         check(!static_cast<bool>(r), "planar fails");

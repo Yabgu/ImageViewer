@@ -63,25 +63,22 @@ export module IwiFormat;
 
 export namespace iwi {
 
-/* Field offsets, taken from the C header rather than restated.  A second copy
- * here is the exact drift this API exists to prevent. */
-inline constexpr std::size_t kHeaderBytes     = iwi_file::kHeaderBytes;
-inline constexpr std::size_t kOffMagic        = iwi_file::kOffMagic;
-inline constexpr std::size_t kOffWidth        = iwi_file::kOffWidth;
-inline constexpr std::size_t kOffHeight       = iwi_file::kOffHeight;
-inline constexpr std::size_t kOffColorSpace   = iwi_file::kOffColorSpace;
-inline constexpr std::size_t kOffComponentNum = iwi_file::kOffComponents;
-inline constexpr std::size_t kOffBitsPerPixel = iwi_file::kOffBitsPerPixel;
-inline constexpr std::size_t kOffStorage      = iwi_file::kOffStorage;
-inline constexpr std::size_t kOffComponents   = iwi_file::kOffComponentTab;
-inline constexpr std::size_t kComponentStride = iwi_file::kComponentBytes;
-inline constexpr std::size_t kOffPixelBytes   = iwi_file::kOffPixelBytes;
-
-/* Component record fields. */
-inline constexpr std::size_t kCompOffSemantic = iwi_file::kCompOffSemantic;
-inline constexpr std::size_t kCompOffClass    = iwi_file::kCompOffClass;
-inline constexpr std::size_t kCompOffBitOff   = iwi_file::kCompOffBitOffset;
-inline constexpr std::size_t kCompOffBitWidth = iwi_file::kCompOffBitWidth;
+/* The layout constants are the C header's own scoped enums, re-exported rather
+ * than restated.  A second copy here is the exact drift this API exists to
+ * prevent, and the enums carry their own units:
+ *
+ *   iwi::Offset           field offsets from the start of the container
+ *   iwi::Extent           byte counts (and Extent::MaxComponents, a record
+ *                         count)
+ *   iwi::ComponentOffset  field offsets within one component record
+ *
+ * Convert with `iwi::toSize(...)`, which is explicit on purpose. */
+using iwi_file::Offset;
+using iwi_file::Extent;
+using iwi_file::ComponentOffset;
+using iwi_file::toSize;
+using iwi_file::recordField;
+using iwi_file::kMagic;
 
 /*
  * Status, with the same values as the C enum so the two can be compared and

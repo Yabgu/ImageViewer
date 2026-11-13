@@ -235,11 +235,11 @@ ThumbnailStatus RenderThumbnail(SampleSource& source,
     out = ThumbnailImage{};
 
     const uint64_t containerBytes = source.Size();
-    if (containerBytes < kHeaderBytes)
+    if (containerBytes < toSize(Extent::Header))
         return Fail(ThumbnailStatus::Malformed, reason,
                     "IWI is smaller than its own header");
 
-    uint8_t headerBytes[kHeaderBytes];
+    uint8_t headerBytes[toSize(Extent::Header)];
     if (!source.ReadAt(0, headerBytes, sizeof(headerBytes)))
         return Fail(ThumbnailStatus::IoError, reason,
                     "could not read the IWI header");
@@ -317,7 +317,7 @@ ThumbnailStatus RenderThumbnail(SampleSource& source,
 
         for (const uint32_t sy : rows) {
             const uint64_t offset =
-                kHeaderBytes + static_cast<uint64_t>(sy) * stride;
+                toSize(Extent::Header) + static_cast<uint64_t>(sy) * stride;
             if (!source.ReadAt(offset, row.data(), stride)) {
                 if (reason) *reason = "the IWI pixel data is truncated";
                 return ThumbnailStatus::IoError;

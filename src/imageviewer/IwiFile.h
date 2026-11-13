@@ -67,17 +67,19 @@ extern "C" {
 /*
  * The container's constants.
  *
- * Published three ways on purpose, because three kinds of consumer need
- * different things and duplicating a number in each of them is how these
- * readers drifted apart in the first place:
+ * Published twice on purpose, because two kinds of consumer need different
+ * things and duplicating a number in each of them is how these readers drifted
+ * apart in the first place:
  *
  *   - C and the preprocessor: `#define`, so the values work in a static
  *     initialiser and in `#if`.
- *   - C++: typed `inline constexpr` values in namespace `iwi_file`, at the
- *     bottom of this header, so they are scoped, debuggable, and cannot be
- *     macro-substituted into unrelated identifiers.
+ *   - C++: three scoped enums in namespace `iwi_file`, at the bottom of this
+ *     header -- Offset, Extent, ComponentOffset.  Scoped so a name cannot leak,
+ *     typed so an offset cannot be mistaken for a byte count, and enumerated so
+ *     IntelliSense can list them.
  *
- * Both forms are compile-time constants with no storage.
+ * Both forms are compile-time constants with no storage, and the enums
+ * enumerate the macros rather than restating the numbers.
  */
 
 /* The ASCII bytes at offset 0, and their count. */
@@ -238,37 +240,90 @@ IWI_FILE_API uint64_t iwi_file_required_bytes(uint32_t width,
 /*
  * The C++ view of the same constants.
  *
- * `inline constexpr` and not an unscoped enum: these are byte counts used in
- * pointer arithmetic and size comparisons, so they should be `std::size_t`, not
- * enumerators silently converting to int.  `enum class` would be wrong for the
- * opposite reason — every value here is used directly as an integer in offset
- * arithmetic, so every use would need a cast and gain nothing.
+ * Three scoped enums rather than `inline constexpr std::size_t`, because the
+ * constants answer three different questions and the point is that mixing them
+ * should not compile:
  *
- * The `#define`s above still exist and still expand; these are the same
+ *   Offset           where a field starts, from the start of the container
+ *   Extent           a byte count, or a count of component records
+ *   ComponentOffset  where a field starts, from the start of one record
+ *
+ * With plain `std::size_t`, `Offset{ComponentTable} + Offset{BitsPerPixel}`
+ * compiles and is nonsense.  With these, the only mixed arithmetic that
+ * type-checks is `Offset + ComponentOffset` -- record base plus field, the one
+ * combination that means something.
+ *
+ * The cost is that a scoped enum does not convert implicitly, so an index or a
+ * `memcpy` source needs `toSize(...)`.  That is deliberate: a raw offset is an
+ * implementation detail, and code reaching for one should look like it.
+ *
+ * The `#define`s above still exist and still expand.  These enumerate the same
  * numbers, so the two cannot disagree.
  */
 namespace iwi_file {
 
-inline constexpr char        kMagic[]        = IWI_FILE_MAGIC;
-inline constexpr std::size_t kMagicBytes     = IWI_FILE_MAGIC_BYTES;
-inline constexpr std::size_t kHeaderBytes    = IWI_FILE_HEADER_BYTES;
-inline constexpr std::size_t kComponentBytes = IWI_FILE_COMPONENT_BYTES;
-inline constexpr std::size_t kMaxComponents  = IWI_FILE_MAX_COMPONENTS;
+/* Where a field starts, measured from the start of the container. */
+enum class Offset : std::size_t {
+    Magic          = IWI_FILE_OFF_MAGIC,
+    Width          = IWI_FILE_OFF_WIDTH,
+    Height         = IWI_FILE_OFF_HEIGHT,
+    ColorSpace     = IWI_FILE_OFF_COLOR_SPACE,
+    ComponentCount = IWI_FILE_OFF_COMPONENTS,
+    BitsPerPixel   = IWI_FILE_OFF_BITS_PER_PX,
+    Storage        = IWI_FILE_OFF_STORAGE,
+    ComponentTable = IWI_FILE_OFF_COMPONENT_TAB,
+    PixelBytes     = IWI_FILE_OFF_PIXEL_BYTES,
+};
 
-inline constexpr std::size_t kOffMagic         = IWI_FILE_OFF_MAGIC;
-inline constexpr std::size_t kOffWidth         = IWI_FILE_OFF_WIDTH;
-inline constexpr std::size_t kOffHeight        = IWI_FILE_OFF_HEIGHT;
-inline constexpr std::size_t kOffColorSpace    = IWI_FILE_OFF_COLOR_SPACE;
-inline constexpr std::size_t kOffComponents    = IWI_FILE_OFF_COMPONENTS;
-inline constexpr std::size_t kOffBitsPerPixel  = IWI_FILE_OFF_BITS_PER_PX;
-inline constexpr std::size_t kOffStorage       = IWI_FILE_OFF_STORAGE;
-inline constexpr std::size_t kOffComponentTab  = IWI_FILE_OFF_COMPONENT_TAB;
-inline constexpr std::size_t kOffPixelBytes    = IWI_FILE_OFF_PIXEL_BYTES;
+/*
+ * How much of something.  Every enumerator except `MaxComponents` is a count of
+ * bytes; `MaxComponents` counts 6-byte records instead (48 table bytes / 6),
+ * and is named for the thing it counts.
+ */
+enum class Extent : std::size_t {
+    Magic         = IWI_FILE_MAGIC_BYTES,
+    Header        = IWI_FILE_HEADER_BYTES,
+    Component     = IWI_FILE_COMPONENT_BYTES,
+    MaxComponents = IWI_FILE_MAX_COMPONENTS,
+};
 
-inline constexpr std::size_t kCompOffSemantic  = IWI_FILE_COMP_OFF_SEMANTIC;
-inline constexpr std::size_t kCompOffClass     = IWI_FILE_COMP_OFF_CLASS;
-inline constexpr std::size_t kCompOffBitOffset = IWI_FILE_COMP_OFF_BIT_OFFSET;
-inline constexpr std::size_t kCompOffBitWidth  = IWI_FILE_COMP_OFF_BIT_WIDTH;
+/* Where a field starts, measured from the start of one `Extent::Component`
+ * record. */
+enum class ComponentOffset : std::size_t {
+    Semantic  = IWI_FILE_COMP_OFF_SEMANTIC,
+    Class     = IWI_FILE_COMP_OFF_CLASS,
+    BitOffset = IWI_FILE_COMP_OFF_BIT_OFFSET,
+    BitWidth  = IWI_FILE_COMP_OFF_BIT_WIDTH,
+};
+
+/* The only conversion these enums have, and it is explicit. */
+constexpr std::size_t toSize(Offset v) noexcept
+{
+    return static_cast<std::size_t>(v);
+}
+
+constexpr std::size_t toSize(Extent v) noexcept
+{
+    return static_cast<std::size_t>(v);
+}
+
+constexpr std::size_t toSize(ComponentOffset v) noexcept
+{
+    return static_cast<std::size_t>(v);
+}
+
+/* Offset + ComponentOffset is the one cross-enum sum that means something:
+ * the base of a record plus a field within it.  Spell it once so call sites do
+ * not open-code two casts for a common operation. */
+constexpr std::size_t recordField(std::size_t recordBase,
+                                  ComponentOffset field) noexcept
+{
+    return recordBase + toSize(field);
+}
+
+/* The four ASCII magic bytes.  A string cannot be an enumerator, so this stays
+ * a plain array; `Extent::Magic` is its length. */
+inline constexpr char kMagic[] = IWI_FILE_MAGIC;
 
 } // namespace iwi_file
 #endif

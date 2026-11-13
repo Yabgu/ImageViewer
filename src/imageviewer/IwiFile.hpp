@@ -55,11 +55,9 @@
 #include "IwiFile.h"
 
 #include <array>
-#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
-#include <type_traits>
 
 namespace iwi_file {
 
@@ -223,7 +221,7 @@ template <class Container,
 /* The magic bytes, for a caller that wants to sniff before parsing. */
 [[nodiscard]] constexpr std::string_view magic() noexcept
 {
-    return std::string_view(kMagic, kMagicBytes);
+    return std::string_view(kMagic, toSize(Extent::Magic));
 }
 
 /* Convenience: does this buffer start with the IWI magic?  Cheaper than a
@@ -231,8 +229,8 @@ template <class Container,
 [[nodiscard]] inline bool looksLikeIwi(const std::uint8_t* data,
                                        std::size_t size) noexcept
 {
-    return data != nullptr && size >= kHeaderBytes
-        && std::memcmp(data, kMagic, kMagicBytes) == 0;
+    return data != nullptr && size >= toSize(Extent::Header)
+        && std::memcmp(data, kMagic, toSize(Extent::Magic)) == 0;
 }
 
 template <class Container,
