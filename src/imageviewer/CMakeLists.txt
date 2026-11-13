@@ -174,6 +174,103 @@ target_include_directories(iw_plugin_host PUBLIC
 
 set_property(TARGET iw_plugin_host PROPERTY CXX_STANDARD 23)
 
+# ── IWI container format ────────────────────────────────────────────────────
+#
+# One statement of what an .iwi file may contain, imported by the loader plugin
+# and by the Windows shell thumbnail provider.  It is a module rather than a
+# header because both consumers are already module units: the loader is
+# ImageLoaderIWI.ixx and the provider is ThumbnailProviderIWI.ixx, so a header
+# would be the only non-module include in either.
+#
+# There is no library target for it.  Each consumer lists IwiFormat.ixx in its
+# own FILE_SET, so every DLL carries its own copy of the module: nothing has to
+# cross a DLL or archive boundary, and a build of one consumer does not depend
+# on another target's build order.
+
+# ── Windows shell thumbnail provider ────────────────────────────────────────
+#
+# Makes Explorer render .iwi files instead of the generic file-type icon.  It
+# is the only component here that is not a viewer or a plugin: the shell loads
+# it into dllhost.exe through the registry keys that
+# scripts/install-desktop-windows.{ps1,bat} write.
+#
+# Built outside the IMAGEVIEWER_BUILD_VIEWER gate on purpose.  It needs no
+# GLFW, GLAD or imgui, and a headless build is exactly the build that should
+# still be able to produce and test it.
+#
+# Windows-only: there is no shell to render thumbnails for elsewhere, and the
+# COM headers do not exist there.
+option(IMAGEVIEWER_BUILD_THUMBNAIL_PROVIDER
+    "Build the Windows shell thumbnail provider for .iwi (Windows only)"
+    ON)
+
+if(WIN32 AND IMAGEVIEWER_BUILD_THUMBNAIL_PROVIDER)
+
+# The portable half: header parsing, decimation and colour handling, with no
+# COM in it.  The tests import this, so it is a target of its own.
+add_library(iw_iwi_thumbnail STATIC)
+
+target_sources(iw_iwi_thumbnail PUBLIC
+    FILE_SET iwi_thumbnail TYPE CXX_MODULES
+    FILES
+        IwiFormat.ixx
+        shell/IwiThumbnail.ixx
+        shell/ThumbnailProviderIds.ixx
+)
+
+# IwiFormat.ixx includes ImagePluginDef.h from its global module fragment for
+# the component semantics and storage-layout constants.
+target_include_directories(iw_iwi_thumbnail PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+set_property(TARGET iw_iwi_thumbnail PROPERTY CXX_STANDARD 23)
+
+# The COM wrapper.  Exports DllGetClassObject and DllCanUnloadNow, nothing
+# else; see the header comment in ThumbnailProviderIWI.ixx for why it has no
+# DllRegisterServer.
+add_library(IwiThumbnailProvider SHARED)
+
+target_sources(IwiThumbnailProvider PRIVATE
+    FILE_SET iwi_thumb_provider TYPE CXX_MODULES
+    FILES
+        shell/ThumbnailProviderIWI.ixx
+)
+
+# The export list.  combaseapi.h already declares DllGetClassObject and
+# DllCanUnloadNow; a module unit cannot redefine them with dllexport, so the
+# DLL names them here instead.  MSVC and clang-cl both accept a .def as a
+# source and pass it to the linker.
+target_sources(IwiThumbnailProvider PRIVATE
+    shell/ThumbnailProviderIWI.def
+)
+
+target_link_libraries(IwiThumbnailProvider PRIVATE
+    iw_iwi_thumbnail
+    gdi32
+    ole32
+    user32
+)
+
+set_property(TARGET IwiThumbnailProvider PROPERTY CXX_STANDARD 23)
+
+target_compile_definitions(IwiThumbnailProvider PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    UNICODE
+    _UNICODE
+)
+
+# Next to iview.exe, like the plugins: the install scripts point
+# InprocServer32 at the DLL beside the executable they registered.
+install(TARGETS IwiThumbnailProvider RUNTIME DESTINATION .)
+
+message(STATUS "Shell thumbnail provider: IwiThumbnailProvider (Windows)")
+
+else()
+    message(STATUS "Shell thumbnail provider: not built (not Windows or disabled)")
+endif()
+
 # ── Plugin DSOs ─────────────────────────────────────────────────────────────
 set(_PLUGIN_TARGETS "")
 if(IMAGEVIEWER_BUILD_PLUGINS)
@@ -218,8 +315,20 @@ target_sources(ImageLoaderIWI PUBLIC
     FILE_SET iwiloader TYPE CXX_MODULES
     FILES
         ImageLoaderIWI.ixx
+        IwiFormat.ixx
 )
 set_property(TARGET ImageLoaderIWI PROPERTY CXX_STANDARD 23)
+
+# The loader's copy of IwiFormat needs ImagePluginDef.h in its global module
+# fragment.
+target_include_directories(ImageLoaderIWI PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# Note there is no target_link_libraries here.  The loader and the shell
+# thumbnail provider must accept exactly the same files, and they do — both
+# compile IwiFormat.ixx rather than sharing it through a link library, which
+# keeps each DLL self-contained and its build independent.
 
 # WebP Plugin DLL — only when libwebp is available
 if(WebP_FOUND)
@@ -606,6 +715,14 @@ endif()
 if(TARGET iview AND _PLUGIN_TARGETS)
     add_dependencies(iview ${_PLUGIN_TARGETS})
     message(STATUS "Plugins shipped with iview: ${_PLUGIN_TARGETS}")
+endif()
+
+# The thumbnail provider is not an image loader — nothing in Image.ixx resolves
+# it by name — but it lives beside iview.exe and must be built whenever the
+# viewer is, or an install would register a handler that does not exist.
+if(TARGET iview AND TARGET IwiThumbnailProvider)
+    add_dependencies(iview IwiThumbnailProvider)
+    message(STATUS "Shell thumbnail provider shipped with iview: IwiThumbnailProvider")
 endif()
 
 # Packaging path: `cmake --install` produces a folder containing iview.exe and
