@@ -293,6 +293,13 @@ endif()
 # PNG Plugin DLL — always built (libpng is a default vcpkg dep)
 add_library(ImageLoaderPng SHARED)
 list(APPEND _PLUGIN_TARGETS ImageLoaderPng)
+
+# Every other loader reports its status, and the headless CI job asserts that
+# each of them was configured before it builds.  PNG was the one loader with no
+# status line at all, so that assertion could never pass: it failed with
+# "ImageLoaderPng was not configured in the headless build" while the plugin had
+# in fact been built.  The line is unconditional because the target is too.
+message(STATUS "Plugin: ImageLoaderPng enabled (libpng found)")
 target_sources(ImageLoaderPng PUBLIC
     FILE_SET pngloader TYPE CXX_MODULES
     FILES
