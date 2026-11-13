@@ -191,6 +191,7 @@ add_library(iw_iwi_file STATIC)
 
 target_sources(iw_iwi_file PUBLIC
     IwiFile.h
+    IwiFile.hpp
     IwiFile.c
 )
 

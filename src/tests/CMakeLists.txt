@@ -48,6 +48,20 @@ if(TARGET iw_iwi_file)
     target_link_libraries(iwi_file_c_test PRIVATE iw_iwi_file)
 
     add_test(NAME iwi_file_c_test COMMAND iwi_file_c_test)
+
+    # The C++ wrapper, compiled as C++17 with no modules.  Its purpose is to
+    # prove the header works for an external C++ consumer that is not using
+    # this repository's module units -- an engine, a tool, a test harness.
+    add_executable(iwi_file_cpp_test abi/iwi_file_cpp_test.cpp)
+
+    set_target_properties(iwi_file_cpp_test PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+    )
+
+    target_link_libraries(iwi_file_cpp_test PRIVATE iw_iwi_file)
+
+    add_test(NAME iwi_file_cpp_test COMMAND iwi_file_cpp_test)
 endif()
 
 # ── Windows shell thumbnail provider ────────────────────────────────────────
