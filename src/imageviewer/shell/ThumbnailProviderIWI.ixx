@@ -135,7 +135,7 @@ public:
         *ppv = nullptr;
 
         if (IsEqualIID(riid, IID_IUnknown) ||
-            IsEqualIID(riid, IID_IThumbnailProvider)) {
+            IsEqualIID(riid, iwthumb::kIID_IThumbnailProvider)) {
             *ppv = static_cast<IThumbnailProvider*>(this);
         } else if (IsEqualIID(riid, IID_IInitializeWithStream)) {
             *ppv = static_cast<IInitializeWithStream*>(this);

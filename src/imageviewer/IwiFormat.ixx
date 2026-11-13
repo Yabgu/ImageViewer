@@ -173,6 +173,21 @@ namespace iwi {
 
 namespace detail {
 
+/*
+ * The no-argument overload exists for two reasons: it is the common case, and
+ * it lets the format string reach snprintf as an argument to "%s" rather than
+ * as the format itself.  Without it, clang's -Wformat-security flags every
+ * Fail(status, "literal") call, because the template cannot prove the pointer
+ * is a literal and a stray '%' in it would then be interpreted.
+ */
+inline IwiParseResult Fail(IwiStatus status, const char* reason)
+{
+    IwiParseResult r;
+    r.status = status;
+    std::snprintf(r.reason, sizeof(r.reason), "%s", reason);
+    return r;
+}
+
 template <typename... Args>
 inline IwiParseResult Fail(IwiStatus status, const char* format, Args... args)
 {

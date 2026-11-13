@@ -33,6 +33,9 @@
 
 #ifdef _WIN32
 #include <objbase.h>
+/* IID_IThumbnailProvider, for the check that the IID this project defines
+ * locally matches the one the shell actually asks for. */
+#include <thumbcache.h>
 #endif
 
 /* The C ABI's colour-space and storage-layout constants.  ImagePluginDef.h is
@@ -834,6 +837,38 @@ TEST_SUITE("IWI thumbnail: registration identifiers")
          * the scripts below. */
         CHECK(std::strlen(iwthumb::kProviderClsidString) == 38u);
 #endif
+    }
+
+    TEST_CASE("The IID used for QueryInterface is the thumbnail interface GUID")
+    {
+        /* ThumbnailProviderIds.ixx defines this IID itself because MSYS2's
+         * libuuid.a does not carry it.  If the copy ever drifted from the real
+         * interface, QueryInterface would return E_NOINTERFACE for the
+         * interface the shell actually asks for, and no thumbnail would ever
+         * be drawn. */
+#ifdef _WIN32
+        GUID parsed{};
+        const std::wstring text(iwthumb::kThumbnailProviderIidString,
+                                iwthumb::kThumbnailProviderIidString +
+                                    std::strlen(iwthumb::kThumbnailProviderIidString));
+        REQUIRE(SUCCEEDED(CLSIDFromString(text.c_str(), &parsed)));
+        CHECK(IsEqualIID(parsed, iwthumb::kIID_IThumbnailProvider));
+
+#  if defined(_MSC_VER)
+        /* Compare against the SDK's own symbol where it links.  MSYS2's
+         * libuuid.a has no IID_IThumbnailProvider — that gap is the reason the
+         * constant exists — so this stronger check can only run on MSVC. */
+        CHECK(IsEqualIID(iwthumb::kIID_IThumbnailProvider, IID_IThumbnailProvider));
+#  endif
+#else
+        CHECK(std::strlen(iwthumb::kThumbnailProviderIidString) == 38u);
+#endif
+
+        /* The shell registers thumbnail handlers under this very GUID, so the
+         * two constants are the same value by definition.  Asserting it keeps
+         * a future edit from "fixing" one of them. */
+        CHECK(std::string(iwthumb::kThumbnailProviderIidString) ==
+              std::string(iwthumb::kThumbnailShellExGuidString));
     }
 
     TEST_CASE("Both install scripts carry the same CLSID, ShellEx GUID and DLL")
