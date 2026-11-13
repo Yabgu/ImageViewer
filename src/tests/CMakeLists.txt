@@ -42,7 +42,9 @@ add_subdirectory(format)
 if(TARGET iw_iwi_thumbnail)
     find_package(doctest REQUIRED)
 
-    add_executable(iview_shell_tests test_iwi_thumbnail.cpp)
+    add_executable(iview_shell_tests
+        test_iwi_thumbnail.cpp
+    )
 
     set_property(TARGET iview_shell_tests PROPERTY CXX_STANDARD 23)
 
@@ -60,6 +62,20 @@ if(TARGET iw_iwi_thumbnail)
     # needs to be baked in, so the test works from any generator's output
     # directory.
     add_test(NAME iview_shell_tests COMMAND iview_shell_tests)
+
+    # The COM server's lifetime contract needs the real DLL: DllGetClassObject,
+    # DllCanUnloadNow and LockServer are only meaningful across a module
+    # boundary.  That source loads it by the path below.
+    if(TARGET IwiThumbnailProvider)
+        target_sources(iview_shell_tests PRIVATE
+            test_thumbnail_provider_com.cpp
+        )
+        target_compile_definitions(iview_shell_tests PRIVATE
+            IW_THUMBNAIL_PROVIDER_DLL="$<TARGET_FILE:IwiThumbnailProvider>"
+        )
+        # The genex above does not create an ordering edge by itself.
+        add_dependencies(iview_shell_tests IwiThumbnailProvider)
+    endif()
 endif()
 
 # ABI conformance tests: load the built plugin binaries and drive them through

@@ -49,8 +49,23 @@ import ThumbnailProviderIds;
 
 namespace {
 
-LONG g_objectCount = 0;
-LONG g_serverLock  = 0;
+/*
+ * Module lifetime counters.  Each counts exactly one thing, so a reader can
+ * tell why the DLL is still resident from which counter is non-zero:
+ *
+ *   g_objectCount   live IwiThumbnailProvider objects
+ *   g_factoryCount  live ClassFactory objects
+ *   g_serverLock    explicit pins taken through IClassFactory::LockServer
+ *
+ * They are separate on purpose.  An earlier version counted the factory in
+ * g_serverLock, which made LockServer's pin indistinguishable from "a factory
+ * exists" and led a reviewer to read the code as a leak.  It was not a leak,
+ * but conflating two causes in one number made that impossible to see, so the
+ * counts are kept apart and DllCanUnloadNow requires all three to be zero.
+ */
+LONG g_objectCount  = 0;
+LONG g_factoryCount = 0;
+LONG g_serverLock   = 0;
 
 /*
  * The shell hands us an IStream opened read-only.  Reads are positional, so the
@@ -235,7 +250,22 @@ private:
 
 class ClassFactory final : public IClassFactory {
 public:
-    ClassFactory() { InterlockedIncrement(&g_serverLock); }
+    /*
+     * The factory keeps the module resident for its whole lifetime.
+     *
+     * DllGetClassObject creates it, queries it and hands it to a client, and
+     * the client keeps that pointer until it calls Release().  While the
+     * factory exists the client holds an address inside this DLL, so the DLL
+     * must not unload — the next CreateInstance() would otherwise jump into
+     * unmapped memory.  Microsoft's own implementation does the same thing:
+     * ATL's DLL-server factory (atlcom.h, CComObjectCached) calls
+     * _pAtlModule->Lock() when its refcount rises and Unlock() when it drops.
+     *
+     * This is counted in g_factoryCount, not g_serverLock: LockServer is a
+     * separate, client-requested pin and the two causes are kept apart so
+     * DllCanUnloadNow can say which one is holding the DLL.
+     */
+    ClassFactory() { InterlockedIncrement(&g_factoryCount); }
 
     ClassFactory(const ClassFactory&) = delete;
     ClassFactory& operator=(const ClassFactory&) = delete;
@@ -286,7 +316,7 @@ public:
     }
 
 protected:
-    ~ClassFactory() { InterlockedDecrement(&g_serverLock); }
+    ~ClassFactory() { InterlockedDecrement(&g_factoryCount); }
 
 private:
     LONG references_ = 1;
@@ -317,7 +347,39 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void** ppv)
 
 STDAPI DllCanUnloadNow()
 {
-    return (g_objectCount == 0 && g_serverLock == 0) ? S_OK : S_FALSE;
+    /*
+     * S_OK only when nothing at all is outstanding: no live object, no live
+     * class factory, and no explicit LockServer pin.  Each counter is read
+     * atomically, because they are written with Interlocked* on other threads
+     * and a plain load is not guaranteed coherent everywhere.
+     *
+     * # Why a class factory counts
+     *
+     * A client holding an IClassFactory points at a vtable inside this DLL.
+     * Returning S_OK while such a pointer exists lets the loader free the
+     * module, and the client's next CreateInstance() jumps into unmapped
+     * memory.  So the factory keeps the module resident for exactly as long as
+     * it is held, which ClassFactory's constructor/destructor implement in
+     * g_factoryCount.  This mirrors ATL's CComObjectCached, which locks the
+     * module on the factory's AddRef and unlocks it on the matching Release.
+     *
+     * LockServer(TRUE/FALSE) is a second, client-requested pin and is the only
+     * thing that writes g_serverLock.  It is additive, not a replacement: a
+     * server that honoured only LockServer would be unloadable while the shell
+     * still held the factory it just obtained.
+     *
+     * All three transitions are asserted in test_thumbnail_provider_com.cpp,
+     * which drives this DLL through its real exports.  Do not "simplify" the
+     * factory pin into LockServer: that turns the ordinary
+     * DllGetClassObject → DllCanUnloadNow → CreateInstance sequence into a
+     * use-after-free.  That was verified, not assumed — with the factory pin
+     * removed, the lifetime tests fail with DllCanUnloadNow() == S_OK while a
+     * factory is still held.
+     */
+    const LONG objects   = InterlockedCompareExchange(&g_objectCount, 0, 0);
+    const LONG factories = InterlockedCompareExchange(&g_factoryCount, 0, 0);
+    const LONG locks     = InterlockedCompareExchange(&g_serverLock, 0, 0);
+    return (objects == 0 && factories == 0 && locks == 0) ? S_OK : S_FALSE;
 }
 
 /*
