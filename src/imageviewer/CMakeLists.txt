@@ -176,16 +176,36 @@ set_property(TARGET iw_plugin_host PROPERTY CXX_STANDARD 23)
 
 # ── IWI container format ────────────────────────────────────────────────────
 #
-# One statement of what an .iwi file may contain, imported by the loader plugin
-# and by the Windows shell thumbnail provider.  It is a module rather than a
-# header because both consumers are already module units: the loader is
-# ImageLoaderIWI.ixx and the provider is ThumbnailProviderIWI.ixx, so a header
-# would be the only non-module include in either.
+# The .iwi header, as a plain C API (src/imageviewer/IwiFile.h).
 #
-# There is no library target for it.  Each consumer lists IwiFormat.ixx in its
-# own FILE_SET, so every DLL carries its own copy of the module: nothing has to
-# cross a DLL or archive boundary, and a build of one consumer does not depend
-# on another target's build order.
+# This is the format's public interface, and it is deliberately C rather than a
+# C++ module: the container is shared with Tension, whose Rust reader had to
+# port these 74 bytes by hand because there was no C surface to depend on
+# (tension-core/src/render2d/iwi.rs says so in its own header comment).  A
+# module cannot be consumed from Rust, C, or a build script; a C header can.
+#
+# It is a static library with no C++ in it at all, so every consumer links it
+# without module machinery: the two module units below, IWImageIO, and the C
+# test that proves the header compiles as C.
+add_library(iw_iwi_file STATIC)
+
+target_sources(iw_iwi_file PUBLIC
+    IwiFile.h
+    IwiFile.c
+)
+
+# IwiFile.h includes ImagePluginDef.h for IW_MAX_COMPONENTS and IWComponentDef:
+# the file's component table and the in-memory component array are the same
+# shape on purpose, so they cannot drift apart.
+target_include_directories(iw_iwi_file PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+set_target_properties(iw_iwi_file PROPERTIES
+    C_STANDARD 99
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
 
 # ── Windows shell thumbnail provider ────────────────────────────────────────
 #
@@ -218,12 +238,14 @@ target_sources(iw_iwi_thumbnail PUBLIC
         shell/ThumbnailProviderIds.ixx
 )
 
-# IwiFormat.ixx includes ImagePluginDef.h from its global module fragment for
-# the component semantics and storage-layout constants.
+# IwiFormat.ixx includes IwiFile.h from its global module fragment: the C API is
+# the one implementation of the header rules, and the module is a thin C++
+# skin over it.
 target_include_directories(iw_iwi_thumbnail PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+target_link_libraries(iw_iwi_thumbnail PUBLIC iw_iwi_file)
 set_property(TARGET iw_iwi_thumbnail PROPERTY CXX_STANDARD 23)
 
 # The COM wrapper.  Exports DllGetClassObject and DllCanUnloadNow, nothing
@@ -326,16 +348,14 @@ target_sources(ImageLoaderIWI PUBLIC
 )
 set_property(TARGET ImageLoaderIWI PROPERTY CXX_STANDARD 23)
 
-# The loader's copy of IwiFormat needs ImagePluginDef.h in its global module
-# fragment.
 target_include_directories(ImageLoaderIWI PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Note there is no target_link_libraries here.  The loader and the shell
-# thumbnail provider must accept exactly the same files, and they do — both
-# compile IwiFormat.ixx rather than sharing it through a link library, which
-# keeps each DLL self-contained and its build independent.
+# The loader and the shell thumbnail provider must accept exactly the same
+# files, and they do: both import IwiFormat, which is a thin skin over the C
+# API in IwiFile.c.  There is one implementation of the accept/reject rules.
+target_link_libraries(ImageLoaderIWI PRIVATE iw_iwi_file)
 
 # WebP Plugin DLL — only when libwebp is available
 if(WebP_FOUND)

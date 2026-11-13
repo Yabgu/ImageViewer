@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.30)
-project(ImageViewer)
+# C is enabled for the IWI container's C API (src/imageviewer/IwiFile.c).  It is
+# a real C interface, not a C++ one wearing a .h name: Tension consumes the
+# format and a game engine binds it through FFI, so it has to compile as C.
+project(ImageViewer LANGUAGES C CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 23)

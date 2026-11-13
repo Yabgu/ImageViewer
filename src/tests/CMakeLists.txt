@@ -29,6 +29,27 @@ add_test(NAME iview_tests COMMAND iview_tests)
 
 add_subdirectory(format)
 
+# ── The container API, from a C consumer ────────────────────────────────────
+#
+# IwiFile.h claims to be a C API.  That claim is only worth something if a C
+# translation unit can include it and link the library without a C++ compiler
+# or any module support, which is how Tension and an FFI embedder would use it.
+# This target is compiled as C99 against the public header, so a regression to
+# C++-only declarations fails here rather than in a downstream repo.
+if(TARGET iw_iwi_file)
+    add_executable(iwi_file_c_test abi/iwi_file_c_test.c)
+
+    set_target_properties(iwi_file_c_test PROPERTIES
+        C_STANDARD 99
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+
+    target_link_libraries(iwi_file_c_test PRIVATE iw_iwi_file)
+
+    add_test(NAME iwi_file_c_test COMMAND iwi_file_c_test)
+endif()
+
 # ── Windows shell thumbnail provider ────────────────────────────────────────
 #
 # Covers the parts of IwiThumbnailProvider that can be checked without a
