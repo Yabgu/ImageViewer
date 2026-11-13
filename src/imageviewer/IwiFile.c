@@ -280,30 +280,6 @@ IwiFileStatus iwi_file_parse_header(const uint8_t* data,
     return IWI_FILE_OK;
 }
 
-const char* iwi_file_status_name(IwiFileStatus status)
-{
-    switch (status) {
-    case IWI_FILE_OK:                    return "ok";
-    case IWI_FILE_ERR_NO_INPUT:          return "no-input";
-    case IWI_FILE_ERR_TRUNCATED_HEADER:  return "truncated-header";
-    case IWI_FILE_ERR_BAD_MAGIC:         return "bad-magic";
-    case IWI_FILE_ERR_ZERO_DIMENSION:    return "zero-dimension";
-    case IWI_FILE_ERR_UNADDRESSABLE:     return "unaddressable";
-    case IWI_FILE_ERR_TOO_LARGE:         return "too-large";
-    case IWI_FILE_ERR_PAYLOAD_DECLARED:  return "payload-declared";
-    case IWI_FILE_ERR_PAYLOAD_TRUNCATED: return "payload-truncated";
-    case IWI_FILE_ERR_PLANAR:            return "planar";
-    case IWI_FILE_ERR_COMPONENT_COUNT:   return "component-count";
-    case IWI_FILE_ERR_COMPONENT_DEPTH:   return "component-depth";
-    case IWI_FILE_ERR_COMPONENT_ORDER:   return "component-order";
-    case IWI_FILE_ERR_COMPONENT_CLASS:   return "component-class";
-    case IWI_FILE_ERR_COMPONENT_LAYOUT:  return "component-layout";
-    }
-    /* An out-of-range value can only come from a caller casting an integer;
-     * returning a literal rather than NULL keeps this safe to log. */
-    return "unknown";
-}
-
 uint64_t iwi_file_required_bytes(uint32_t width,
                                  uint32_t height,
                                  uint16_t componentCount)

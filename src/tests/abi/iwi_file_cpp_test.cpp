@@ -132,7 +132,6 @@ int main()
         check(!static_cast<bool>(r), "planar fails");
         check(r.status() == iwi_file::Status::Planar, "status is Planar");
         check(r.unsupported(), "planar is 'valid but unsupported'");
-        check(iwi_file::statusName(r.status()) == "planar", "status name");
     }
 
     /* --- The C++ wrapper does not re-implement the rules ---------------- */
@@ -160,8 +159,6 @@ int main()
             const iwi_file::Status converted = static_cast<iwi_file::Status>(s);
             check(static_cast<IwiFileStatus>(converted) == s,
                   "status value round-trips");
-            check(!iwi_file::statusName(converted).empty(),
-                  "every status has a name");
         }
     }
 

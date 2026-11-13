@@ -202,13 +202,6 @@ template <class Container,
                  static_cast<std::size_t>(bytes.size()));
 }
 
-/* Status name for logs, e.g. "bad-magic".  Never empty. */
-[[nodiscard]] inline std::string_view statusName(Status status) noexcept
-{
-    return std::string_view(
-        iwi_file_status_name(static_cast<IwiFileStatus>(status)));
-}
-
 /* Payload bytes the geometry requires; 0 on overflow.
  *
  * Not constexpr: it calls the C implementation rather than restating the

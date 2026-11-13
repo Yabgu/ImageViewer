@@ -185,13 +185,6 @@ IWI_FILE_API IwiFileStatus iwi_file_parse_header(const uint8_t* data,
                                                  size_t errorSize);
 
 /*
- * A short, stable name for a status ("ok", "bad-magic", …).  Never NULL, so it
- * is safe to pass straight to a logger.  This is for logs and diagnostics; the
- * detailed reason is the `error` buffer from the parse.
- */
-IWI_FILE_API const char* iwi_file_status_name(IwiFileStatus status);
-
-/*
  * How many payload bytes the geometry requires.  Returns 0 on overflow, which
  * is a value no valid image can have, so callers can test for it.
  */

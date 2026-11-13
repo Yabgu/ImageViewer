@@ -157,12 +157,6 @@ int main(void)
     check(iwi_file_required_bytes(0xFFFFFFFFu, 0xFFFFFFFFu, 8) == 0,
           "overflow returns 0");
 
-    /* --- Status names are never NULL --------------------------------- */
-    check(iwi_file_status_name(IWI_FILE_OK) != NULL, "ok has a name");
-    check(iwi_file_status_name(IWI_FILE_ERR_PLANAR) != NULL, "planar has a name");
-    check(strcmp(iwi_file_status_name(IWI_FILE_ERR_BAD_MAGIC), "bad-magic") == 0,
-          "bad magic name");
-
     /* --- A caller argument may be a null out-pointer ------------------ */
     {
         size_t realSize = make_iwi(buf, sizeof(buf), 2, 2, 4);
