@@ -152,18 +152,47 @@ add_dependencies(iview_abi_tests ${_abi_plugin_targets})
 # plugins' imports from the MSYS2 prefix instead, so it keeps loading the
 # build-tree artefacts in place.
 if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
+    #
+    # Copy the plugins as a stamped custom command that DEPENDS on the plugin
+    # binaries, not as a POST_BUILD step on the test target.
+    #
+    # POST_BUILD runs when iview_abi_tests relinks.  A change to only a plugin's
+    # own sources relinks the plugin and re-runs none of the test target's
+    # commands, so the copy stayed at its previous contents and the suite
+    # validated a stale DLL - a green run that proves nothing about the code
+    # just built.
+    #
+    # All the copies happen inside ONE custom command, and the COMMANDs run in
+    # order.  One command per plugin would let Ninja run them concurrently, and
+    # each copy globs the whole plugin directory into the same destination - so
+    # two of them would copy the same file at the same time and Windows would
+    # fail the open with a sharing violation.
+    #
+    set(_deploy_stamp "${CMAKE_CURRENT_BINARY_DIR}/deploy_plugins.stamp")
+    set(_deploy_commands "")
+    set(_deploy_depends "")
+
     foreach(_plugin IN LISTS _abi_plugin_targets)
-        add_custom_command(TARGET iview_abi_tests POST_BUILD
+        list(APPEND _deploy_commands
             COMMAND ${CMAKE_COMMAND}
                 "-DPLUGIN_DIR=$<TARGET_FILE_DIR:${_plugin}>"
                 "-DDEST_DIR=$<TARGET_FILE_DIR:iview_abi_tests>"
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/copy_plugin_dlls.cmake"
-            VERBATIM
-        )
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/copy_plugin_dlls.cmake")
+        list(APPEND _deploy_depends "$<TARGET_FILE:${_plugin}>")
     endforeach()
+
+    add_custom_command(
+        OUTPUT "${_deploy_stamp}"
+        ${_deploy_commands}
+        COMMAND ${CMAKE_COMMAND} -E touch "${_deploy_stamp}"
+        DEPENDS ${_deploy_depends}
+        VERBATIM
+    )
+    add_custom_target(deploy_abi_plugins DEPENDS "${_deploy_stamp}")
+    add_dependencies(iview_abi_tests deploy_abi_plugins)
+
     target_compile_definitions(iview_abi_tests PRIVATE IW_ABI_PLUGINS_DEPLOYED=1)
 endif()
-
 target_link_libraries(iview_abi_tests PRIVATE doctest::doctest)
 
 # dlopen lives in libdl on Linux; macOS and Windows need nothing extra.

@@ -1,10 +1,9 @@
 module;
 
-#include <cstdarg>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "ImagePluginDef.h"
 #include "IwiFile.h"
@@ -14,41 +13,56 @@ export module IwiFormat;
 /*
  * IwiFormat — the C++ module view of the .iwi container header.
  *
- * Implements header validation and parsing for .iwi consumers (ImageLoaderIWI
- * and the Windows shell thumbnail provider).
+ * # There is no parser here
+ *
+ * The rules live in IwiFile.cpp, behind the C API in IwiFile.h. This module is
+ * a thin skin over that API: it allocates the blob the C API fills, maps its
+ * status codes into an enum class so module code can switch on them, and hands
+ * back a struct with the fields the loader and the thumbnail provider read.
+ *
+ * That direction is deliberate and is the only one allowed: the C ABI is the
+ * contract (Rust, FFI and a C engine can reach it; a module cannot), so the
+ * module depends on the C API and never the reverse. If this file ever grows a
+ * bit test or a bounds check that IwiFile.cpp does not have, the two have
+ * drifted and the validation belongs back in the C implementation.
+ *
+ * # The header on disk
  *
  *   offset  size  field
  *        0     4  magic "IWI1"
  *        4     4  width           u32
  *        8     4  height          u32
- *       12     4  metaBytes       u32  (optional metadata blob length)
- *       16     8  storageLayout   IWStorageLayout (flags u32, stride u32)
- *       24     8  payloadEncoding char[8] (e.g. "raw\0\0\0\0\0")
- *       32     1  colorSpace      u8   (ImageColorSpace)
- *       33     1  reserved        u8   (zeroed padding)
- *       34     2  componentCount  u16  (number of components, min 1)
- *       36   N*6  components[N]   6 bytes each (N = componentCount):
- *                                    semantic       u8
- *                                    componentClass u8
- *                                    bitOffset      u16
- *                                    bitWidth       u16
- *   36+N*6     *  metaBlob        u8[metaBytes]
- * 36+N*6+M     *  pixelData       u8[]
+ *       12     4  metaBytes       u32
+ *       16     8  storageLayout   u64 (flags u32, stride u32)
+ *       24     8  payloadEncoding char[8]
+ *       32     1  colorSpace      u8
+ *       33     1  reserved        u8
+ *       34     2  componentCount  u16
+ *       36   6*N  components[N]   6 bytes each
+ *     36+6N   M  metadata        M = metaBytes
+ *   36+6N+M   *  pixelData       tightly packed, interleaved
  *
- * Every multi-byte field above is little-endian.
+ * Every multi-byte field is little-endian. Big-endian hosts are out of scope,
+ * as documented in IwiFile.h.
+ *
+ * # What is *not* decided here
+ *
+ * Colour space. The header carries one and it is reported as-is; whether sRGB,
+ * linear, PQ or HLG can be shown is a display question that belongs to the
+ * consumer, not to the container. ImageLoaderIWI passes all four through; the
+ * thumbnail provider refuses the two HDR transfer functions because it has no
+ * tone mapping to offer.
  */
 
 export namespace iwi {
 
-inline constexpr char kMagic[] = IWI_FILE_MAGIC;
-inline constexpr std::size_t kBaseHeaderBytes = IWI_FILE_BASE_HEADER_BYTES;
-inline constexpr std::size_t kHeaderBytes = sizeof(IwiFileHeader);
-
-using ::IwiFileComponent;
-using ::IwiFileHeader;
-
 /*
- * Status codes for header parsing.
+ * Status, carrying the same meaning as the C IwiStatus but as a scoped enum so
+ * module code can switch on it without dragging in the C spellings.
+ *
+ * `Ok` is 0 and every failure is distinct. MapStatus in the detail namespace
+ * below is the single conversion point from IwiFile.h's IwiStatus, and it is
+ * total over that enum.
  */
 enum class IwiStatus {
     Ok = 0,
@@ -66,243 +80,190 @@ enum class IwiStatus {
     UnexpectedSemantic,
     UnsupportedComponentClass,
     UnexpectedComponentLayout,
+    OutOfSpace,
 };
 
 /*
- * The validated header. `packedBytes` is what the geometry needs.
+ * The validated header.
+ *
+ * `packedBytes` is what the geometry needs; `headerBytes` is the offset at
+ * which the pixel data starts, i.e. 36 + 6N + metaBytes.
+ *
+ * There is no component array here. The component table is variable-length and
+ * lives in the caller's blob; a consumer that needs it uses the C API's
+ * iwi_file_components() on that blob, or reads what it needs from `components`
+ * (the count) and `bitsPerPixel` (the derived total). Dropping the old
+ * `component[4]` member removed a fixed cap that nothing was reading.
  */
 struct IwiHeader {
     uint32_t        width          = 0;
     uint32_t        height         = 0;
     uint8_t         colorSpace     = 0;
     uint16_t        components     = 0;
-    uint16_t        bitsPerPixel   = 0;
+    uint32_t        bitsPerPixel   = 0;
     IWStorageLayout storageLayout{};
     uint32_t        metaBytes      = 0;
     uint32_t        metaOffset     = 0;
-    uint32_t        headerBytes    = 0; // offset to pixelData: 36 + components * 6 + metaBytes
+    uint32_t        headerBytes    = 0;
     uint64_t        packedBytes    = 0;
     char            payloadEncoding[8] = {};
-
-    struct Component {
-        uint8_t  semantic       = 0;
-        uint8_t  componentClass = 0;
-        uint16_t bitOffset      = 0;
-        uint16_t bitWidth       = 0;
-    };
-    Component component[4];
 };
 
 struct IwiParseResult {
     IwiStatus status = IwiStatus::Ok;
     IwiHeader header{};
+    /* The C API's reason text. The ABI tests assert substrings of it
+     * ("magic", "planar", "offset", "header"), so the wording is a contract. */
     char reason[192] = {};
 
     bool ok() const { return status == IwiStatus::Ok; }
 };
 
-} // export namespace iwi
-
-namespace iwi {
-
 namespace detail {
 
-inline uint16_t ReadU16(const uint8_t* p) noexcept
+/* The single conversion from C status to module status. */
+inline IwiStatus MapStatus(int rc) noexcept
 {
-    return static_cast<uint16_t>(p[0]) |
-           static_cast<uint16_t>(static_cast<uint16_t>(p[1]) << 8u);
-}
-
-inline uint32_t ReadU32(const uint8_t* p) noexcept
-{
-    return static_cast<uint32_t>(p[0]) |
-           (static_cast<uint32_t>(p[1]) << 8u) |
-           (static_cast<uint32_t>(p[2]) << 16u) |
-           (static_cast<uint32_t>(p[3]) << 24u);
-}
-
-inline uint64_t ReadU64(const uint8_t* p) noexcept
-{
-    uint64_t v = 0;
-    for (unsigned i = 0; i < 8u; ++i) {
-        v |= static_cast<uint64_t>(p[i]) << (8u * i);
+    switch (rc) {
+    case IWI_STATUS_OK:                          return IwiStatus::Ok;
+    case IWI_STATUS_NO_INPUT:                    return IwiStatus::NullInput;
+    case IWI_STATUS_TRUNCATED_HEADER:            return IwiStatus::TruncatedHeader;
+    case IWI_STATUS_BAD_MAGIC:                   return IwiStatus::BadMagic;
+    case IWI_STATUS_ZERO_DIMENSION:              return IwiStatus::ZeroDimension;
+    case IWI_STATUS_GEOMETRY_TOO_LARGE:          return IwiStatus::GeometryTooLarge;
+    case IWI_STATUS_PAYLOAD_TRUNCATED:           return IwiStatus::PayloadBeyondBuffer;
+    case IWI_STATUS_COMPONENT_LAYOUT:            return IwiStatus::UnexpectedComponentLayout;
+    case IWI_STATUS_ENOSPC:                      return IwiStatus::OutOfSpace;
+    case IWI_STATUS_UNSUPPORTED_ENCODING:        return IwiStatus::UnsupportedEncoding;
+    case IWI_STATUS_UNSUPPORTED_STORAGE:         return IwiStatus::UnsupportedStorage;
+    case IWI_STATUS_UNSUPPORTED_COMPONENT_COUNT: return IwiStatus::UnsupportedComponentCount;
+    case IWI_STATUS_UNSUPPORTED_COMPONENT_CLASS: return IwiStatus::UnsupportedComponentClass;
+    case IWI_STATUS_UNSUPPORTED_BIT_DEPTH:       return IwiStatus::UnsupportedBitDepth;
+    case IWI_STATUS_UNEXPECTED_SEMANTIC:         return IwiStatus::UnexpectedSemantic;
+    case IWI_STATUS_UNADDRESSABLE_GEOMETRY:      return IwiStatus::UnaddressableGeometry;
     }
-    return v;
+    return IwiStatus::UnexpectedComponentLayout;
 }
 
-inline IwiParseResult Fail(IwiStatus status, const char* format, ...)
+inline void CopyReason(char (&dest)[192], int rc) noexcept
 {
-    IwiParseResult r;
-    r.status = status;
-    va_list args;
-    va_start(args, format);
-    (void)std::vsnprintf(r.reason, sizeof(r.reason), format, args);
-    va_end(args);
-    return r;
+    const char* msg = iwi_status_message(rc);
+    const std::size_t len = std::strlen(msg);
+    const std::size_t copyLen = len < sizeof(dest) - 1u ? len : sizeof(dest) - 1u;
+    std::memcpy(dest, msg, copyLen);
+    dest[copyLen] = '\0';
+}
+
+/* On-disk offset of componentCount, asserted by test_abi_constants.cpp. */
+inline uint16_t ReadComponentCount(const uint8_t* bytes) noexcept
+{
+    return static_cast<uint16_t>(
+        static_cast<uint16_t>(bytes[34]) |
+        static_cast<uint16_t>(static_cast<uint16_t>(bytes[35]) << 8u));
 }
 
 } // namespace detail
 
 /*
- * Validate and parse a container header.
+ * Validate a container header.
  *
  * `size` is the whole container — the payload bounds check needs it, so a
- * caller holding only the first few bytes cannot use this to accept a file.
+ * caller holding only the first 36 bytes cannot use this to accept a file.
+ *
+ * A grayscale (1-component) file parses: it is a well-formed container. What
+ * it is not is presentable as RGBA, which is iwi_decode's question, and the
+ * loader asks it there. Rejecting it here would be a component cap, and the
+ * format has none.
  */
-export inline IwiParseResult ParseHeader(const uint8_t* bytes, std::size_t size)
+inline IwiParseResult ParseHeader(const uint8_t* bytes,
+                                  std::size_t available,
+                                  std::uint64_t containerSize)
 {
-    if (bytes == nullptr) {
-        return detail::Fail(IwiStatus::NullInput, "No input");
-    }
-
-    if (size < sizeof(IwiFileHeader)) {
-        return detail::Fail(IwiStatus::TruncatedHeader,
-                            "IWI is %zu bytes; the minimum header alone is %zu",
-                            size, sizeof(IwiFileHeader));
-    }
-
-    const auto* fileHdr = reinterpret_cast<const IwiFileHeader*>(bytes);
-
-    if (std::memcmp(fileHdr->magic, IWI_FILE_MAGIC, IWI_FILE_MAGIC_BYTES) != 0) {
-        return detail::Fail(IwiStatus::BadMagic,
-                            "not an IWI1 container (magic mismatch)");
-    }
-
-    const uint32_t width       = detail::ReadU32(reinterpret_cast<const uint8_t*>(&fileHdr->width));
-    const uint32_t height      = detail::ReadU32(reinterpret_cast<const uint8_t*>(&fileHdr->height));
-    const uint32_t metaBytes   = detail::ReadU32(reinterpret_cast<const uint8_t*>(&fileHdr->metaBytes));
-    const uint8_t  colorSpace  = static_cast<uint8_t>(fileHdr->colorSpace);
-    const uint16_t components  = detail::ReadU16(reinterpret_cast<const uint8_t*>(&fileHdr->componentCount));
-
-    if (width == 0u || height == 0u) {
-        return detail::Fail(IwiStatus::ZeroDimension,
-                            "IWI dimensions are %ux%u", width, height);
-    }
-
-    if (components < IWI_FILE_MIN_COMPONENTS) {
-        return detail::Fail(IwiStatus::UnsupportedComponentCount,
-                            "IWI declares %u components; minimum is 1",
-                            static_cast<unsigned>(components));
-    }
-
-    const uint64_t baseHeader = IWI_FILE_BASE_HEADER_BYTES +
-                                static_cast<uint64_t>(components) * sizeof(IwiFileComponent);
-    const uint64_t totalHeaderAndMeta = baseHeader + static_cast<uint64_t>(metaBytes);
-
-    if (static_cast<uint64_t>(size) < totalHeaderAndMeta) {
-        return detail::Fail(IwiStatus::TruncatedHeader,
-                            "IWI is %zu bytes; header and metadata require %llu bytes",
-                            size, static_cast<unsigned long long>(totalHeaderAndMeta));
-    }
-
-    // Encoding check: only uncompressed / "raw" (or zeroed) is currently decoded
-    if (fileHdr->payloadEncoding[0] != '\0' &&
-        std::memcmp(fileHdr->payloadEncoding, IWI_PAYLOAD_RAW, 3) != 0) {
-        return detail::Fail(IwiStatus::UnsupportedEncoding,
-                            "IWI payload encoding '%.8s' is not supported",
-                            fileHdr->payloadEncoding);
-    }
-
-    if (fileHdr->storageLayout.isPlanar()) {
-        return detail::Fail(IwiStatus::UnsupportedStorage,
-                            "IWI planar storage is not supported");
-    }
-
-    if (components != 3u && components != 4u) {
-        return detail::Fail(IwiStatus::UnsupportedComponentCount,
-                            "IWI has %u components; only RGB8 (3) and RGBA8 (4) are supported",
-                            static_cast<unsigned>(components));
-    }
-
-    if (width > 0x7FFFFFFFu || height > 0x7FFFFFFFu
-        || static_cast<uint64_t>(width) > static_cast<uint64_t>(0x7FFFFFFF) / static_cast<uint64_t>(components)) {
-        return detail::Fail(IwiStatus::UnaddressableGeometry,
-                            "IWI dimensions %ux%u exceed the addressable range",
-                            width, height);
-    }
-
-    const uint64_t pixels  = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
-    const uint64_t maxSize = static_cast<uint64_t>(static_cast<size_t>(-1));
-    if (pixels > maxSize / static_cast<uint64_t>(components)) {
-        return detail::Fail(IwiStatus::GeometryTooLarge,
-                            "IWI geometry %ux%u x %u components is too large",
-                            width, height, static_cast<unsigned>(components));
-    }
-
-    const uint64_t expected = pixels * static_cast<uint64_t>(components);
-
-    if (static_cast<uint64_t>(size) - totalHeaderAndMeta < expected) {
-        return detail::Fail(IwiStatus::PayloadBeyondBuffer,
-                            "IWI is %zu bytes; %ux%u x %u components needs %llu payload bytes",
-                            size, width, height, static_cast<unsigned>(components),
-                            static_cast<unsigned long long>(expected));
-    }
-
-    static const uint8_t expectedSemantics[4] = {
-        static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_R),
-        static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_G),
-        static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_B),
-        static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_A)
-    };
-
     IwiParseResult result;
-    result.status = IwiStatus::Ok;
-    result.header.width         = width;
-    result.header.height        = height;
-    result.header.colorSpace    = static_cast<uint8_t>(colorSpace);
-    result.header.components    = static_cast<uint16_t>(components);
-    result.header.storageLayout = fileHdr->storageLayout;
-    result.header.metaBytes     = metaBytes;
-    result.header.metaOffset    = static_cast<uint32_t>(baseHeader);
-    result.header.headerBytes   = static_cast<uint32_t>(totalHeaderAndMeta);
-    result.header.packedBytes   = expected;
-    std::memcpy(result.header.payloadEncoding, fileHdr->payloadEncoding, 8);
 
-    uint16_t bitsPerPx = 0;
-    for (uint32_t i = 0; i < components; ++i) {
-        const auto&    rec      = fileHdr->components[i];
-        const uint8_t  semantic = static_cast<uint8_t>(rec.semantic);
-        const uint8_t  cls      = static_cast<uint8_t>(rec.componentClass);
-        const uint16_t bitOff   = detail::ReadU16(reinterpret_cast<const uint8_t*>(&rec.bitOffset));
-        const uint16_t bitWidth = detail::ReadU16(reinterpret_cast<const uint8_t*>(&rec.bitWidth));
-
-        if (semantic != expectedSemantics[i]) {
-            return detail::Fail(IwiStatus::UnexpectedSemantic,
-                                "IWI component %u has semantic %u; expected R, G, B%s in that order",
-                                static_cast<unsigned>(i), static_cast<unsigned>(semantic),
-                                components == 4u ? ", A" : "");
-        }
-
-        if (cls != static_cast<uint8_t>(IW_COMPONENT_CLASS_UINT)
-            && cls != static_cast<uint8_t>(IW_COMPONENT_CLASS_UNORM)) {
-            return detail::Fail(IwiStatus::UnsupportedComponentClass,
-                                "IWI component %u has class %u; only UINT (0) and UNORM (2) are understood",
-                                static_cast<unsigned>(i), static_cast<unsigned>(cls));
-        }
-
-        if (bitWidth != 8u) {
-            return detail::Fail(IwiStatus::UnsupportedBitDepth,
-                                "IWI component %u is %u bits; only 8-bit components are supported",
-                                static_cast<unsigned>(i), static_cast<unsigned>(bitWidth));
-        }
-
-        if (bitOff != static_cast<uint16_t>(i * 8u)) {
-            return detail::Fail(IwiStatus::UnexpectedComponentLayout,
-                                "IWI component %u is at offset %u; expected offset %u",
-                                static_cast<unsigned>(i), static_cast<unsigned>(bitOff),
-                                static_cast<unsigned>(i * 8u));
-        }
-
-        bitsPerPx += bitWidth;
-        result.header.component[i].semantic       = semantic;
-        result.header.component[i].componentClass = cls;
-        result.header.component[i].bitOffset      = bitOff;
-        result.header.component[i].bitWidth       = bitWidth;
+    if (bytes == nullptr) {
+        result.status = IwiStatus::NullInput;
+        detail::CopyReason(result.reason, IWI_STATUS_NO_INPUT);
+        return result;
+    }
+    if (available < IWI_FILE_BASE_HEADER_BYTES) {
+        result.status = IwiStatus::TruncatedHeader;
+        detail::CopyReason(result.reason, IWI_STATUS_TRUNCATED_HEADER);
+        return result;
     }
 
-    result.header.bitsPerPixel = bitsPerPx;
+    /*
+     * Size the blob the C API will fill: 36 + 6N. One allocation, one parse.
+     *
+     * `required == 0` means the base header is not readable: bad magic or a
+     * zero component count, both of which iwi_parse decides before it looks at
+     * the output buffer. Give it a base-sized buffer so those checks run and
+     * the status that comes back is the real one.
+     */
+    const std::size_t required = iwi_file_required_size(bytes, available);
+
+    std::vector<uint8_t> blob(required == 0 ? IWI_FILE_BASE_HEADER_BYTES : required, 0);
+
+    const int rc = iwi_parse_prefix(reinterpret_cast<IwiFileHeader*>(blob.data()),
+                                  blob.size(), bytes, available,
+                                  static_cast<std::size_t>(containerSize));
+    detail::CopyReason(result.reason, rc);
+    result.status = detail::MapStatus(rc);
+
+    if (result.status != IwiStatus::Ok) {
+        return result;
+    }
+
+    /* Read the validated base header back out of the blob. */
+    IwiFileHeader base{};
+    std::memcpy(&base, blob.data(), IWI_FILE_BASE_HEADER_BYTES);
+
+    result.header.width         = base.width;
+    result.header.height        = base.height;
+    result.header.colorSpace    = base.colorSpace;
+    result.header.components    = base.componentCount;
+    result.header.metaBytes     = base.metaBytes;
+    result.header.storageLayout = base.storageLayout;
+    std::memcpy(result.header.payloadEncoding, base.payloadEncoding, 8);
+
+    /* 36 + 6N is the end of the component table, which is where metadata
+     * starts; add metaBytes for the offset of the first pixel. */
+    result.header.metaOffset =
+        IWI_FILE_BASE_HEADER_BYTES +
+        static_cast<uint32_t>(result.header.components) * IWI_FILE_COMPONENT_BYTES;
+    result.header.headerBytes = result.header.metaOffset + result.header.metaBytes;
+
+    /*
+     * bitsPerPixel is the sum of the component widths, widened to uint32_t:
+     * with no component cap a uint16_t accumulator can wrap, and a wrapped
+     * value is worse than a large one.
+     */
+    uint32_t bits = 0;
+    const IwiFileComponent* comps = iwi_file_components(
+        reinterpret_cast<const IwiFileHeader*>(blob.data()));
+    for (uint16_t i = 0; i < result.header.components; ++i) {
+        bits += comps[i].bitWidth;
+    }
+    result.header.bitsPerPixel = bits;
+
+    result.header.packedBytes =
+        static_cast<uint64_t>(base.width) * base.height * base.componentCount;
 
     return result;
 }
 
-} // namespace iwi
+/*
+ * Whole-buffer convenience: the bytes held are the whole container.
+ *
+ * A prefix reader - the shell thumbnail provider is the only one - calls the
+ * three-argument form with the head it read and the container size it got from
+ * the filesystem. Passing the container size as the readable length would let
+ * the validator walk past the buffer; passing the head length as the container
+ * size would reject every file for having no payload.
+ */
+inline IwiParseResult ParseHeader(const uint8_t* bytes, std::size_t size)
+{
+    return ParseHeader(bytes, size, static_cast<std::uint64_t>(size));
+}
+
+} // export namespace iwi

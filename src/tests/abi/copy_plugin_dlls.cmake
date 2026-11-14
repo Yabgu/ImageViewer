@@ -1,8 +1,9 @@
 # Copy the plugin DLLs -- and the runtime DLLs they import, which the build has
 # already deployed beside them -- next to the ABI test executable.
 #
-# Invoked from src/tests/abi/CMakeLists.txt as a POST_BUILD step with PLUGIN_DIR
-# and DEST_DIR defined.
+# Invoked from src/tests/abi/CMakeLists.txt as a stamped custom command with
+# PLUGIN_DIR and DEST_DIR defined.  It depends on the plugin binary, so it runs
+# again when the plugin changes - a POST_BUILD step on the test target did not.
 #
 # The glob is deliberate.  The set is only known after the build has run:
 # vcpkg's applocal step copies it from the PE import tables, and the CMake

@@ -87,7 +87,7 @@ std::vector<uint8_t> MakeIwi(const Spec& spec,
     const std::size_t total = headerBytes + pixels.size() + trailingSlack;
     std::vector<uint8_t> b(total, 0);
 
-    std::memcpy(b.data(), iwi::kMagic, 4);
+    std::memcpy(b.data(), IWI_FILE_MAGIC, IWI_FILE_MAGIC_BYTES);
     auto* hdr = reinterpret_cast<IwiFileHeader*>(b.data());
     hdr->width = spec.width;
     hdr->height = spec.height;
@@ -98,11 +98,15 @@ std::vector<uint8_t> MakeIwi(const Spec& spec,
     hdr->reserved = 0;
     hdr->componentCount = spec.components;
 
+    /* The table follows the base header in the same buffer - the accessor is
+     * how any consumer reaches it, and the test builds the file the same way a
+     * reader walks it. */
+    auto* table = const_cast<IwiFileComponent*>(iwi_file_components(hdr));
     for (uint16_t i = 0; i < spec.components; ++i) {
-        hdr->components[i].semantic = static_cast<IWComponentSemantic>(i + 1);
-        hdr->components[i].componentClass = IW_COMPONENT_CLASS_UNORM;
-        hdr->components[i].bitOffset = static_cast<uint16_t>(i * 8u);
-        hdr->components[i].bitWidth = 8;
+        table[i].semantic       = static_cast<uint8_t>(i + 1u);
+        table[i].componentClass = static_cast<uint8_t>(IW_COMPONENT_CLASS_UNORM);
+        table[i].bitOffset      = static_cast<uint16_t>(i * 8u);
+        table[i].bitWidth       = 8;
     }
 
     std::memcpy(b.data() + headerBytes,

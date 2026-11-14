@@ -9,6 +9,7 @@ module;
 #include <vector>
 
 #include "ImagePluginDef.h"
+#include "IwiFile.h"
 
 export module IwiThumbnail;
 
@@ -62,6 +63,11 @@ inline constexpr unsigned kMaxSamplesPerAxis = 4;
  * cap still opens in the viewer; it just gets the file-type icon here.
  */
 inline constexpr uint32_t kMaxSourceEdge = 32768;
+
+/* The head buffer: base header plus room for the component table.  4 KiB is
+ * 36 + 6 * 676 components - far more than any colour raster - and small
+ * enough that a hostile count cannot make this DLL allocate. */
+inline constexpr std::size_t kMaxHeadBytes = 4096;
 
 /* Largest edge this code will produce.  Explorer asks for much less; the clamp
  * exists so a bad caller cannot ask for a 100000 px bitmap. */
@@ -235,23 +241,83 @@ ThumbnailStatus RenderThumbnail(SampleSource& source,
     out = ThumbnailImage{};
 
     const uint64_t containerBytes = source.Size();
-    if (containerBytes < sizeof(IwiFileHeader))
+    if (containerBytes < IWI_FILE_BASE_HEADER_BYTES)
         return Fail(ThumbnailStatus::Malformed, reason,
                     "IWI is smaller than its own header");
 
-    const std::size_t toRead = static_cast<std::size_t>(
-        std::min<uint64_t>(containerBytes, 256u));
-    uint8_t headerBytes[256];
-    if (!source.ReadAt(0, headerBytes, toRead))
+    /*
+     * Read the base header first, because it names the component count and so
+     * the size of the table that follows it.  Nothing here may guess a length
+     * and hand it to the parser: the parser believes what it is told, and a
+     * length larger than the buffer is a stack overread in whatever host loads
+     * this DLL - Explorer's dllhost.exe, on files nobody chose.
+     */
+    uint8_t head[kMaxHeadBytes];
+    if (!source.ReadAt(0, head, IWI_FILE_BASE_HEADER_BYTES))
         return Fail(ThumbnailStatus::IoError, reason,
                     "could not read the IWI header");
 
+    /*
+     * Sniff the magic before trusting any length in the header.
+     *
+     * The component count at offset 34 is attacker-controlled until the magic
+     * says this is an IWI at all.  Sizing a read from a non-IWI's byte 34 is
+     * exactly how a thumbnail provider becomes a stack-overread gadget in
+     * Explorer's dllhost.exe, on files nobody chose to open.  The parser checks
+     * magic first for the same reason; this is the same order, before the
+     * count is used rather than after.
+     */
+    if (std::memcmp(head, IWI_FILE_MAGIC, IWI_FILE_MAGIC_BYTES) != 0)
+        return Fail(ThumbnailStatus::Malformed, reason,
+                    "not an IWI container (magic mismatch)");
+
+    const uint16_t componentCount = static_cast<uint16_t>(
+        static_cast<uint16_t>(head[34]) |
+        static_cast<uint16_t>(static_cast<uint16_t>(head[35]) << 8u));
+
+    const uint64_t tableBytes = static_cast<uint64_t>(IWI_FILE_BASE_HEADER_BYTES) +
+                                static_cast<uint64_t>(componentCount) * IWI_FILE_COMPONENT_BYTES;
+
+    /*
+     * The head buffer bounds how large a table this reader will look at.  A
+     * file asking for more is not corrupt - a 200-band capture is legal - it is
+     * simply not a thumbnail candidate, and reading it here would mean
+     * allocating whatever the file says.
+     */
+    if (tableBytes > kMaxHeadBytes)
+        return Fail(ThumbnailStatus::Unsupported, reason,
+                    "IWI component table is larger than a thumbnail read will "
+                    "load; this file cannot be previewed");
+
+    if (static_cast<uint64_t>(containerBytes) < tableBytes)
+        return Fail(ThumbnailStatus::Malformed, reason,
+                    "IWI is smaller than its own header");
+
+    if (!source.ReadAt(0, head, static_cast<std::size_t>(tableBytes)))
+        return Fail(ThumbnailStatus::IoError, reason,
+                    "could not read the IWI header");
+
+    /*
+     * Two lengths, deliberately distinct: the bytes actually read, and the size
+     * of the container they came from.  The parser needs both - the first to
+     * stay inside the buffer, the second to decide whether the payload the
+     * header promises actually fits in the file.
+     */
     const IwiParseResult parsed =
-        ParseHeader(headerBytes, static_cast<std::size_t>(containerBytes));
+        ParseHeader(head, static_cast<std::size_t>(tableBytes), containerBytes);
     if (!parsed.ok()) {
         if (reason) *reason = parsed.reason;
         return ThumbnailStatus::Malformed;
     }
+
+    /*
+     * The container accepts any component count; a thumbnail is an RGBA image
+     * and only 3 or 4 components have one.  Saying so is this provider's
+     * decision, not a container rule.
+     */
+    if (parsed.header.components != 3u && parsed.header.components != 4u)
+        return Fail(ThumbnailStatus::Unsupported, reason,
+                    "IWI component count has no RGBA form for a thumbnail");
 
     const uint8_t colorSpace = parsed.header.colorSpace;
     if (colorSpace == IMAGE_COLOR_SPACE_HDR_PQ ||

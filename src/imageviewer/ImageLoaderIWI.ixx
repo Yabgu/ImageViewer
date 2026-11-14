@@ -151,9 +151,30 @@ ImagePluginResult DecodeIwi(const Source& src)
 
     const iwi::IwiHeader& header = parsed.header;
 
+    /*
+     * Renderability, which is this loader's opinion rather than a container
+     * rule.  iwi_parse accepts any component count - a 200-band spectral file
+     * is a valid IWI - but this loader and the renderer behind it only have a
+     * meaning for RGB8 and RGBA8.  Checking here rather than in the parser is
+     * what keeps the container uncapped.
+     */
+    if (header.components != 3u && header.components != 4u)
+    {
+        return Fail(IMAGE_PLUGIN_DECODE_ERROR,
+                    "IWI has an unsupported component count for display");
+    }
+
     IWImageFormat format = {};
     format.componentCount = header.components;
-    format.bitsPerPixel   = header.bitsPerPixel;
+    /*
+     * Saturate rather than truncate: bitsPerPixel is uint32_t in the header (no
+     * component cap, so a uint16 accumulator could wrap) and uint16_t in the
+     * ABI.  With 3 or 4 8-bit components the value is 24 or 32 and this is a
+     * no-op; the guard is here so the narrowing is deliberate.
+     */
+    format.bitsPerPixel   = header.bitsPerPixel > 0xFFFFu
+                                ? 0xFFFFu
+                                : static_cast<uint16_t>(header.bitsPerPixel);
     format.storageLayout  = header.storageLayout;
     format.components     = (header.components == 4) ? iw::kRgba8Components : iw::kRgb8Components;
 
