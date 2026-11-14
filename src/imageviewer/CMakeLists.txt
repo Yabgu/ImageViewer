@@ -176,33 +176,10 @@ set_property(TARGET iw_plugin_host PROPERTY CXX_STANDARD 23)
 
 # ── IWI container format ────────────────────────────────────────────────────
 #
-# The .iwi container: IwiFile.h is the public C API, IwiFile.cpp is the one
-# implementation of the format rules.
-#
-# A real static library, not INTERFACE: the C ABI has symbols to link. Tension,
-# a game engine and the shell thumbnail provider all bind this same surface, so
-# it is a C header plus a compiled implementation rather than a C++ module.
-# `IwiFile.h` is one of the two headers the CI C11 gate compiles as C.
-add_library(iw_iwi_file STATIC)
-
-target_sources(iw_iwi_file
-    PRIVATE
-        IwiFile.cpp
-    PUBLIC
-        FILE_SET iwi_file TYPE HEADERS
-        FILES
-            IwiFile.h
-            ImagePluginDef.h
-)
-
-target_include_directories(iw_iwi_file PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-set_target_properties(iw_iwi_file PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
-)
+# Moved to src/format/CMakeLists.txt.  The container grammar and its C ABI are
+# the format's, not the viewer's: Tension and any other consumer bind them
+# without linking a line of viewer code.  What stays here is IwiFormat.ixx,
+# which is the viewer's policy layer on top of that grammar.
 
 # ── Windows shell thumbnail provider ────────────────────────────────────────
 #

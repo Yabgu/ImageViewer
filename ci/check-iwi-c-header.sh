@@ -72,12 +72,14 @@ int main(void) { return 0; }
 EOF
 
 echo "check-iwi-c-header: ${compiler} -x c -std=c11 -pedantic-errors"
-echo "check-iwi-c-header: header dir ${root}/src/imageviewer"
+echo "check-iwi-c-header: format dir  ${root}/src/format"
+echo "check-iwi-c-header: plugin dir  ${root}/src/imageviewer"
 echo "check-iwi-c-header: gate body  ${root}/src/tests/abi"
 
 # -pedantic-errors turns "this is a C23 extension" into a hard error, which is
 # the entire point: the consumers are C11, not C23.
 if ! "${compiler}" -x c -std=c11 -pedantic-errors -Wall -Wextra -Werror \
+        -I "${root}/src/format" \
         -I "${root}/src/imageviewer" \
         -I "${root}/src/tests/abi" \
         -fsyntax-only "${work}/gate.c"; then

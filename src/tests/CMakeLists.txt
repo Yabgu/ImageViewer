@@ -84,7 +84,10 @@ endif()
 # Runs as a ctest test (so every job runs it) and as a build target (so a
 # developer can run it without going through ctest).
 set(_iwi_gate_src "${CMAKE_CURRENT_BINARY_DIR}/iwi_c_header_gate.c")
-set(_iwi_gate_inc "${CMAKE_SOURCE_DIR}/src/imageviewer")
+# The gate compiles IwiFile.h (src/format, the format authority) and
+# ImagePluginDef.h (src/imageviewer, the plugin ABI it includes).
+set(_iwi_gate_inc "${CMAKE_SOURCE_DIR}/src/format")
+set(_iwi_gate_plugin_inc "${CMAKE_SOURCE_DIR}/src/imageviewer")
 
 # The body lives in a header - abi/iwi_c_gate_body.h - so the CI script can
 # compile exactly the same assertions without configuring the project.  This
@@ -127,6 +130,7 @@ if(MSVC)
         "${CMAKE_CXX_COMPILER}" /nologo /TC /std:c11 /W4
         ${_iwi_gate_sys_inc}
         /I${_iwi_gate_inc}
+        /I${_iwi_gate_plugin_inc}
         /I${_iwi_gate_body_dir}
         /c ${_iwi_gate_src}
         /Fo${CMAKE_CURRENT_BINARY_DIR}/iwi_c_header_gate.obj)
@@ -145,6 +149,7 @@ else()
         "${CMAKE_CXX_COMPILER}" -x c -std=c11 -pedantic-errors
         -Wall -Wextra -Werror
         -I ${_iwi_gate_inc}
+        -I ${_iwi_gate_plugin_inc}
         -I ${_iwi_gate_body_dir}
         -fsyntax-only ${_iwi_gate_src})
 
