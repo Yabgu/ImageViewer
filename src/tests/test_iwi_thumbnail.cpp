@@ -42,6 +42,7 @@
  * deliberately not a module: it is a C header that the plugins, the ABI tests
  * and embedders share, so it is included rather than imported. */
 #include "ImagePluginDef.h"
+#include "IwiFile.h"
 
 import IwiFormat;
 import IwiThumbnail;
@@ -82,34 +83,29 @@ std::vector<uint8_t> MakeIwi(const Spec& spec,
                              const std::vector<uint8_t>& pixels,
                              std::size_t trailingSlack = 0)
 {
-    const std::size_t declared = pixels.size() + trailingSlack;
-    std::vector<uint8_t> b(iwi::toSize(iwi::Extent::Header) + declared, 0);
+    const std::size_t headerBytes = 36u + static_cast<std::size_t>(spec.components) * 6u;
+    const std::size_t total = headerBytes + pixels.size() + trailingSlack;
+    std::vector<uint8_t> b(total, 0);
 
-    std::memcpy(b.data(), iwi::kMagic, iwi::toSize(iwi::Extent::Magic));
-    PutU32(b, iwi::toSize(iwi::Offset::Width), spec.width);
-    PutU32(b, iwi::toSize(iwi::Offset::Height), spec.height);
-    b[iwi::toSize(iwi::Offset::ColorSpace)] = spec.colorSpace;
-    PutU16(b, iwi::toSize(iwi::Offset::ComponentCount), spec.components);
-    PutU16(b, iwi::toSize(iwi::Offset::BitsPerPixel),
-          static_cast<uint16_t>(spec.components * 8u));
-    b[iwi::toSize(iwi::Offset::Storage)] = IW_STORAGE_INTERLEAVED;
+    std::memcpy(b.data(), iwi::kMagic, 4);
+    auto* hdr = reinterpret_cast<IwiFileHeader*>(b.data());
+    hdr->width = spec.width;
+    hdr->height = spec.height;
+    hdr->metaBytes = 0;
+    hdr->storageLayout = IW_STORAGE_INTERLEAVED;
+    std::memcpy(hdr->payloadEncoding, "raw\0\0\0\0\0", 8);
+    hdr->colorSpace = static_cast<ImageColorSpace>(spec.colorSpace);
+    hdr->reserved = 0;
+    hdr->componentCount = spec.components;
 
     for (uint16_t i = 0; i < spec.components; ++i) {
-        const std::size_t rec =
-            iwi::toSize(iwi::Offset::ComponentTable)
-            + static_cast<std::size_t>(i)
-                  * iwi::toSize(iwi::Extent::Component);
-        b[iwi::recordField(rec, iwi::ComponentOffset::Semantic)] =
-            static_cast<uint8_t>(i + 1);
-        b[iwi::recordField(rec, iwi::ComponentOffset::Class)] =
-            IW_COMPONENT_CLASS_UNORM;
-        PutU16(b, iwi::recordField(rec, iwi::ComponentOffset::BitOffset),
-               static_cast<uint16_t>(i * 8u));
-        PutU16(b, iwi::recordField(rec, iwi::ComponentOffset::BitWidth), 8);
+        hdr->components[i].semantic = static_cast<IWComponentSemantic>(i + 1);
+        hdr->components[i].componentClass = IW_COMPONENT_CLASS_UNORM;
+        hdr->components[i].bitOffset = static_cast<uint16_t>(i * 8u);
+        hdr->components[i].bitWidth = 8;
     }
 
-    PutU64(b, iwi::toSize(iwi::Offset::PixelBytes), declared);
-    std::memcpy(b.data() + iwi::toSize(iwi::Extent::Header),
+    std::memcpy(b.data() + headerBytes,
                 pixels.data(), pixels.size());
     return b;
 }
@@ -520,7 +516,7 @@ TEST_SUITE("IWI thumbnail: refusals")
                                              Pixels3(2, 2, [](uint32_t, uint32_t, int) {
                                                  return static_cast<uint8_t>(1);
                                              }));
-        bytes[iwi::toSize(iwi::Offset::Storage)] = IW_STORAGE_PLANAR;
+        reinterpret_cast<IwiFileHeader*>(bytes.data())->storageLayout = IW_STORAGE_PLANAR;
 
         MemorySource source(std::move(bytes));
         iwi::ThumbnailImage image;
@@ -662,7 +658,7 @@ TEST_SUITE("IWI thumbnail: real files on disk")
 
         FileSource source(path);
         REQUIRE(source.ok());
-        CHECK(source.Size() == 138u);   /* 74-byte header + 4x4x4 */
+        CHECK(source.Size() == 124u);   /* 60-byte header + 4x4x4 */
 
         iwi::ThumbnailImage image;
         std::string reason;
@@ -695,7 +691,7 @@ TEST_SUITE("IWI thumbnail: real files on disk")
 
         FileSource source(path);
         REQUIRE(source.ok());
-        CHECK(source.Size() == 122u);   /* 74-byte header + 4x4x3 */
+        CHECK(source.Size() == 102u);   /* 54-byte header + 4x4x3 */
 
         iwi::ThumbnailImage image;
         REQUIRE(iwi::RenderThumbnail(source, 256, image, nullptr) ==
@@ -754,7 +750,7 @@ TEST_SUITE("IWI thumbnail: real files on disk")
         REQUIRE_FALSE(path.empty());
 
         std::vector<uint8_t> bytes = ReadFileBytes(path);
-        REQUIRE(bytes.size() > iwi::toSize(iwi::Extent::Header));
+        REQUIRE(bytes.size() > sizeof(IwiFileHeader));
         bytes.pop_back();
 
         const std::filesystem::path broken =

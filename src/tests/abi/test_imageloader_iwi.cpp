@@ -41,7 +41,7 @@
 
 namespace {
 
-constexpr std::size_t kHeaderBytes = 74;
+constexpr std::size_t kHeaderBytes = 60;
 
 const std::filesystem::path kPluginPath =
     iwabi::DeployedPluginPath(std::filesystem::path{ IW_IWI_PLUGIN_PATH });
@@ -86,27 +86,29 @@ void PutU64(std::vector<uint8_t>& b, std::size_t at, uint64_t v)
  */
 std::vector<uint8_t> MakeIwi(uint32_t width, uint32_t height, uint16_t components)
 {
+    const std::size_t headerBytes = 36u + static_cast<std::size_t>(components) * 6u;
     const std::size_t payload = static_cast<std::size_t>(width) *
                                 static_cast<std::size_t>(height) * components;
-    std::vector<uint8_t> b(kHeaderBytes + payload, 0);
+    std::vector<uint8_t> b(headerBytes + payload, 0);
 
     b[0] = 'I'; b[1] = 'W'; b[2] = 'I'; b[3] = '1';
     PutU32(b, 4, width);
     PutU32(b, 8, height);
-    b[12] = 0;                                   /* sRGB */
-    PutU16(b, 13, components);
-    PutU16(b, 15, static_cast<uint16_t>(components * 8));
-    b[17] = 0;                                   /* interleaved */
+    PutU32(b, 12, 0);                                  /* metaBytes = 0 */
+    PutU64(b, 16, 0);                                  /* storageLayout = 0 */
+    b[24] = 'r'; b[25] = 'a'; b[26] = 'w';             /* payloadEncoding = "raw\0\0\0\0\0" */
+    b[32] = 0;                                         /* sRGB */
+    b[33] = 0;                                         /* reserved */
+    PutU16(b, 34, components);
     for (uint16_t i = 0; i < components; ++i) {
-        const std::size_t rec = 18u + static_cast<std::size_t>(i) * 6u;
+        const std::size_t rec = 36u + static_cast<std::size_t>(i) * 6u;
         b[rec + 0] = static_cast<uint8_t>(i + 1); /* R, G, B[, A] */
         b[rec + 1] = 2;                           /* UNORM */
         PutU16(b, rec + 2, static_cast<uint16_t>(i * 8));
         PutU16(b, rec + 4, 8);
     }
-    PutU64(b, 66, payload);
     for (std::size_t i = 0; i < payload; ++i)
-        b[kHeaderBytes + i] = 0x5A;
+        b[headerBytes + i] = 0x5A;
 
     return b;
 }
@@ -275,7 +277,7 @@ TEST_SUITE("IWI loader ABI: header refusals")
     {
         iwabi::ImageLoaderPlugin& plugin = Plugin();
         std::vector<uint8_t> bytes = MakeIwi(2, 2, 4);
-        bytes[17] = 1;
+        PutU64(bytes, 16, IW_STORAGE_FLAG_PLANAR);
 
         const std::string reason = RefusedReason(plugin, bytes);
         CHECK(reason.find("planar") != std::string::npos);
@@ -285,7 +287,6 @@ TEST_SUITE("IWI loader ABI: header refusals")
     {
         iwabi::ImageLoaderPlugin& plugin = Plugin();
         std::vector<uint8_t> bytes = MakeIwi(2, 2, 2);
-        PutU16(bytes, 15, 16);
 
         RefusedReason(plugin, bytes);
     }
@@ -294,9 +295,8 @@ TEST_SUITE("IWI loader ABI: header refusals")
     {
         iwabi::ImageLoaderPlugin& plugin = Plugin();
         std::vector<uint8_t> bytes = MakeIwi(2, 2, 4);
-        /* Claim 16 bits per pixel (4 x 4-bit) without moving the components;
-         * the bitsPerPixel check fires before the per-component one. */
-        PutU16(bytes, 15, 16);
+        /* Set bitWidth of first component to 4 instead of 8 */
+        PutU16(bytes, 36u + 4u, 4);
 
         const std::string reason = RefusedReason(plugin, bytes);
         CHECK(reason.find("8-bit") != std::string::npos);
@@ -309,7 +309,7 @@ TEST_SUITE("IWI loader ABI: header refusals")
         /* Move the green component from offset 8 to offset 16, where it would
          * overwrite blue.  A decoder that trusted the offsets would render
          * green and blue swapped; this one refuses. */
-        PutU16(bytes, 18u + 6u + 2u, 16);
+        PutU16(bytes, 36u + 6u + 2u, 16);
 
         const std::string reason = RefusedReason(plugin, bytes);
         CHECK(reason.find("offset") != std::string::npos);
@@ -319,7 +319,7 @@ TEST_SUITE("IWI loader ABI: header refusals")
     {
         iwabi::ImageLoaderPlugin& plugin = Plugin();
         std::vector<uint8_t> bytes = MakeIwi(2, 2, 3);
-        bytes[18] = IW_COMPONENT_SEMANTIC_B;   /* first component says blue */
+        bytes[36] = IW_COMPONENT_SEMANTIC_B;   /* first component says blue */
 
         const std::string reason = RefusedReason(plugin, bytes);
         CHECK(reason.find("semantic") != std::string::npos);
@@ -329,7 +329,7 @@ TEST_SUITE("IWI loader ABI: header refusals")
     {
         iwabi::ImageLoaderPlugin& plugin = Plugin();
         std::vector<uint8_t> bytes = MakeIwi(2, 2, 3);
-        bytes[18 + 1] = IW_COMPONENT_CLASS_FLOAT;
+        bytes[36 + 1] = IW_COMPONENT_CLASS_FLOAT;
 
         const std::string reason = RefusedReason(plugin, bytes);
         CHECK(reason.find("class") != std::string::npos);
@@ -348,26 +348,17 @@ TEST_SUITE("IWI loader ABI: header refusals")
         CHECK(reason.find("addressable") != std::string::npos);
     }
 
-    TEST_CASE("A declared payload of UINT64_MAX is refused without wrapping")
+    TEST_CASE("An unsupported payload encoding is refused")
     {
         iwabi::ImageLoaderPlugin& plugin = Plugin();
         std::vector<uint8_t> bytes = MakeIwi(2, 2, 4);
-        PutU64(bytes, 66, 0xFFFFFFFFFFFFFFFFull);
-
-        RefusedReason(plugin, bytes);
-    }
-
-    TEST_CASE("A declared payload smaller than the geometry is refused")
-    {
-        iwabi::ImageLoaderPlugin& plugin = Plugin();
-        std::vector<uint8_t> bytes = MakeIwi(2, 2, 4);
-        PutU64(bytes, 66, 8);   /* needs 16 */
+        bytes[24] = 'l'; bytes[25] = 'z'; bytes[26] = '4';
 
         const std::string reason = RefusedReason(plugin, bytes);
-        CHECK(reason.find("declares") != std::string::npos);
+        CHECK(reason.find("encoding") != std::string::npos);
     }
 
-    TEST_CASE("A payload cut short of the declared size is refused")
+    TEST_CASE("A payload cut short of the geometry is refused")
     {
         iwabi::ImageLoaderPlugin& plugin = Plugin();
         std::vector<uint8_t> bytes = MakeIwi(2, 2, 4);
@@ -395,6 +386,6 @@ TEST_SUITE("IWI loader ABI: header refusals")
         /* One byte short of the declared payload, and short of the header. */
         RefusedReason(plugin, std::vector<uint8_t>(bytes.begin(), bytes.end() - 1));
         RefusedReason(plugin, std::vector<uint8_t>(bytes.begin(),
-                                                   bytes.begin() + 40));
+                                                   bytes.begin() + 30));
     }
 }

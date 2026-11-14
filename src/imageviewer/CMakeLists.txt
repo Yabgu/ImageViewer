@@ -176,36 +176,17 @@ set_property(TARGET iw_plugin_host PROPERTY CXX_STANDARD 23)
 
 # ── IWI container format ────────────────────────────────────────────────────
 #
-# The .iwi header, as a plain C API (src/imageviewer/IwiFile.h).
-#
-# This is the format's public interface, and it is deliberately C rather than a
-# C++ module: the container is shared with Tension, whose Rust reader had to
-# port these 74 bytes by hand because there was no C surface to depend on
-# (tension-core/src/render2d/iwi.rs says so in its own header comment).  A
-# module cannot be consumed from Rust, C, or a build script; a C header can.
-#
-# It is a static library with no C++ in it at all, so every consumer links it
-# without module machinery: the two module units below, IWImageIO, and the C
-# test that proves the header compiles as C.
-add_library(iw_iwi_file STATIC)
+# The .iwi on-disk container header (src/imageviewer/IwiFile.h).
+add_library(iw_iwi_file INTERFACE)
 
-target_sources(iw_iwi_file PUBLIC
-    IwiFile.h
-    IwiFile.hpp
-    IwiFile.c
-)
-
-# IwiFile.h includes ImagePluginDef.h for IW_MAX_COMPONENTS and IWComponentDef:
-# the file's component table and the in-memory component array are the same
-# shape on purpose, so they cannot drift apart.
-target_include_directories(iw_iwi_file PUBLIC
+target_include_directories(iw_iwi_file INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-set_target_properties(iw_iwi_file PROPERTIES
-    C_STANDARD 99
-    C_STANDARD_REQUIRED ON
-    C_EXTENSIONS OFF
+target_sources(iw_iwi_file INTERFACE
+    FILE_SET iwi_file TYPE HEADERS
+    FILES
+        IwiFile.h
 )
 
 # ── Windows shell thumbnail provider ────────────────────────────────────────
@@ -239,9 +220,7 @@ target_sources(iw_iwi_thumbnail PUBLIC
         shell/ThumbnailProviderIds.ixx
 )
 
-# IwiFormat.ixx includes IwiFile.h from its global module fragment: the C API is
-# the one implementation of the header rules, and the module is a thin C++
-# skin over it.
+# IwiFormat.ixx includes IwiFile.h from its global module fragment.
 target_include_directories(iw_iwi_thumbnail PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -354,8 +333,8 @@ target_include_directories(ImageLoaderIWI PRIVATE
 )
 
 # The loader and the shell thumbnail provider must accept exactly the same
-# files, and they do: both import IwiFormat, which is a thin skin over the C
-# API in IwiFile.c.  There is one implementation of the accept/reject rules.
+# files, and they do: both import IwiFormat, which delegates to the parser in
+# IwiFile.cpp.  There is one implementation of the accept/reject rules.
 target_link_libraries(ImageLoaderIWI PRIVATE iw_iwi_file)
 
 # WebP Plugin DLL — only when libwebp is available

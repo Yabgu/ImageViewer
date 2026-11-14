@@ -40,7 +40,7 @@ typedef struct ImagePluginResult  ImagePluginResult;
 #endif
 #endif
 
-typedef enum ImagePluginResultCode {
+typedef enum ImagePluginResultCode : uint8_t {
     IMAGE_PLUGIN_OK            = 0,
     IMAGE_PLUGIN_FILE_ERROR    = 1,
     IMAGE_PLUGIN_DECODE_ERROR  = 2,
@@ -49,7 +49,7 @@ typedef enum ImagePluginResultCode {
 } ImagePluginResultCode;
 
 /* Transfer function / colour space encoding */
-typedef enum ImageColorSpace {
+typedef enum ImageColorSpace : uint8_t {
     IMAGE_COLOR_SPACE_SRGB    = 0,   /* Standard sRGB (gamma ~2.2)       */
     IMAGE_COLOR_SPACE_LINEAR  = 1,   /* Linear light, no gamma encoding  */
     IMAGE_COLOR_SPACE_HDR_PQ  = 2,   /* SMPTE ST.2084 PQ (HDR10)         */
@@ -58,18 +58,16 @@ typedef enum ImageColorSpace {
 } ImageColorSpace;
 
 /* ── Per-component class: how stored bits are interpreted ──────────────────── */
-typedef uint32_t IWComponentClass;
-enum {
+typedef enum IWComponentClass : uint8_t {
     IW_COMPONENT_CLASS_UINT  = 0,  /* unsigned integer, raw value                   */
     IW_COMPONENT_CLASS_SINT  = 1,  /* signed integer, raw value                     */
     IW_COMPONENT_CLASS_UNORM = 2,  /* unsigned integer normalised to [0, 1]         */
     IW_COMPONENT_CLASS_SNORM = 3,  /* signed integer normalised to [-1, 1]          */
     IW_COMPONENT_CLASS_FLOAT = 4   /* IEEE floating-point (16-bit or 32-bit)        */
-};
+} IWComponentClass;
 
 /* ── Per-component semantic: what a component represents ───────────────────── */
-typedef uint32_t IWComponentSemantic;
-enum {
+typedef enum IWComponentSemantic : uint8_t {
     /*
      * IW_COMPONENT_SEMANTIC_NONE = 0 is RESERVED.
      *
@@ -90,7 +88,7 @@ enum {
     IW_COMPONENT_SEMANTIC_L       = 7,   /* lightness / luminance                */
     IW_COMPONENT_SEMANTIC_GRAY    = 8,
     IW_COMPONENT_SEMANTIC_UNKNOWN = 255  /* active component, semantic unspecified */
-};
+} IWComponentSemantic;
 
 /* ── Per-component layout descriptor ──────────────────────────────────────── */
 struct IWComponentDef {
@@ -106,22 +104,72 @@ struct IWComponentDef {
 /*
  * How component data is laid out in the pixel buffer.
  *
- * IW_STORAGE_INTERLEAVED (default)
- *   All components of one pixel are packed together before the next pixel:
- *   [RGBRGBRGB...].  bitOffset in each IWComponentDef is measured from the
- *   start of the pixel word.
- *
- * IW_STORAGE_PLANAR
- *   All values of component 0 come first (one full plane), followed by all
- *   values of component 1, and so on:  [RRR...GGG...BBB...].
- *   Each plane occupies  (height × width × ceil(bitWidth/8))  bytes.
- *   bitOffset in IWComponentDef is unused for this layout.
+ * Stored as a 64-bit descriptor: 32 bits of orthogonal layout flags,
+ * followed by a 32-bit row stride in bytes (0 = tightly packed).
  */
-typedef uint32_t IWStorageLayout;
-enum {
-    IW_STORAGE_INTERLEAVED = 0u, /* default; components packed per pixel     */
-    IW_STORAGE_PLANAR      = 1u  /* one contiguous plane per component       */
-};
+typedef enum IWStorageFlags : uint32_t {
+    IW_STORAGE_FLAG_INTERLEAVED  = 0u,       /* default: components packed per pixel       */
+    IW_STORAGE_FLAG_PLANAR       = (1u << 0),/* one contiguous plane per component         */
+    IW_STORAGE_FLAG_COLUMNAR     = (1u << 1),/* column-major order (default: row-major)    */
+    IW_STORAGE_FLAG_FLIP_X       = (1u << 2),/* origin right (traversal right-to-left)     */
+    IW_STORAGE_FLAG_FLIP_Y       = (1u << 3),/* origin bottom (invert by design / OpenGL)  */
+    IW_STORAGE_FLAG_STRIDE_8BIT  = (1u << 4),/* row stride aligned to 8-bit (1B) boundary  */
+    IW_STORAGE_FLAG_STRIDE_16BIT = (1u << 5),/* row stride aligned to 16-bit (2B) boundary */
+    IW_STORAGE_FLAG_STRIDE_32BIT = (1u << 6),/* row stride aligned to 32-bit (4B) boundary */
+} IWStorageFlags;
+
+/* Camera / EXIF orientation convenience aliases (mappings to traversal flags) */
+#define IW_STORAGE_ORIENT_NORMAL     0u
+#define IW_STORAGE_ORIENT_MIRROR_H   IW_STORAGE_FLAG_FLIP_X
+#define IW_STORAGE_ORIENT_ROTATE_180 (IW_STORAGE_FLAG_FLIP_X | IW_STORAGE_FLAG_FLIP_Y)
+#define IW_STORAGE_ORIENT_MIRROR_V   IW_STORAGE_FLAG_FLIP_Y
+#define IW_STORAGE_ORIENT_TRANSPOSE  IW_STORAGE_FLAG_COLUMNAR
+#define IW_STORAGE_ORIENT_ROTATE_90  (IW_STORAGE_FLAG_COLUMNAR | IW_STORAGE_FLAG_FLIP_X)
+#define IW_STORAGE_ORIENT_TRANSVERSE (IW_STORAGE_FLAG_COLUMNAR | IW_STORAGE_FLAG_FLIP_X | IW_STORAGE_FLAG_FLIP_Y)
+#define IW_STORAGE_ORIENT_ROTATE_270 (IW_STORAGE_FLAG_COLUMNAR | IW_STORAGE_FLAG_FLIP_Y)
+
+#define IW_STORAGE_INTERLEAVED 0u
+#define IW_STORAGE_PLANAR      1u
+
+typedef union IWStorageLayout {
+    uint64_t raw;
+    struct {
+        uint32_t flags;   /* Bitmask of IWStorageFlags */
+        uint32_t stride;  /* Row stride in bytes (0 = tightly packed / derived) */
+    };
+#ifdef __cplusplus
+    constexpr IWStorageLayout() : raw(0) {}
+    constexpr IWStorageLayout(uint64_t v) : raw(v) {}
+    constexpr IWStorageLayout(uint32_t f, uint32_t s = 0) : flags(f), stride(s) {}
+    constexpr bool operator==(const IWStorageLayout& o) const noexcept { return raw == o.raw; }
+    constexpr bool operator!=(const IWStorageLayout& o) const noexcept { return raw != o.raw; }
+    constexpr bool isPlanar() const noexcept { return (flags & 0x00000001u) != 0; }
+    constexpr bool isInterleaved() const noexcept { return !isPlanar(); }
+#endif
+} IWStorageLayout;
+
+/* ── Extensible Metadata Entry & Tags ────────────────────────────────────── */
+
+#define IWI_META_TAG_CAMERA 0x414D4143u /* "CAMA": 3D Camera intrinsics & extrinsics */
+#define IWI_META_TAG_CBOR   0x524F4243u /* "CBOR": IETF RFC 8949 nestable binary JSON*/
+#define IWI_META_TAG_BSON   0x4E4F5342u /* "BSON": BSON document                    */
+#define IWI_META_TAG_MSGP   0x5047534Du /* "MSGP": MessagePack                       */
+#define IWI_META_TAG_JSON   0x4E4F534Au /* "JSON": UTF-8 JSON text                   */
+#define IWI_META_TAG_TEXT   0x54584554u /* "TEXT": UTF-8 key-value string metadata   */
+
+typedef struct IWCameraMeta {
+    float fovDegrees;       /* Vertical FOV in degrees (e.g. 60.0f)     */
+    float nearClip;         /* Near clipping plane (e.g. 0.1f)          */
+    float farClip;          /* Far clipping plane (e.g. 1000.0f)        */
+    float position[3];      /* Camera eye position (X, Y, Z)            */
+    float upVector[3];      /* Camera up direction (normalized X, Y, Z) */
+    float target[3];        /* Look-at target point (X, Y, Z)           */
+} IWCameraMeta;
+
+typedef struct IwiMetaHeader {
+    uint32_t tag;    /* FourCC tag identifying entry type */
+    uint32_t size;   /* Byte length of entry payload      */
+} IwiMetaHeader;
 
 /*
  * Complete format descriptor for a single image.

@@ -154,7 +154,7 @@ ImagePluginResult DecodeIwi(const Source& src)
     IWImageFormat format = {};
     format.componentCount = header.components;
     format.bitsPerPixel   = header.bitsPerPixel;
-    format.storageLayout  = IW_STORAGE_INTERLEAVED;
+    format.storageLayout  = header.storageLayout;
 
     for (uint16_t i = 0; i < header.components; ++i)
     {
@@ -180,7 +180,7 @@ ImagePluginResult DecodeIwi(const Source& src)
     const std::size_t total  = static_cast<std::size_t>(header.packedBytes);
 
     uint8_t* pixelData = new uint8_t[total];
-    std::memcpy(pixelData, bytes + iwi::toSize(iwi::Extent::Header), total);
+    std::memcpy(pixelData, bytes + header.headerBytes, total);
 
     /* The descriptor is a second allocation, so it can fail after the pixels
      * exist; release them rather than leaking on the throw path. */
