@@ -153,42 +153,42 @@ add_dependencies(iview_abi_tests ${_abi_plugin_targets})
 # build-tree artefacts in place.
 if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
     #
-    # Copy the plugins as a stamped custom command that DEPENDS on the plugin
-    # binaries, not as a POST_BUILD step on the test target.
+    # Deploy the plugins, and the runtime DLLs they import, next to the ABI test
+    # binary.  Three things this has to get right:
     #
-    # POST_BUILD runs when iview_abi_tests relinks.  A change to only a plugin's
-    # own sources relinks the plugin and re-runs none of the test target's
-    # commands, so the copy stayed at its previous contents and the suite
-    # validated a stale DLL - a green run that proves nothing about the code
-    # just built.
+    #   1. run after the plugins are built.  A stamped custom command with
+    #      `DEPENDS $<TARGET_FILE:...>` looked cleaner but the Visual Studio
+    #      generator normalizes that path and then reports MSB8064 ("specified
+    #      dependency ... does not exist"), so the copy could run before the
+    #      plugins existed and the test then failed with ERROR_MOD_NOT_FOUND.
+    #      A target ordered by add_dependencies is generator-independent.
     #
-    # All the copies happen inside ONE custom command, and the COMMANDs run in
-    # order.  One command per plugin would let Ninja run them concurrently, and
-    # each copy globs the whole plugin directory into the same destination - so
-    # two of them would copy the same file at the same time and Windows would
-    # fail the open with a sharing violation.
+    #   2. run again when a plugin changes.  The original POST_BUILD step hung
+    #      off iview_abi_tests, so a plugin-only edit relinked the plugin,
+    #      nothing re-ran the copy, and the suite validated the previous DLL.
+    #      A custom target with no OUTPUT runs on every build; the work is a
+    #      handful of file copies.
     #
-    set(_deploy_stamp "${CMAKE_CURRENT_BINARY_DIR}/deploy_plugins.stamp")
-    set(_deploy_commands "")
-    set(_deploy_depends "")
+    #   3. copy for each plugin separately.  The copy script globs the plugin's
+    #      whole output directory (vcpkg's applocal step puts the import DLLs
+    #      there, and the target graph cannot list them), so two concurrent
+    #      copies into the same destination collide.  The COMMANDs of one target
+    #      run in order.
+    #
+    add_custom_target(deploy_abi_plugins
+        COMMENT "Deploying plugin DLLs next to the ABI tests"
+        VERBATIM)
 
     foreach(_plugin IN LISTS _abi_plugin_targets)
-        list(APPEND _deploy_commands
+        add_custom_command(TARGET deploy_abi_plugins
             COMMAND ${CMAKE_COMMAND}
                 "-DPLUGIN_DIR=$<TARGET_FILE_DIR:${_plugin}>"
                 "-DDEST_DIR=$<TARGET_FILE_DIR:iview_abi_tests>"
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/copy_plugin_dlls.cmake")
-        list(APPEND _deploy_depends "$<TARGET_FILE:${_plugin}>")
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/copy_plugin_dlls.cmake"
+            VERBATIM)
     endforeach()
 
-    add_custom_command(
-        OUTPUT "${_deploy_stamp}"
-        ${_deploy_commands}
-        COMMAND ${CMAKE_COMMAND} -E touch "${_deploy_stamp}"
-        DEPENDS ${_deploy_depends}
-        VERBATIM
-    )
-    add_custom_target(deploy_abi_plugins DEPENDS "${_deploy_stamp}")
+    add_dependencies(deploy_abi_plugins ${_abi_plugin_targets})
     add_dependencies(iview_abi_tests deploy_abi_plugins)
 
     target_compile_definitions(iview_abi_tests PRIVATE IW_ABI_PLUGINS_DEPLOYED=1)
