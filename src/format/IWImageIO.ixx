@@ -48,17 +48,19 @@ inline Image BuildImage(int width, int height,
 //  0       4    magic           char[4]  = {'I','W','I','1'}
 //  4       4    width           uint32_t
 //  8       4    height          uint32_t
-// 12       1    colorSpace      uint8_t  (ImageColorSpace value)
-// 13       2    componentCount  uint16_t
-// 15       2    bitsPerPixel    uint16_t
-// 17       1    storageLayout   uint8_t  (0=INTERLEAVED, 1=PLANAR)
-// 18      48    components[8]   each slot is 6 bytes:
+// 12       4    metaBytes       uint32_t
+// 16       8    storageLayout   uint64_t (IWStorageLayout: flags u32, stride u32)
+// 24       8    payloadEncoding char[8]  ("raw\0\0\0\0\0")
+// 32       1    colorSpace      uint8_t  (ImageColorSpace enum)
+// 33       1    reserved        uint8_t  (0)
+// 34       2    componentCount  uint16_t
+// 36     N*6    components[N]   each slot is 6 bytes:
 //                   semantic       uint8_t
 //                   componentClass uint8_t
 //                   bitOffset      uint16_t
 //                   bitWidth       uint16_t
-// 66       8    pixelDataSize   uint64_t
-// 74       *    pixelData       uint8_t[]
+// 36+N*6   *    metaBlob        uint8_t[metaBytes]
+//    *     *    pixelData       uint8_t[]
 
 namespace detail {
 
@@ -114,20 +116,24 @@ inline uint64_t ReadU64(const uint8_t* p)
 inline std::vector<uint8_t> SerializeImage(const Image& img)
 {
     using namespace detail;
+    const size_t headerBytes = 36 + static_cast<size_t>(img.format.componentCount) * 6;
     std::vector<uint8_t> buf;
-    buf.reserve(74 + img.pixelData.size());
+    buf.reserve(headerBytes + img.pixelData.size());
 
     static constexpr char kMagic[4] = {'I', 'W', 'I', '1'};
     buf.insert(buf.end(), kMagic, kMagic + 4);
 
     WriteU32(buf, img.width);
     WriteU32(buf, img.height);
+    WriteU32(buf, 0); // metaBytes = 0
+    WriteU64(buf, img.format.storageLayout.raw);
+    static constexpr char kEncoding[8] = {'r', 'a', 'w', 0, 0, 0, 0, 0};
+    buf.insert(buf.end(), kEncoding, kEncoding + 8);
     WriteU8 (buf, static_cast<uint8_t>(img.colorSpace));
+    WriteU8 (buf, 0); // reserved
     WriteU16(buf, img.format.componentCount);
-    WriteU16(buf, img.format.bitsPerPixel);
-    WriteU8 (buf, img.format.storageLayout == IW_STORAGE_PLANAR ? 1 : 0);
 
-    for (int i = 0; i < IW_MAX_COMPONENTS; ++i) {
+    for (uint16_t i = 0; i < img.format.componentCount; ++i) {
         const IWComponentDef& cd = img.format.components[i];
         WriteU8 (buf, static_cast<uint8_t>(cd.semantic));
         WriteU8 (buf, static_cast<uint8_t>(cd.componentClass));
@@ -135,7 +141,6 @@ inline std::vector<uint8_t> SerializeImage(const Image& img)
         WriteU16(buf, cd.bitWidth);
     }
 
-    WriteU64(buf, static_cast<uint64_t>(img.pixelData.size()));
     buf.insert(buf.end(), img.pixelData.begin(), img.pixelData.end());
     return buf;
 }
@@ -143,9 +148,7 @@ inline std::vector<uint8_t> SerializeImage(const Image& img)
 inline Image DeserializeImage(const uint8_t* data, size_t size)
 {
     using namespace detail;
-    // 4 (magic) + 4 (width) + 4 (height) + 1 (colorSpace) + 2 (componentCount)
-    // + 2 (bitsPerPixel) + 1 (storageLayout) + 8*6 (components) + 8 (pixelDataSize) = 74
-    constexpr size_t kMinSize = 74;
+    constexpr size_t kMinSize = 42; // 36 base + 1*6 min component
     if (size < kMinSize)
         throw std::runtime_error("IWI data too short");
 
@@ -158,31 +161,50 @@ inline Image DeserializeImage(const uint8_t* data, size_t size)
     Image img;
     img.width  = ReadU32(p); p += 4;
     img.height = ReadU32(p); p += 4;
+    const uint32_t metaBytes = ReadU32(p); p += 4;
+    img.format.storageLayout.raw = ReadU64(p); p += 8;
+
+    char encoding[8];
+    std::memcpy(encoding, p, 8); p += 8;
+    if (encoding[0] != '\0' && std::memcmp(encoding, "raw", 3) != 0)
+        throw std::runtime_error("IWI unsupported payload encoding");
+
     img.colorSpace = static_cast<ImageColorSpace>(ReadU8(p)); p += 1;
-
+    (void)ReadU8(p); p += 1; // reserved
     img.format.componentCount = ReadU16(p); p += 2;
-    img.format.bitsPerPixel   = ReadU16(p); p += 2;
-    img.format.storageLayout  = ReadU8(p) ? IW_STORAGE_PLANAR
-                                           : IW_STORAGE_INTERLEAVED;
-    p += 1;
 
-    for (int i = 0; i < IW_MAX_COMPONENTS; ++i) {
+    if (img.format.componentCount < 1 || img.format.componentCount > IW_MAX_COMPONENTS)
+        throw std::runtime_error("IWI invalid component count");
+
+    const size_t totalHeaderAndMeta = 36 + static_cast<size_t>(img.format.componentCount) * 6 + metaBytes;
+    if (size < totalHeaderAndMeta)
+        throw std::runtime_error("IWI header/metadata truncated");
+
+    uint16_t bpp = 0;
+    for (uint16_t i = 0; i < img.format.componentCount; ++i) {
         img.format.components[i].semantic =
             static_cast<IWComponentSemantic>(ReadU8(p)); p += 1;
         img.format.components[i].componentClass =
             static_cast<IWComponentClass>(ReadU8(p)); p += 1;
         img.format.components[i].bitOffset = ReadU16(p); p += 2;
         img.format.components[i].bitWidth  = ReadU16(p); p += 2;
+        bpp += img.format.components[i].bitWidth;
     }
+    for (uint16_t i = img.format.componentCount; i < IW_MAX_COMPONENTS; ++i) {
+        img.format.components[i] = {};
+    }
+    img.format.bitsPerPixel = bpp;
 
-    const uint64_t pixelBytes = ReadU64(p); p += 8;
-    // p is now exactly data + 74 (kMinSize), which is <= data + size.
+    // skip metaBytes
+    p += metaBytes;
+
     const size_t consumed  = static_cast<size_t>(p - data);
     const size_t remaining = size - consumed;
-    if (remaining < static_cast<size_t>(pixelBytes))
+    const size_t expectedBytes = (static_cast<size_t>(img.width) * img.height * bpp + 7) / 8;
+    if (remaining < expectedBytes)
         throw std::runtime_error("IWI pixel data truncated");
 
-    img.pixelData.assign(p, p + pixelBytes);
+    img.pixelData.assign(p, p + remaining);
     return img;
 }
 

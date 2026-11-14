@@ -66,6 +66,18 @@ set "PROGID_KEY=HKCU\Software\Classes\ImageViewer.IWI"
 set "MENU_KEY=HKCU\Software\Classes\*\shell\Open with ImageViewer"
 set "PROGID_DESC=ImageViewer Texture"
 
+rem Thumbnail handler.  These identifiers are also compiled into
+rem IwiThumbnailProvider.dll (src/imageviewer/shell/ThumbnailProviderIds.ixx);
+rem src/tests/test_iwi_thumbnail.cpp fails if this file, the PowerShell script
+rem and the module ever disagree.  A mismatch would not error -- Explorer would
+rem just find no handler and draw the file-type icon.
+set "THUMB_CLSID={8A3D6F2C-5B47-4C1E-9F1A-6E2D4B8C0A31}"
+set "THUMB_SHELLEX={E357FCCD-A995-4576-B01F-234630154E96}"
+set "THUMB_CLSID_KEY=HKCU\Software\Classes\CLSID\%THUMB_CLSID%"
+set "THUMB_NAME=ImageViewer IWI Thumbnail Provider"
+set "THUMB_DLL_NAME=IwiThumbnailProvider.dll"
+set "IW_THUMB=0"
+
 set "IW_UNINSTALL=0"
 set "IW_BINARY="
 set "IW_EXE="
@@ -172,6 +184,38 @@ if errorlevel 1 set "IW_FAIL=1"
 call :reg_write "%MENU_KEY%\command" IW_DATA_OPEN "right-click menu entry"
 if errorlevel 1 set "IW_FAIL=1"
 
+rem -- Thumbnail handler -------------------------------------------------------
+rem
+rem Optional: without the DLL the association still works and Explorer draws
+rem the file-type icon, so a missing build output is a note, not a failure.
+rem Three keys are needed -- the COM class, and a ShellEx entry under both the
+rem extension and the ProgID.  Both ShellEx locations are written because the
+rem ProgID's is what Explorer uses after resolving .iwi, while the extension's
+rem covers the direct lookup.
+
+if not exist "%IW_EXE_DIR%%THUMB_DLL_NAME%" goto :thumb_skipped
+
+set "IW_THUMB=1"
+set "IW_THUMB_DLL=%IW_EXE_DIR%%THUMB_DLL_NAME%"
+
+echo   thumbnail: %THUMB_DLL_NAME%
+call :reg_write "%THUMB_CLSID_KEY%" THUMB_NAME "thumbnail provider class"
+if errorlevel 1 set "IW_FAIL=1"
+call :reg_write "%THUMB_CLSID_KEY%\InprocServer32" IW_THUMB_DLL "thumbnail InprocServer32"
+if errorlevel 1 set "IW_FAIL=1"
+call :reg_write_named "%THUMB_CLSID_KEY%\InprocServer32" ThreadingModel Apartment "thumbnail ThreadingModel"
+if errorlevel 1 set "IW_FAIL=1"
+call :reg_write "%EXT_KEY%\ShellEx\%THUMB_SHELLEX%" THUMB_CLSID ".iwi thumbnail handler"
+if errorlevel 1 set "IW_FAIL=1"
+call :reg_write "%PROGID_KEY%\ShellEx\%THUMB_SHELLEX%" THUMB_CLSID "ProgID thumbnail handler"
+if errorlevel 1 set "IW_FAIL=1"
+goto :thumb_written
+
+:thumb_skipped
+echo   thumbnail: no %THUMB_DLL_NAME% beside iview.exe - skipping
+
+:thumb_written
+
 rem -- Verify ----------------------------------------------------------------
 rem
 rem Read every value back out of the registry and compare it with the string
@@ -194,6 +238,23 @@ if errorlevel 1 set "IW_FAIL=1"
 call :verify "%MENU_KEY%\command" IW_DATA_OPEN "right-click menu entry"
 if errorlevel 1 set "IW_FAIL=1"
 
+if "%IW_THUMB%"=="1" goto :verify_thumbnail
+goto :verify_thumb_done
+
+:verify_thumbnail
+call :verify "%THUMB_CLSID_KEY%" THUMB_NAME "thumbnail provider class"
+if errorlevel 1 set "IW_FAIL=1"
+call :verify "%THUMB_CLSID_KEY%\InprocServer32" IW_THUMB_DLL "thumbnail InprocServer32"
+if errorlevel 1 set "IW_FAIL=1"
+call :verify_named "%THUMB_CLSID_KEY%\InprocServer32" ThreadingModel Apartment "thumbnail ThreadingModel"
+if errorlevel 1 set "IW_FAIL=1"
+call :verify "%EXT_KEY%\ShellEx\%THUMB_SHELLEX%" THUMB_CLSID ".iwi thumbnail handler"
+if errorlevel 1 set "IW_FAIL=1"
+call :verify "%PROGID_KEY%\ShellEx\%THUMB_SHELLEX%" THUMB_CLSID "ProgID thumbnail handler"
+if errorlevel 1 set "IW_FAIL=1"
+
+:verify_thumb_done
+
 if "%IW_FAIL%"=="1" goto :failed
 
 rem Explorer caches file-type icons and handler lookups; this refreshes them so
@@ -205,6 +266,8 @@ echo Installation successful.
 echo.
 echo   handler: "%IW_EXE%"
 echo   icon   : "%IW_ICON%"
+if "%IW_THUMB%"=="1" echo   thumbs : "%IW_THUMB_DLL%"
+if not "%IW_THUMB%"=="1" echo   thumbs : not registered (DLL not found)
 echo.
 echo   Double-click a .iwi file, or from a command prompt:
 echo     "%IW_EXE%" image.iwi
@@ -233,6 +296,12 @@ reg delete "%MENU_KEY%" /f >nul 2>&1
 reg delete "%PROGID_KEY%" /f >nul 2>&1
 reg delete "%EXT_KEY%" /f >nul 2>&1
 
+rem The thumbnail handler lives in two places those deletes do not reach: its
+rem own CLSID key, and the ShellEx entry under .iwi.  The ProgID's ShellEx goes
+rem with the ProgID tree above.
+reg delete "%THUMB_CLSID_KEY%" /f >nul 2>&1
+reg delete "%EXT_KEY%\ShellEx\%THUMB_SHELLEX%" /f >nul 2>&1
+
 rem The deletes are only meaningful if the keys are actually gone, so assert
 rem that rather than trusting reg delete's exit code.
 call :assert_absent "%EXT_KEY%" ".iwi association"
@@ -240,6 +309,8 @@ if errorlevel 1 set "IW_FAIL=1"
 call :assert_absent "%PROGID_KEY%" "ProgID ImageViewer.IWI"
 if errorlevel 1 set "IW_FAIL=1"
 call :assert_absent "%MENU_KEY%" "right-click menu entry"
+if errorlevel 1 set "IW_FAIL=1"
+call :assert_absent "%THUMB_CLSID_KEY%" "thumbnail provider class"
 if errorlevel 1 set "IW_FAIL=1"
 
 if "%IW_FAIL%"=="1" goto :failed
@@ -343,6 +414,36 @@ exit /b 0
 :rw_failed
 echo   FAILED to write %~1
 exit /b 1
+
+:reg_write_named
+rem %1 = key, %2 = value name, %3 = plain value, %4 = human-readable label
+rem
+rem Same contract as :reg_write, for a named value instead of the default one.
+rem ThreadingModel is the only such value this script writes, and a ShellEx
+rem handler whose ThreadingModel is missing is loaded into the wrong apartment.
+reg add "%~1" /v "%~2" /d "%~3" /f >nul 2>&1
+if errorlevel 1 goto :rwn_failed
+echo   wrote %~1\%~2
+exit /b 0
+
+:rwn_failed
+echo   FAILED to write %~1\%~2
+exit /b 1
+
+:verify_named
+rem %1 = key, %2 = value name, %3 = expected plain value, %4 = label
+set "IW_ACT="
+for /f "tokens=2,*" %%A in ('reg query "%~1" /v "%~2" 2^>nul ^| findstr /i /c:"REG_SZ"') do set "IW_ACT=%%B"
+if not defined IW_ACT goto :vfn_failed
+if /i "%IW_ACT%"=="%~3" goto :vfn_ok
+:vfn_failed
+echo   FAIL  %~4
+echo           expected: %~3
+echo           actual  : %IW_ACT%
+exit /b 1
+:vfn_ok
+echo   ok    %~4
+exit /b 0
 
 :verify
 rem %1 = key, %2 = name of the variable holding the expected plain value,

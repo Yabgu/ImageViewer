@@ -174,6 +174,105 @@ target_include_directories(iw_plugin_host PUBLIC
 
 set_property(TARGET iw_plugin_host PROPERTY CXX_STANDARD 23)
 
+# ── IWI container format ────────────────────────────────────────────────────
+#
+# The .iwi on-disk container header (src/imageviewer/IwiFile.h).
+add_library(iw_iwi_file INTERFACE)
+
+target_include_directories(iw_iwi_file INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_sources(iw_iwi_file INTERFACE
+    FILE_SET iwi_file TYPE HEADERS
+    FILES
+        IwiFile.h
+)
+
+# ── Windows shell thumbnail provider ────────────────────────────────────────
+#
+# Makes Explorer render .iwi files instead of the generic file-type icon.  It
+# is the only component here that is not a viewer or a plugin: the shell loads
+# it into dllhost.exe through the registry keys that
+# scripts/install-desktop-windows.{ps1,bat} write.
+#
+# Built outside the IMAGEVIEWER_BUILD_VIEWER gate on purpose.  It needs no
+# GLFW, GLAD or imgui, and a headless build is exactly the build that should
+# still be able to produce and test it.
+#
+# Windows-only: there is no shell to render thumbnails for elsewhere, and the
+# COM headers do not exist there.
+option(IMAGEVIEWER_BUILD_THUMBNAIL_PROVIDER
+    "Build the Windows shell thumbnail provider for .iwi (Windows only)"
+    ON)
+
+if(WIN32 AND IMAGEVIEWER_BUILD_THUMBNAIL_PROVIDER)
+
+# The portable half: header parsing, decimation and colour handling, with no
+# COM in it.  The tests import this, so it is a target of its own.
+add_library(iw_iwi_thumbnail STATIC)
+
+target_sources(iw_iwi_thumbnail PUBLIC
+    FILE_SET iwi_thumbnail TYPE CXX_MODULES
+    FILES
+        IwiFormat.ixx
+        shell/IwiThumbnail.ixx
+        shell/ThumbnailProviderIds.ixx
+)
+
+# IwiFormat.ixx includes IwiFile.h from its global module fragment.
+target_include_directories(iw_iwi_thumbnail PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(iw_iwi_thumbnail PUBLIC iw_iwi_file)
+set_property(TARGET iw_iwi_thumbnail PROPERTY CXX_STANDARD 23)
+
+# The COM wrapper.  Exports DllGetClassObject and DllCanUnloadNow, nothing
+# else; see the header comment in ThumbnailProviderIWI.ixx for why it has no
+# DllRegisterServer.
+add_library(IwiThumbnailProvider SHARED)
+
+target_sources(IwiThumbnailProvider PRIVATE
+    FILE_SET iwi_thumb_provider TYPE CXX_MODULES
+    FILES
+        shell/ThumbnailProviderIWI.ixx
+)
+
+# The export list.  combaseapi.h already declares DllGetClassObject and
+# DllCanUnloadNow; a module unit cannot redefine them with dllexport, so the
+# DLL names them here instead.  MSVC and clang-cl both accept a .def as a
+# source and pass it to the linker.
+target_sources(IwiThumbnailProvider PRIVATE
+    shell/ThumbnailProviderIWI.def
+)
+
+target_link_libraries(IwiThumbnailProvider PRIVATE
+    iw_iwi_thumbnail
+    gdi32
+    ole32
+    user32
+)
+
+set_property(TARGET IwiThumbnailProvider PROPERTY CXX_STANDARD 23)
+
+target_compile_definitions(IwiThumbnailProvider PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    UNICODE
+    _UNICODE
+)
+
+# Next to iview.exe, like the plugins: the install scripts point
+# InprocServer32 at the DLL beside the executable they registered.
+install(TARGETS IwiThumbnailProvider RUNTIME DESTINATION .)
+
+message(STATUS "Shell thumbnail provider: IwiThumbnailProvider (Windows)")
+
+else()
+    message(STATUS "Shell thumbnail provider: not built (not Windows or disabled)")
+endif()
+
 # ── Plugin DSOs ─────────────────────────────────────────────────────────────
 set(_PLUGIN_TARGETS "")
 if(IMAGEVIEWER_BUILD_PLUGINS)
@@ -196,6 +295,13 @@ endif()
 # PNG Plugin DLL — always built (libpng is a default vcpkg dep)
 add_library(ImageLoaderPng SHARED)
 list(APPEND _PLUGIN_TARGETS ImageLoaderPng)
+
+# Every other loader reports its status, and the headless CI job asserts that
+# each of them was configured before it builds.  PNG was the one loader with no
+# status line at all, so that assertion could never pass: it failed with
+# "ImageLoaderPng was not configured in the headless build" while the plugin had
+# in fact been built.  The line is unconditional because the target is too.
+message(STATUS "Plugin: ImageLoaderPng enabled (libpng found)")
 target_sources(ImageLoaderPng PUBLIC
     FILE_SET pngloader TYPE CXX_MODULES
     FILES
@@ -218,8 +324,18 @@ target_sources(ImageLoaderIWI PUBLIC
     FILE_SET iwiloader TYPE CXX_MODULES
     FILES
         ImageLoaderIWI.ixx
+        IwiFormat.ixx
 )
 set_property(TARGET ImageLoaderIWI PROPERTY CXX_STANDARD 23)
+
+target_include_directories(ImageLoaderIWI PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# The loader and the shell thumbnail provider must accept exactly the same
+# files, and they do: both import IwiFormat, which delegates to the parser in
+# IwiFile.cpp.  There is one implementation of the accept/reject rules.
+target_link_libraries(ImageLoaderIWI PRIVATE iw_iwi_file)
 
 # WebP Plugin DLL — only when libwebp is available
 if(WebP_FOUND)
@@ -606,6 +722,14 @@ endif()
 if(TARGET iview AND _PLUGIN_TARGETS)
     add_dependencies(iview ${_PLUGIN_TARGETS})
     message(STATUS "Plugins shipped with iview: ${_PLUGIN_TARGETS}")
+endif()
+
+# The thumbnail provider is not an image loader — nothing in Image.ixx resolves
+# it by name — but it lives beside iview.exe and must be built whenever the
+# viewer is, or an install would register a handler that does not exist.
+if(TARGET iview AND TARGET IwiThumbnailProvider)
+    add_dependencies(iview IwiThumbnailProvider)
+    message(STATUS "Shell thumbnail provider shipped with iview: IwiThumbnailProvider")
 endif()
 
 # Packaging path: `cmake --install` produces a folder containing iview.exe and
