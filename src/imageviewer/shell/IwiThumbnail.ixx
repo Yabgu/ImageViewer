@@ -267,13 +267,11 @@ ThumbnailStatus RenderThumbnail(SampleSource& source,
      * magic first for the same reason; this is the same order, before the
      * count is used rather than after.
      */
-    if (std::memcmp(head, IWI_FILE_MAGIC, IWI_FILE_MAGIC_BYTES) != 0)
+    uint16_t componentCount = 0;
+    if (iwi_file_peek_components(head, IWI_FILE_BASE_HEADER_BYTES, &componentCount)
+            != IWI_STATUS_OK)
         return Fail(ThumbnailStatus::Malformed, reason,
                     "not an IWI container (magic mismatch)");
-
-    const uint16_t componentCount = static_cast<uint16_t>(
-        static_cast<uint16_t>(head[34]) |
-        static_cast<uint16_t>(static_cast<uint16_t>(head[35]) << 8u));
 
     const uint64_t tableBytes = static_cast<uint64_t>(IWI_FILE_BASE_HEADER_BYTES) +
                                 static_cast<uint64_t>(componentCount) * IWI_FILE_COMPONENT_BYTES;
@@ -307,7 +305,14 @@ ThumbnailStatus RenderThumbnail(SampleSource& source,
         ParseHeader(head, static_cast<std::size_t>(tableBytes), containerBytes);
     if (!parsed.ok()) {
         if (reason) *reason = parsed.reason;
-        return ThumbnailStatus::Malformed;
+        /*
+         * "Not an IWI" and "a valid IWI this provider cannot preview" are
+         * different sentences, and a user who sees the second should not go
+         * looking for a corrupt file. The parser already classifies them; this
+         * only stops throwing that away.
+         */
+        return parsed.unsupported() ? ThumbnailStatus::Unsupported
+                                    : ThumbnailStatus::Malformed;
     }
 
     /*

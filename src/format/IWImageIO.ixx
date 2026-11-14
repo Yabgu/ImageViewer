@@ -8,6 +8,7 @@ module;
 #include <vector>
 
 #include "ImagePluginDef.h"
+#include "IwiFile.h"
 
 export module IWImageIO;
 
@@ -94,26 +95,6 @@ inline void WriteU64(std::vector<uint8_t>& buf, uint64_t v)
         buf.push_back(static_cast<uint8_t>(v >> (8 * i)));
 }
 
-inline uint8_t  ReadU8 (const uint8_t* p) { return *p; }
-inline uint16_t ReadU16(const uint8_t* p)
-{
-    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
-}
-inline uint32_t ReadU32(const uint8_t* p)
-{
-    return  static_cast<uint32_t>(p[0])
-         | (static_cast<uint32_t>(p[1]) << 8)
-         | (static_cast<uint32_t>(p[2]) << 16)
-         | (static_cast<uint32_t>(p[3]) << 24);
-}
-inline uint64_t ReadU64(const uint8_t* p)
-{
-    uint64_t v = 0;
-    for (int i = 0; i < 8; ++i)
-        v |= static_cast<uint64_t>(p[i]) << (8 * i);
-    return v;
-}
-
 } // namespace detail
 
 // ── Serialize / Deserialize ───────────────────────────────────────────────────
@@ -150,68 +131,89 @@ inline std::vector<uint8_t> SerializeImage(const Image& img)
     return buf;
 }
 
+/*
+ * Read a container into an Image, for conversion rather than display.
+ *
+ * The grammar is IwiFile.cpp's - this function does not parse.  That is the
+ * whole point of the split: this reader and the viewer's loader used to carry
+ * two copies of the header rules and they drifted, so iwconv wrote 16-bit and
+ * grayscale files that iview then refused.
+ *
+ * This is the *converter's* policy, and it is deliberately wider than the
+ * viewer's: one component is fine, 16-bit samples are fine, planar planes are
+ * fine, because the output carries them through untouched.  Its only
+ * capability rule is the codec, since it cannot decompress either.
+ *
+ * The payload is returned as stored, not converted to RGBA.  iwi_decode
+ * produces RGBA and belongs to the display path; rounding 16-bit samples
+ * through RGBA8 here would silently destroy the precision this function exists
+ * to preserve.
+ */
 inline Image DeserializeImage(const uint8_t* data, size_t size)
 {
-    using namespace detail;
-    constexpr size_t kMinSize = 42; // 36 base + 1*6 min component
-    if (size < kMinSize)
-        throw std::runtime_error("IWI data too short");
+    if (data == nullptr) {
+        throw std::runtime_error("IWI: no input");
+    }
 
-    const uint8_t* p = data;
-    static constexpr char kMagic[4] = {'I', 'W', 'I', '1'};
-    if (std::memcmp(data, kMagic, 4) != 0)
-        throw std::runtime_error("IWI magic mismatch — not an IWI file");
-    p += 4;
+    /* Size the blob the grammar fills: 36 + 6N. */
+    const size_t required = iwi_file_required_size(data, size);
+    std::vector<uint8_t> blob(required == 0 ? IWI_FILE_BASE_HEADER_BYTES : required, 0);
+
+    const int rc = iwi_parse_structural(
+        reinterpret_cast<IwiFileHeader*>(blob.data()), blob.size(), data, size);
+
+    if (rc != IWI_STATUS_OK) {
+        throw std::runtime_error(std::string("IWI: ") + iwi_status_message(rc));
+    }
+
+    /* The validated base header, copied out of the blob the same way the C
+     * API wrote it: IWI_FILE_BASE_HEADER_BYTES, never sizeof, because the
+     * struct's four tail-padding bytes overlap the component table. */
+    IwiFileHeader base{};
+    std::memcpy(&base, blob.data(), IWI_FILE_BASE_HEADER_BYTES);
+
+    if (!iwi_payload_encoding_is_raw(&base)) {
+        throw std::runtime_error(std::string("IWI: ") +
+                                 iwi_status_message(IWI_STATUS_UNSUPPORTED_ENCODING));
+    }
 
     Image img;
-    img.width  = ReadU32(p); p += 4;
-    img.height = ReadU32(p); p += 4;
-    const uint32_t metaBytes = ReadU32(p); p += 4;
-    img.format.storageLayout.raw = ReadU64(p); p += 8;
+    img.width                 = base.width;
+    img.height                = base.height;
+    img.colorSpace            = static_cast<ImageColorSpace>(base.colorSpace);
+    img.format.storageLayout  = base.storageLayout;
+    img.format.componentCount = base.componentCount;
 
-    char encoding[8];
-    std::memcpy(encoding, p, 8); p += 8;
-    if (encoding[0] != '\0' && std::memcmp(encoding, "raw", 3) != 0)
-        throw std::runtime_error("IWI unsupported payload encoding");
+    const IwiFileComponent* comps = iwi_file_components(
+        reinterpret_cast<const IwiFileHeader*>(blob.data()));
 
-    img.colorSpace = static_cast<ImageColorSpace>(ReadU8(p)); p += 1;
-    (void)ReadU8(p); p += 1; // reserved
-    img.format.componentCount = ReadU16(p); p += 2;
-
-    if (img.format.componentCount < 1)
-        throw std::runtime_error("IWI invalid component count");
-
-    const size_t totalHeaderAndMeta = 36 + static_cast<size_t>(img.format.componentCount) * 6 + metaBytes;
-    if (size < totalHeaderAndMeta)
-        throw std::runtime_error("IWI header/metadata truncated");
-
-    img.components.resize(img.format.componentCount);
-    uint16_t bpp = 0;
-    for (uint16_t i = 0; i < img.format.componentCount; ++i) {
-        img.components[i].semantic =
-            static_cast<IWComponentSemantic>(ReadU8(p)); p += 1;
-        img.components[i].componentClass =
-            static_cast<IWComponentClass>(ReadU8(p)); p += 1;
-        img.components[i].bitOffset = ReadU16(p); p += 2;
-        img.components[i].bitWidth  = ReadU16(p); p += 2;
-        bpp += img.components[i].bitWidth;
+    img.components.resize(base.componentCount);
+    uint32_t bitsPerPixel = 0;
+    for (uint16_t i = 0; i < base.componentCount; ++i) {
+        img.components[i].semantic = static_cast<IWComponentSemantic>(comps[i].semantic);
+        img.components[i].componentClass = static_cast<IWComponentClass>(comps[i].componentClass);
+        img.components[i].bitOffset = comps[i].bitOffset;
+        img.components[i].bitWidth  = comps[i].bitWidth;
+        bitsPerPixel += comps[i].bitWidth;
     }
     img.format.components   = img.components.data();
-    img.format.bitsPerPixel = bpp;
+    /* The ABI's field is uint16_t and there is no component cap, so a wide
+     * table is saturated rather than wrapped.  Three or four 8-bit components
+     * make this a no-op; it is here so the narrowing is deliberate. */
+    img.format.bitsPerPixel = static_cast<uint16_t>(
+        bitsPerPixel > 0xFFFFu ? 0xFFFFu : bitsPerPixel);
 
-    // skip metaBytes
-    p += metaBytes;
+    const size_t payloadOffset =
+        IWI_FILE_BASE_HEADER_BYTES +
+        static_cast<size_t>(base.componentCount) * IWI_FILE_COMPONENT_BYTES +
+        static_cast<size_t>(base.metaBytes);
 
-    const size_t consumed  = static_cast<size_t>(p - data);
-    const size_t remaining = size - consumed;
-    const size_t expectedBytes = (static_cast<size_t>(img.width) * img.height * bpp + 7) / 8;
-    if (remaining < expectedBytes)
-        throw std::runtime_error("IWI pixel data truncated");
-
-    img.pixelData.assign(p, p + remaining);
+    /* Everything after the header, metadata and table.  Trailing slack is
+     * included rather than trimmed, which is the behaviour this function has
+     * always had and what the round-trip tests assert. */
+    img.pixelData.assign(data + payloadOffset, data + size);
     return img;
 }
-
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
 inline void SaveIWI(const std::string& path, const Image& img)

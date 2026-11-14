@@ -81,6 +81,7 @@ enum class IwiStatus {
     UnsupportedComponentClass,
     UnexpectedComponentLayout,
     OutOfSpace,
+    Unsupported,
 };
 
 /*
@@ -116,7 +117,17 @@ struct IwiParseResult {
      * ("magic", "planar", "offset", "header"), so the wording is a contract. */
     char reason[192] = {};
 
+    /*
+     * The same status as the C enum, kept raw so `unsupported()` can classify
+     * it without a second mapping table. A caller that renders needs the
+     * difference between "corrupt" and "valid, not displayable".
+     */
+    int nativeStatus = IWI_STATUS_OK;
+
     bool ok() const { return status == IwiStatus::Ok; }
+
+    /* Valid IWI this build cannot display. Only meaningful when !ok(). */
+    bool unsupported() const { return iwi_status_is_unsupported(nativeStatus) != 0; }
 };
 
 namespace detail {
@@ -141,6 +152,7 @@ inline IwiStatus MapStatus(int rc) noexcept
     case IWI_STATUS_UNSUPPORTED_BIT_DEPTH:       return IwiStatus::UnsupportedBitDepth;
     case IWI_STATUS_UNEXPECTED_SEMANTIC:         return IwiStatus::UnexpectedSemantic;
     case IWI_STATUS_UNADDRESSABLE_GEOMETRY:      return IwiStatus::UnaddressableGeometry;
+    case IWI_STATUS_UNSUPPORTED:                 return IwiStatus::Unsupported;
     }
     return IwiStatus::UnexpectedComponentLayout;
 }
@@ -154,13 +166,6 @@ inline void CopyReason(char (&dest)[192], int rc) noexcept
     dest[copyLen] = '\0';
 }
 
-/* On-disk offset of componentCount, asserted by test_abi_constants.cpp. */
-inline uint16_t ReadComponentCount(const uint8_t* bytes) noexcept
-{
-    return static_cast<uint16_t>(
-        static_cast<uint16_t>(bytes[34]) |
-        static_cast<uint16_t>(static_cast<uint16_t>(bytes[35]) << 8u));
-}
 
 } // namespace detail
 
@@ -170,10 +175,14 @@ inline uint16_t ReadComponentCount(const uint8_t* bytes) noexcept
  * `size` is the whole container — the payload bounds check needs it, so a
  * caller holding only the first 36 bytes cannot use this to accept a file.
  *
- * A grayscale (1-component) file parses: it is a well-formed container. What
- * it is not is presentable as RGBA, which is iwi_decode's question, and the
- * loader asks it there. Rejecting it here would be a component cap, and the
- * format has none.
+ * This is the *viewer* path: the grammar plus this build's capability policy,
+ * so a grayscale, 16-bit or planar file is refused with a member of the
+ * unsupported family rather than being reported as corrupt. That is the
+ * distinction a user needs - "your file is fine, this viewer cannot show it".
+ *
+ * The container itself has no component cap and no depth limit; a consumer
+ * that converts rather than displays wants IwiFile.h's iwi_parse_structural and
+ * its own policy, which is what IWImageIO does.
  */
 inline IwiParseResult ParseHeader(const uint8_t* bytes,
                                   std::size_t available,
@@ -204,9 +213,24 @@ inline IwiParseResult ParseHeader(const uint8_t* bytes,
 
     std::vector<uint8_t> blob(required == 0 ? IWI_FILE_BASE_HEADER_BYTES : required, 0);
 
-    const int rc = iwi_parse_prefix(reinterpret_cast<IwiFileHeader*>(blob.data()),
-                                  blob.size(), bytes, available,
-                                  static_cast<std::size_t>(containerSize));
+    /*
+     * Grammar over the head, then this build's capability policy.
+     *
+     * The prefix form is grammar-only by design: the shell thumbnail provider
+     * holds a head rather than the file, so it needs the two-length call.  The
+     * policy is then applied to the same blob, which is why this module does
+     * not need a copy of the capability rules - and why both consumers here
+     * (the loader and the thumbnail provider) accept exactly the same files.
+     */
+    IwiFileHeader* const parsed = reinterpret_cast<IwiFileHeader*>(blob.data());
+
+    int rc = iwi_parse_prefix(parsed, blob.size(), bytes, available,
+                              static_cast<std::size_t>(containerSize));
+    if (rc == IWI_STATUS_OK) {
+        rc = iwi_check_viewer_capabilities(parsed);
+    }
+
+    result.nativeStatus = rc;
     detail::CopyReason(result.reason, rc);
     result.status = detail::MapStatus(rc);
 

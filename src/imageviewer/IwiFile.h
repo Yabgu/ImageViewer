@@ -207,11 +207,20 @@ _Static_assert(sizeof(IwiFileHeader) >= IWI_FILE_BASE_HEADER_BYTES,
  * Return codes for the functions below.  Zero is success so a caller can test
  * `if (rc)`.
  *
- * MALFORMED and UNSUPPORTED are deliberately distinct, the same distinction
- * Tension's Rust reader makes between -EINVAL and -ENOSYS: malformed means
- * "this is not a valid IWI", unsupported means "valid IWI this build cannot
- * present".  A caller that wants to fall back rather than report corruption
- * needs the difference.
+ * Two families, and the difference is not cosmetic:
+ *
+ *   malformed    this is not a valid IWI.  Magic, truncation, geometry that
+ *                cannot fit in the file, a component table that does not
+ *                describe the payload it announces.  Same distinction
+ *                Tension's Rust reader draws with -EINVAL.
+ *
+ *   unsupported  a valid IWI using a feature this build does not implement:
+ *                planar storage, 16-bit components, a non-raw codec, a
+ *                component count with no RGBA form.  The Rust reader's
+ *                -ENOSYS.  iwi_status_is_unsupported() classifies them.
+ *
+ * A caller that reports the first as corruption and the second as "open it in
+ * a build that supports this" is using the API as intended.
  */
 typedef enum IwiFileStatus {
     IWI_STATUS_OK = 0,
@@ -237,8 +246,23 @@ typedef enum IwiFileStatus {
     /* Geometry that is legal in a u32 but not describable (past INT_MAX).
      * Distinct from GEOMETRY_TOO_LARGE, which is an overflow: the viewer maps
      * that one to an allocation failure and this one to a decode failure. */
-    IWI_STATUS_UNADDRESSABLE_GEOMETRY = 15
+    IWI_STATUS_UNADDRESSABLE_GEOMETRY = 15,
+
+    /* The generic capability code, for a valid file using a feature with no
+     * sharper code above.  The UNSUPPORTED_* values are refinements of it:
+     * prefer the specific one, and treat every member of the family alike with
+     * iwi_status_is_unsupported(). */
+    IWI_STATUS_UNSUPPORTED = 16
 } IwiFileStatus;
+
+/*
+ * Is this status a capability limitation rather than corruption?
+ *
+ * True for IWI_STATUS_UNSUPPORTED and every UNSUPPORTED_* refinement; false
+ * for OK and for every malformed code.  A UI says "corrupt file" for the
+ * second and "valid file, this viewer cannot display it" for the first.
+ */
+int iwi_status_is_unsupported(int status);
 
 /* -- API ------------------------------------------------------------------ */
 
@@ -254,28 +278,100 @@ typedef enum IwiFileStatus {
  */
 size_t iwi_file_required_size(const uint8_t* bytes, size_t size);
 
+/* ── The two levels ─────────────────────────────────────────────────────────
+ *
+ * The format defines more than this build can display: the header carries
+ * eight-byte codecs, a planar/stride layout descriptor, and components of any
+ * bit width.  Those are all grammatically valid.  So validation is split, and
+ * the split is the API's shape rather than an implementation detail:
+ *
+ *   iwi_parse_structural   the grammar.  Is this a well-formed IWI whose
+ *                          declared payload is present?  Nothing about what
+ *                          can be rendered.  A 16-bit planar 700-component
+ *                          file passes if its bytes are consistent.
+ *
+ *   iwi_parse              the grammar, then this build's capability policy:
+ *                          3- or 4-component RGB(A), 8-bit, interleaved,
+ *                          tightly packed, "raw" payload.  Fails with a
+ *                          member of the unsupported family, never with a
+ *                          malformed code.
+ *
+ * A consumer that converts rather than displays wants the structural form and
+ * its own policy - that is what iwconv does.  A consumer that renders wants
+ * iwi_parse.  Collapsing the two is how the repository ended up with two
+ * parsers that disagreed.
+ * ------------------------------------------------------------------------- */
+
 /*
- * Validate a whole container and write its header and component table into
- * `out`, which must be at least iwi_file_required_size() bytes.
+ * Validate the container grammar and write the header plus component table
+ * into `out`, which must be at least iwi_file_required_size() bytes.
  *
  * `size` is the whole file: the payload bounds check needs the real length, so
  * a caller holding only the header bytes cannot use this to accept a file.
  *
  * On success `*out` holds the base header and iwi_file_components(out) points
- * at the componentCount records that follow.  On any failure the contents of
- * `out` are unspecified and must not be used.
+ * at the componentCount records that follow.  On failure the contents of `out`
+ * are unspecified and must not be used.
  *
- * Rejects: bad magic, truncation, zero dimensions, an unknown payload
- * encoding, payload shorter than the geometry needs, and any storage flag this
- * build does not implement.  It does NOT reject an unusual component count -
- * that is a rendering question, answered by iwi_decode.
+ * Rejects only malformed input: bad magic, truncation, zero or unaddressable
+ * dimensions, a component table that does not fit, and a payload shorter than
+ * the declared geometry requires.  The payload size is computed from the
+ * component bit widths, so a 16-bit file's payload is checked as 2 bytes per
+ * sample rather than 1.
+ */
+int iwi_parse_structural(IwiFileHeader* out, size_t out_size,
+                         const uint8_t* bytes, size_t size);
+
+/*
+ * The grammar, then this build's capability policy.
+ *
+ * Returns IWI_STATUS_OK, a malformed code, or a code for which
+ * iwi_status_is_unsupported() is true.  This is what a viewer calls.
  */
 int iwi_parse(IwiFileHeader* out, size_t out_size,
               const uint8_t* bytes, size_t size);
 
 /*
- * Same validation, but the bytes the caller actually holds are separate from
- * the size of the file they came from.
+ * Sniff a buffer without parsing it: does it start with the IWI magic, and if
+ * so how many component records does it announce?
+ *
+ * For a reader that must decide how much to read before it parses anything -
+ * the shell thumbnail provider reads a head sized by the component table.  It
+ * exists so no second file has to know that the count is a little-endian u16 at
+ * offset 34: this header is the only place that layout is written down.
+ *
+ * Returns 0 and fills `*out_count` when the buffer is at least a base header
+ * and begins with the magic; non-zero otherwise.  It does not validate the
+ * count, the geometry, or anything else - that is the parser's job.
+ */
+int iwi_file_peek_components(const uint8_t* bytes, size_t len, uint16_t* out_count);
+
+/*
+ * Is the payload encoding the one this build reads?
+ *
+ * The container's encoding field is eight bytes and holds a codec name.  This
+ * compares the whole field, not a prefix: "rawgarba" is not "raw", and a
+ * three-byte comparison accepted it as though it were.  Exported so the
+ * converter and the viewer answer the question with the same code rather than
+ * two spellings of it.
+ */
+int iwi_payload_encoding_is_raw(const IwiFileHeader* f);
+
+/*
+ * Apply this build's capability policy to a header already filled by a parse.
+ *
+ * Exists so a reader that had to use the prefix form - it holds a head rather
+ * than the file - can apply the same policy without a second copy of the rules.
+ * Reads the blob, including its component table.
+ *
+ * Returns IWI_STATUS_OK when the header is displayable, otherwise a member of
+ * the unsupported family.
+ */
+int iwi_check_viewer_capabilities(const IwiFileHeader* f);
+
+/*
+ * The grammar over a head, where the bytes the caller actually holds are
+ * separate from the size of the file they came from.
  *
  * This exists for readers that deliberately never load a whole file - the
  * Windows shell thumbnail provider reads a head, works out which rows it needs,
@@ -284,8 +380,11 @@ int iwi_parse(IwiFileHeader* out, size_t out_size,
  * length would invite the validator to read past the buffer; passing the head
  * length as the container size would reject every file for having no payload.
  *
+ * Grammar only: apply iwi_check_viewer_capabilities to the result if the
+ * caller renders rather than converts.
+ *
  * The component table must be fully present in `head`, since it is read from
- * there.  `iwi_parse` is this function with both lengths equal.
+ * there.
  */
 int iwi_parse_prefix(IwiFileHeader* out, size_t out_size,
                      const uint8_t* head, size_t headLen,

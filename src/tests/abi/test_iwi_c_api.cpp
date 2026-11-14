@@ -70,6 +70,7 @@ struct Spec {
     const char* encoding    = "raw";
     bool     encodingGarbage = false;   /* fill payloadEncoding with junk   */
     uint8_t  firstSemantic  = 0;        /* 0 = default R,G,B[,A] chain      */
+    uint16_t bitWidth       = 8;        /* bits per component              */
 };
 
 void PutU16(std::vector<uint8_t>& b, std::size_t at, uint16_t v)
@@ -101,7 +102,7 @@ std::vector<uint8_t> MakeIwi(const Spec& spec, std::size_t trailingSlack = 0)
     const std::size_t header  = IWI_FILE_BASE_HEADER_BYTES +
                                 static_cast<std::size_t>(spec.components) * IWI_FILE_COMPONENT_BYTES;
     const std::size_t payload = static_cast<std::size_t>(spec.width) *
-                                spec.height * spec.components;
+                                spec.height * spec.components * (spec.bitWidth / 8u);
     std::vector<uint8_t> b(header + spec.metaBytes + payload + trailingSlack, 0);
 
     std::memcpy(b.data(), IWI_FILE_MAGIC, IWI_FILE_MAGIC_BYTES);
@@ -142,8 +143,8 @@ std::vector<uint8_t> MakeIwi(const Spec& spec, std::size_t trailingSlack = 0)
         }
         b[rec + 0] = semantic;
         b[rec + 1] = static_cast<uint8_t>(IW_COMPONENT_CLASS_UNORM);
-        PutU16(b, rec + 2, static_cast<uint16_t>(i * 8u));
-        PutU16(b, rec + 4, 8);
+        PutU16(b, rec + 2, static_cast<uint16_t>(i * spec.bitWidth));
+        PutU16(b, rec + 4, spec.bitWidth);
     }
 
     const std::size_t pixelStart = header + spec.metaBytes;
@@ -345,9 +346,13 @@ int main()
         std::vector<uint8_t> blob = AllocBlob(need);
         const int rc = iwi_parse(AsHeader(blob), blob.size(), file.data(), file.size());
 
-        /* Rejected, and for the semantic reason rather than by a count cap. */
-        check(rc == IWI_STATUS_UNEXPECTED_SEMANTIC, "grayscale rejected");
-        checkMessage(rc, "component", "grayscale message names the component");
+        /* Rejected as a capability, not as corruption: one component is a
+         * well-formed container with no RGBA form. iwi_status_is_unsupported
+         * says which, so a UI can say "valid file, cannot display" instead of
+         * "corrupt". */
+        check(rc == IWI_STATUS_UNSUPPORTED_COMPONENT_COUNT, "grayscale rejected");
+        check(iwi_status_is_unsupported(rc) != 0, "grayscale is classified unsupported");
+        checkMessage(rc, "grayscale", "grayscale message names the case");
     }
 
     /* --- payload encoding compared in full, not by prefix -------------- */
@@ -402,12 +407,24 @@ int main()
               "200-component required_size");
 
         std::vector<uint8_t> blob = AllocBlob(need);
-        const int rc = iwi_parse(AsHeader(blob), blob.size(), file.data(), file.size());
-        check(rc == IWI_STATUS_OK, "200-component file parses: no cap");
+
+        /*
+         * Grammar accepts it and the policy refuses it, and both matter. The
+         * container has no component cap - that is what the structural parse
+         * proves - while the viewer displays 3 or 4 components, which is what
+         * iwi_parse adds on top.
+         */
+        const int structural = iwi_parse_structural(
+            AsHeader(blob), blob.size(), file.data(), file.size());
+        check(structural == IWI_STATUS_OK, "200-component file is structurally valid: no cap");
 
         const IwiFileComponent* c = iwi_file_components(AsHeader(blob));
         check(c[0].semantic == IW_COMPONENT_SEMANTIC_R, "200: first component R");
         check(c[199].bitOffset == static_cast<uint16_t>(199u * 8u), "200: last component walkable");
+
+        const int policy = iwi_parse(AsHeader(blob), blob.size(), file.data(), file.size());
+        check(policy == IWI_STATUS_UNSUPPORTED_COMPONENT_COUNT,
+              "200-component file is refused by the viewer policy");
 
         /* It parses, but it is not an RGBA image, and decode says so. */
         std::vector<uint8_t> rgba(4);
@@ -441,6 +458,114 @@ int main()
         checkMessage(IWI_STATUS_COMPONENT_LAYOUT, "offset", "layout message names the offset");
     }
 
+    /* --- the split: grammar accepts what policy refuses ------------------ */
+    /*
+     * These are the files that made the two-parser split necessary.  Each one is
+     * a well-formed container that this viewer cannot display, and the API has
+     * to say so in two different ways rather than one.
+     */
+    {
+        struct Case {
+            const char* name;
+            Spec        spec;
+            int         expected;   /* what iwi_parse returns */
+        };
+
+        Case cases[3];
+        cases[0].name = "grayscale";
+        cases[0].spec = Spec{};
+        cases[0].spec.components    = 1;
+        cases[0].spec.firstSemantic = static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_GRAY);
+        cases[0].expected = IWI_STATUS_UNSUPPORTED_COMPONENT_COUNT;
+
+        cases[1].name = "16-bit";
+        cases[1].spec = Spec{};
+        cases[1].spec.components    = 1;
+        cases[1].spec.firstSemantic = static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_GRAY);
+        cases[1].spec.bitWidth      = 16;
+        cases[1].expected = IWI_STATUS_UNSUPPORTED_BIT_DEPTH;
+
+        cases[2].name = "planar";
+        cases[2].spec = Spec{};
+        cases[2].spec.storageFlags = static_cast<uint32_t>(IW_STORAGE_FLAG_PLANAR);
+        cases[2].expected = IWI_STATUS_UNSUPPORTED_STORAGE;
+
+        for (const Case& c : cases) {
+            const std::vector<uint8_t> file = MakeIwi(c.spec);
+            const std::size_t need = iwi_file_required_size(file.data(), file.size());
+            std::vector<uint8_t> blob = AllocBlob(need == 0 ? 64 : need);
+
+            const int structural = iwi_parse_structural(
+                AsHeader(blob), blob.size(), file.data(), file.size());
+            check(structural == IWI_STATUS_OK, "grammar accepts a well-formed container");
+
+            const int policy = iwi_parse(AsHeader(blob), blob.size(), file.data(), file.size());
+            check(policy == c.expected, "policy refuses with the specific capability code");
+            check(iwi_status_is_unsupported(policy) != 0, "capability failures are classified unsupported");
+            check(iwi_status_is_unsupported(structural) == 0, "grammar acceptance is not unsupported");
+
+            const char* msg = iwi_status_message(policy);
+            check(std::strstr(msg, "valid IWI") != nullptr,
+                  "an unsupported message says the file is valid");
+            check(std::strstr(msg, c.name) != nullptr,
+                  "an unsupported message names the feature");
+        }
+    }
+
+    /* --- malformed is not unsupported ------------------------------------ */
+    {
+        std::vector<uint8_t> file = MakeIwi(Spec{});
+        file[0] = 'X';
+        std::vector<uint8_t> blob = AllocBlob(64);
+        const int rc = iwi_parse(AsHeader(blob), blob.size(), file.data(), file.size());
+        check(rc == IWI_STATUS_BAD_MAGIC, "bad magic stays malformed");
+        check(iwi_status_is_unsupported(rc) == 0, "malformed is not classified unsupported");
+        check(iwi_status_is_unsupported(IWI_STATUS_OK) == 0, "ok is not unsupported");
+        check(std::strstr(iwi_status_message(rc), "valid IWI") == nullptr,
+              "a malformed message does not claim the file is valid");
+    }
+
+    /* --- the codec predicate is the one rule both readers use ------------ */
+    {
+        Spec raw;
+        const std::vector<uint8_t> rawFile = MakeIwi(raw);
+        std::vector<uint8_t> blob = AllocBlob(64);
+        check(iwi_parse_structural(AsHeader(blob), blob.size(), rawFile.data(), rawFile.size())
+                  == IWI_STATUS_OK,
+              "raw file parses structurally");
+        check(iwi_payload_encoding_is_raw(AsHeader(blob)) == 1, "raw is recognised");
+
+        Spec garbage;
+        garbage.encodingGarbage = true;
+        const std::vector<uint8_t> g = MakeIwi(garbage);
+        std::vector<uint8_t> blob2 = AllocBlob(64);
+        check(iwi_parse_structural(AsHeader(blob2), blob2.size(), g.data(), g.size())
+                  == IWI_STATUS_OK,
+              "grammar does not judge the codec");
+        check(iwi_payload_encoding_is_raw(AsHeader(blob2)) == 0,
+              "\"rawgarba\" is not raw: the field is compared whole");
+    }
+
+    /* --- a 16-bit payload is measured in bytes, not samples -------------- */
+    {
+        /* 4x4 gray16: 16 pixels x 16 bits = 32 bytes of payload. A parser that
+         * assumed one byte per sample would accept this truncated by half. */
+        Spec spec;
+        spec.components    = 1;
+        spec.firstSemantic = static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_GRAY);
+        spec.bitWidth      = 16;
+
+        const std::vector<uint8_t> full = MakeIwi(spec);
+        std::vector<uint8_t> blob = AllocBlob(64);
+        check(iwi_parse_structural(AsHeader(blob), blob.size(), full.data(), full.size())
+                  == IWI_STATUS_OK,
+              "16-bit payload accounted correctly");
+
+        const std::vector<uint8_t> halved(full.begin(), full.end() - (full.size() / 4));
+        check(iwi_parse_structural(AsHeader(blob), blob.size(), halved.data(), halved.size())
+                  == IWI_STATUS_PAYLOAD_TRUNCATED,
+              "16-bit file short by its extra bytes is refused");
+    }
     if (failures != 0) {
         std::printf("%d check(s) failed\n", failures);
         return 1;

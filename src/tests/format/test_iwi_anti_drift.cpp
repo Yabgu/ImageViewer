@@ -335,58 +335,159 @@ TEST_CASE("anti-drift: an empty buffer is rejected by both")
     CheckVerdict("empty", std::vector<uint8_t>{});
 }
 
-/* ── The cases where they were expected to disagree ──────────────────────── */
+/* ── Capability divergence: same container, two policies ─────────────────── */
 
 /*
- * Each of these is a container one reader accepts and the other refuses.  They
- * are the reason this file exists: the divergence is not hypothetical, it is a
- * property of two implementations of one format.
+ * These are not disagreements about the format.  Both readers parse the same
+ * grammar; they answer a different question afterwards.
+ *
+ *   iwi_parse_structural   is this a well-formed IWI?          yes
+ *   iwi_parse              can this viewer display it?         no, and why
+ *   IWImageIO              can the converter carry it through? yes
+ *
+ * Each case asserts all three, which is the whole argument for the split: one
+ * grammar, two policies, and the difference stated rather than hidden behind
+ * two parsers that quietly diverged.
+ *
+ * Assertion 4 of the shape - byte-identical parity - applies only where both
+ * produce comparable pixel data.  These cases are ones the viewer refuses to
+ * render, so the parity that matters is IWImageIO's payload against the file's
+ * own bytes, which is checked here.
  */
 
-TEST_CASE("anti-drift: a grayscale container gets the same verdict")
+/* The grammar, with no policy applied. */
+CApiResult ReadViaStructural(const std::vector<uint8_t>& bytes)
 {
-    const Spec spec = [] {
-        Spec s;
-        s.components    = 1;
-        s.firstSemantic = static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_GRAY);
-        return s;
-    }();
-    CheckVerdict("gray-1-component", BuildIwi(spec));
+    CApiResult r;
+    const std::size_t need = iwi_file_required_size(bytes.data(), bytes.size());
+    r.blob.assign(need == 0 ? IWI_FILE_BASE_HEADER_BYTES : need, 0);
+    r.rc = iwi_parse_structural(reinterpret_cast<IwiFileHeader*>(r.blob.data()),
+                                r.blob.size(), bytes.data(), bytes.size());
+    return r;
 }
 
-TEST_CASE("anti-drift: a payload encoding that only starts with \"raw\" gets the same verdict")
+/* Where the payload starts: base header + component table + metadata. */
+std::size_t PayloadOffset(const IwiFileHeader* f)
+{
+    return IWI_FILE_BASE_HEADER_BYTES +
+           static_cast<std::size_t>(f->componentCount) * IWI_FILE_COMPONENT_BYTES +
+           static_cast<std::size_t>(f->metaBytes);
+}
+
+void CheckCapabilityDivergence(const char* name,
+                               const std::vector<uint8_t>& bytes,
+                               int expectedStatus,
+                               const char* feature)
+{
+    INFO("fixture: " << std::string(name));
+
+    /* 1. the grammar accepts it - it is a real IWI */
+    CApiResult structural = ReadViaStructural(bytes);
+    CHECK_MESSAGE(structural.rc == IWI_STATUS_OK,
+                  "grammar must accept '" << name << "': "
+                  << std::string(iwi_status_message(structural.rc)));
+
+    /* 2. the viewer refuses it, as a capability rather than as corruption */
+    const int policy = iwi_parse(reinterpret_cast<IwiFileHeader*>(structural.blob.data()),
+                                 structural.blob.size(), bytes.data(), bytes.size());
+    INFO("policy status: " << std::string(iwi_status_message(policy)));
+    CHECK_MESSAGE(policy == expectedStatus,
+                  "policy must refuse '" << name << "' with the specific code");
+    CHECK(iwi_status_is_unsupported(policy) != 0);
+
+    const char* msg = iwi_status_message(policy);
+    CHECK_MESSAGE(std::strstr(msg, "valid IWI") != nullptr,
+                  "the refusal for '" << name << "' must say the file is valid");
+    CHECK_MESSAGE(std::strstr(msg, feature) != nullptr,
+                  "the refusal for '" << name << "' must name the feature ("
+                  << feature << ")");
+
+    /* 3. the converter accepts it and carries the payload through */
+    const IwiIoResult io = ReadViaIwiImageIO(bytes);
+    CHECK_MESSAGE(io.ok, "IWImageIO must accept '" << name << "': " << io.reason);
+    if (!io.ok) {
+        return;
+    }
+
+    const auto* f = reinterpret_cast<const IwiFileHeader*>(structural.blob.data());
+    const std::size_t offset = PayloadOffset(f);
+    const std::size_t payloadBytes = bytes.size() - offset;
+
+    /* 4. and the payload is the file's own bytes, not a reinterpretation */
+    INFO("payload bytes: " << payloadBytes);
+    CHECK(io.image.pixelData.size() == payloadBytes);
+    CHECK_MESSAGE(std::memcmp(io.image.pixelData.data(), bytes.data() + offset,
+                              payloadBytes) == 0,
+                  "carried payload for '" << name << "' must equal the file's bytes");
+}
+
+TEST_CASE("anti-drift: a grayscale container is grammar-valid and viewer-unsupported")
 {
     Spec spec;
-    spec.encodingGarbage = true;
-    CheckVerdict("rawgarba", BuildIwi(spec));
+    spec.components    = 1;
+    spec.firstSemantic = static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_GRAY);
+    CheckCapabilityDivergence("grayscale", BuildIwi(spec),
+                              IWI_STATUS_UNSUPPORTED_COMPONENT_COUNT, "grayscale");
 }
 
-TEST_CASE("anti-drift: an unimplemented storage flag gets the same verdict")
+TEST_CASE("anti-drift: a 16-bit container is grammar-valid and viewer-unsupported")
 {
     Spec spec;
-    spec.storageFlags = static_cast<uint32_t>(IW_STORAGE_FLAG_COLUMNAR);
-    CheckVerdict("columnar", BuildIwi(spec));
+    spec.components    = 1;
+    spec.firstSemantic = static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_GRAY);
+    spec.bitWidth      = 16;
+    CheckCapabilityDivergence("16-bit", BuildIwi(spec),
+                              IWI_STATUS_UNSUPPORTED_BIT_DEPTH, "16-bit");
 }
 
-TEST_CASE("anti-drift: planar storage gets the same verdict")
+TEST_CASE("anti-drift: a planar container is grammar-valid and viewer-unsupported")
 {
     Spec spec;
     spec.storageFlags = static_cast<uint32_t>(IW_STORAGE_FLAG_PLANAR);
-    CheckVerdict("planar", BuildIwi(spec));
+    CheckCapabilityDivergence("planar", BuildIwi(spec),
+                              IWI_STATUS_UNSUPPORTED_STORAGE, "planar");
 }
 
-TEST_CASE("anti-drift: 16-bit components get the same verdict")
+TEST_CASE("anti-drift: a columnar container is grammar-valid and viewer-unsupported")
 {
     Spec spec;
-    spec.components = 1;
-    spec.bitWidth   = 16;
-    spec.firstSemantic = static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_GRAY);
-    CheckVerdict("gray16", BuildIwi(spec));
+    spec.storageFlags = static_cast<uint32_t>(IW_STORAGE_FLAG_COLUMNAR);
+    CheckCapabilityDivergence("columnar", BuildIwi(spec),
+                              IWI_STATUS_UNSUPPORTED_STORAGE, "columnar");
 }
 
-TEST_CASE("anti-drift: a 200-component container gets the same verdict")
+TEST_CASE("anti-drift: a 200-component container is grammar-valid and viewer-unsupported")
 {
     Spec spec;
     spec.components = 200;
-    CheckVerdict("n200", BuildIwi(spec));
+    CheckCapabilityDivergence("n200", BuildIwi(spec),
+                              IWI_STATUS_UNSUPPORTED_COMPONENT_COUNT, "component count");
+}
+
+/*
+ * The codec is the one rule both readers enforce, so it is not a capability
+ * divergence: the grammar does not judge a codec name, and both policies refuse
+ * a name they cannot decode.  This is also where the three-byte comparison used
+ * to hide - "rawgarba" starts with "raw", so the old reader accepted it.
+ */
+TEST_CASE("anti-drift: a codec neither reader decodes is refused by both policies")
+{
+    Spec spec;
+    spec.encodingGarbage = true;
+    const std::vector<uint8_t> bytes = BuildIwi(spec);
+
+    CApiResult structural = ReadViaStructural(bytes);
+    CHECK_MESSAGE(structural.rc == IWI_STATUS_OK,
+                  "grammar does not judge the codec: "
+                  << std::string(iwi_status_message(structural.rc)));
+
+    const int policy = iwi_parse(reinterpret_cast<IwiFileHeader*>(structural.blob.data()),
+                                 structural.blob.size(), bytes.data(), bytes.size());
+    CHECK(policy == IWI_STATUS_UNSUPPORTED_ENCODING);
+    CHECK(iwi_status_is_unsupported(policy) != 0);
+
+    const IwiIoResult io = ReadViaIwiImageIO(bytes);
+    CHECK_MESSAGE(!io.ok, "IWImageIO must refuse \"rawgarba\" too");
+    CHECK_MESSAGE(io.reason.find("encoding") != std::string::npos,
+                  "the converter's refusal must mention the encoding: " << io.reason);
 }

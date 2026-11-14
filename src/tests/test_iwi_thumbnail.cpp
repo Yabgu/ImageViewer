@@ -525,8 +525,11 @@ TEST_SUITE("IWI thumbnail: refusals")
         MemorySource source(std::move(bytes));
         iwi::ThumbnailImage image;
         std::string reason;
+        /* Unsupported, not Malformed: planar storage is a valid IWI layout this
+         * build does not render. The distinction is what tells a user their file
+         * is fine. */
         CHECK(iwi::RenderThumbnail(source, 64, image, &reason) ==
-              iwi::ThumbnailStatus::Malformed);
+              iwi::ThumbnailStatus::Unsupported);
         CHECK(Contains(reason, "planar"));
     }
 
@@ -537,8 +540,9 @@ TEST_SUITE("IWI thumbnail: refusals")
 
         MemorySource source(std::move(bytes));
         iwi::ThumbnailImage image;
+        /* Two components have no RGBA form: valid container, unrenderable. */
         CHECK(iwi::RenderThumbnail(source, 64, image, nullptr) ==
-              iwi::ThumbnailStatus::Malformed);
+              iwi::ThumbnailStatus::Unsupported);
     }
 
     TEST_CASE("A truncated payload is an I/O failure, not a crash")

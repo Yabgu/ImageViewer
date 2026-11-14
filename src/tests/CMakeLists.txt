@@ -199,8 +199,16 @@ if(MSVC)
         list(APPEND _iwi_gate_sys_inc /I${_dir})
     endforeach()
 
-    # One command list, used by both the test and the target, so the two cannot
-    # drift apart.
+    # The compiler needs its own INCLUDE (the CRT and Windows SDK headers), and
+    # an environment is not something ctest guarantees: running this test from a
+    # plain shell failed with "Cannot open include file: 'stddef.h'" while the
+    # same command worked from a developer prompt.  A gate that passes or fails
+    # depending on which shell invoked ctest is worse than no gate.
+    #
+    # So the build system runs the compile.  `cmake --build --target
+    # iwi_c_header_gate` gets whatever environment the generator uses - a
+    # developer prompt for Ninja, MSBuild for the Visual Studio generator - which
+    # is the environment the project itself is compiled in.
     set(_iwi_gate_cmd
         "${CMAKE_CXX_COMPILER}" /nologo /TC /std:c11 /W4
         ${_iwi_gate_sys_inc}
@@ -208,7 +216,9 @@ if(MSVC)
         /c ${_iwi_gate_src}
         /Fo${CMAKE_CURRENT_BINARY_DIR}/iwi_c_header_gate.obj)
 
-    add_test(NAME iwi_c_header_gate COMMAND ${_iwi_gate_cmd})
+    add_test(NAME iwi_c_header_gate
+             COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}"
+                     --target iwi_c_header_gate)
     add_custom_target(iwi_c_header_gate
         COMMAND ${_iwi_gate_cmd}
         COMMENT "Compiling the IWI/plugin headers as C11"
