@@ -12,7 +12,7 @@
  *
  * Returns false (and optionally sets *outError to a static description string)
  * when any of the following holds:
- *   - componentCount > IW_MAX_COMPONENTS
+ *   - active components have null components pointer
  *   - any active component has bitWidth == 0
  *   - any active component's bit range (bitOffset+bitWidth) exceeds bitsPerPixel
  *     (interleaved only)
@@ -28,8 +28,8 @@ inline bool ValidateImageFormat(const IWImageFormat& fmt,
         return false;
     };
 
-    if (fmt.componentCount > IW_MAX_COMPONENTS)
-        return fail("componentCount exceeds IW_MAX_COMPONENTS");
+    if (fmt.componentCount > 0u && fmt.components == nullptr)
+        return fail("components pointer is null for non-zero componentCount");
 
     for (uint16_t i = 0u; i < fmt.componentCount; ++i) {
         if (fmt.components[i].bitWidth == 0u)

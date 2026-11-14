@@ -18,7 +18,7 @@ static void WritePNG(const std::string& path, const iw::Image& iwi)
      * check it instead of asserting.  assert() aborts a debug build and lets a
      * release build walk past the fixed-size components array below. */
     if (iwi.format.componentCount == 0
-        || iwi.format.componentCount > IW_MAX_COMPONENTS
+        || iwi.format.components == nullptr
         || iwi.format.components[0].bitWidth == 0)
     {
         throw std::runtime_error("WritePNG: malformed IWI image format");

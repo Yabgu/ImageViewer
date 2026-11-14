@@ -1287,7 +1287,7 @@ private:
 	static unsigned SourceBits(const Image& image) noexcept
 	{
 		unsigned bits = 0;
-		const uint32_t count = std::min<uint32_t>(image.format.componentCount, IW_MAX_COMPONENTS);
+		const uint32_t count = image.format.componentCount;
 		for (uint32_t c = 0; c < count; ++c)
 			if (image.format.components[c].bitWidth > bits)
 				bits = image.format.components[c].bitWidth;

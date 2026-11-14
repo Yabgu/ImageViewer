@@ -76,10 +76,7 @@ ImagePluginData* MakeRgba(const uint8_t* decoded, int width, int height)
     IWImageFormat fmt = {};
     fmt.componentCount = components;
     fmt.bitsPerPixel   = components * 8;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
-    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 };
+    fmt.components     = iw::kRgba8Components;
 
     const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * components;
     ImagePluginData* data = new ImagePluginData{
@@ -101,9 +98,7 @@ ImagePluginData* MakeRgb(const uint8_t* decoded, int width, int height)
     IWImageFormat fmt = {};
     fmt.componentCount = components;
     fmt.bitsPerPixel   = components * 8;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
+    fmt.components     = iw::kRgb8Components;
 
     const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * components;
     ImagePluginData* data = new ImagePluginData{

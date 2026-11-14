@@ -93,9 +93,7 @@ struct Rgb8Source
         data.format.componentCount = 3;
         data.format.bitsPerPixel   = 24;
         data.format.storageLayout  = IW_STORAGE_INTERLEAVED;
-        data.format.components[0]  = { IW_COMPONENT_SEMANTIC_R, cls,  0, 8 };
-        data.format.components[1]  = { IW_COMPONENT_SEMANTIC_G, cls,  8, 8 };
-        data.format.components[2]  = { IW_COMPONENT_SEMANTIC_B, cls, 16, 8 };
+        data.format.components     = iw::kRgb8Components;
     }
 };
 
@@ -151,9 +149,7 @@ struct Rgb16Source
         data.format.componentCount = 3;
         data.format.bitsPerPixel   = 48;
         data.format.storageLayout  = IW_STORAGE_INTERLEAVED;
-        data.format.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
-        data.format.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
-        data.format.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
+        data.format.components     = iw::kRgb16Components;
     }
 };
 /* Min / max / mean of one channel across every pixel of every frame. */

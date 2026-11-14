@@ -71,11 +71,7 @@ typedef enum IWComponentSemantic : uint8_t {
     /*
      * IW_COMPONENT_SEMANTIC_NONE = 0 is RESERVED.
      *
-     * IWImageFormat zero-initialises its components[IW_MAX_COMPONENTS] array,
-     * so every slot beyond componentCount will have semantic == 0.  Using 0 as
-     * a sentinel for "unused / padding" lets callers detect unset slots without
-     * inspecting componentCount, and avoids mistaking an uninitialised slot for
-     * a real R component.
+     * Used as a sentinel for unused or padding slots.
      */
     IW_COMPONENT_SEMANTIC_NONE    = 0,   /* reserved – unused / padding slot     */
 
@@ -97,9 +93,6 @@ struct IWComponentDef {
     uint16_t            bitOffset;      /* bit offset from the start of a pixel (interleaved only) */
     uint16_t            bitWidth;       /* number of bits occupied               */
 };
-
-/* Maximum number of components per pixel supported by the ABI */
-#define IW_MAX_COMPONENTS 8
 
 /*
  * How component data is laid out in the pixel buffer.
@@ -148,29 +141,6 @@ typedef union IWStorageLayout {
 #endif
 } IWStorageLayout;
 
-/* ── Extensible Metadata Entry & Tags ────────────────────────────────────── */
-
-#define IWI_META_TAG_CAMERA 0x414D4143u /* "CAMA": 3D Camera intrinsics & extrinsics */
-#define IWI_META_TAG_CBOR   0x524F4243u /* "CBOR": IETF RFC 8949 nestable binary JSON*/
-#define IWI_META_TAG_BSON   0x4E4F5342u /* "BSON": BSON document                    */
-#define IWI_META_TAG_MSGP   0x5047534Du /* "MSGP": MessagePack                       */
-#define IWI_META_TAG_JSON   0x4E4F534Au /* "JSON": UTF-8 JSON text                   */
-#define IWI_META_TAG_TEXT   0x54584554u /* "TEXT": UTF-8 key-value string metadata   */
-
-typedef struct IWCameraMeta {
-    float fovDegrees;       /* Vertical FOV in degrees (e.g. 60.0f)     */
-    float nearClip;         /* Near clipping plane (e.g. 0.1f)          */
-    float farClip;          /* Far clipping plane (e.g. 1000.0f)        */
-    float position[3];      /* Camera eye position (X, Y, Z)            */
-    float upVector[3];      /* Camera up direction (normalized X, Y, Z) */
-    float target[3];        /* Look-at target point (X, Y, Z)           */
-} IWCameraMeta;
-
-typedef struct IwiMetaHeader {
-    uint32_t tag;    /* FourCC tag identifying entry type */
-    uint32_t size;   /* Byte length of entry payload      */
-} IwiMetaHeader;
-
 /*
  * Complete format descriptor for a single image.
  *
@@ -182,31 +152,79 @@ typedef struct IwiMetaHeader {
  * for IW_STORAGE_INTERLEAVED, or per sample (one component of one pixel)
  * for IW_STORAGE_PLANAR.
  *
- * Example – RGB8 packed (interleaved):
- *   componentCount = 3, bitsPerPixel = 24,
- *   storageLayout  = IW_STORAGE_INTERLEAVED
- *   components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 }
- *   components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 }
- *   components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 }
- *
- * Example – HSL mixed-precision (interleaved):
- *   componentCount = 3, bitsPerPixel = 30,
- *   storageLayout  = IW_STORAGE_INTERLEAVED
- *   components[0] = { IW_COMPONENT_SEMANTIC_H, IW_COMPONENT_CLASS_UINT,   0,  8 }
- *   components[1] = { IW_COMPONENT_SEMANTIC_S, IW_COMPONENT_CLASS_UNORM,  8,  6 }
- *   components[2] = { IW_COMPONENT_SEMANTIC_L, IW_COMPONENT_CLASS_FLOAT, 14, 16 }
- *
- * Example – 16-bit grayscale planar (one plane):
- *   componentCount = 1, bitsPerPixel = 16,
- *   storageLayout  = IW_STORAGE_PLANAR
- *   components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 16 }
+ * components points to an array of componentCount IWComponentDef descriptors.
  */
 struct IWImageFormat {
-    uint16_t        componentCount;                 /* number of active components (<= IW_MAX_COMPONENTS) */
-    uint16_t        bitsPerPixel;                   /* bits per pixel (interleaved) / per sample (planar) */
-    IWStorageLayout storageLayout;                  /* how components are arranged in memory              */
-    IWComponentDef  components[IW_MAX_COMPONENTS];  /* per-component descriptors                          */
+    uint16_t              componentCount;                 /* number of active components                        */
+    uint16_t              bitsPerPixel;                   /* bits per pixel (interleaved) / per sample (planar) */
+    IWStorageLayout       storageLayout;                  /* how components are arranged in memory              */
+    const IWComponentDef* components;                     /* pointer to per-component descriptors               */
+#ifdef __cplusplus
+    constexpr IWImageFormat()
+        : componentCount(0), bitsPerPixel(0), storageLayout{}, components(nullptr) {}
+    constexpr IWImageFormat(uint16_t count, uint16_t bpp, IWStorageLayout layout, const IWComponentDef* comps)
+        : componentCount(count), bitsPerPixel(bpp), storageLayout(layout), components(comps) {}
+#endif
 };
+
+#ifdef __cplusplus
+namespace iw {
+inline constexpr IWComponentDef kGray8Components[1] = {
+    { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 8 }
+};
+inline constexpr IWComponentDef kGray16Components[1] = {
+    { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 16 }
+};
+inline constexpr IWComponentDef kGrayAlpha8Components[2] = {
+    { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 8 },
+    { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UNORM, 8, 8 }
+};
+inline constexpr IWComponentDef kRgb8Components[3] = {
+    { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 },
+    { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 },
+    { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 }
+};
+inline constexpr IWComponentDef kRgb16Components[3] = {
+    { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 },
+    { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 },
+    { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 }
+};
+inline constexpr IWComponentDef kBgr8Components[3] = {
+    { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM,  0, 8 },
+    { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 },
+    { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, 16, 8 }
+};
+inline constexpr IWComponentDef kRgba8Components[4] = {
+    { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 },
+    { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 },
+    { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 },
+    { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 }
+};
+inline constexpr IWComponentDef kRgba16Components[4] = {
+    { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 },
+    { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 },
+    { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 },
+    { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 48, 16 }
+};
+inline constexpr IWComponentDef kBgra8Components[4] = {
+    { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM,  0, 8 },
+    { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 },
+    { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, 16, 8 },
+    { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 }
+};
+inline constexpr IWComponentDef kRgb32FComponents[3] = {
+    { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 32 },
+    { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 32, 32 },
+    { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 }
+};
+inline constexpr IWComponentDef kRgba32FComponents[4] = {
+    { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 32 },
+    { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 32, 32 },
+    { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 },
+    { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_FLOAT, 96, 32 }
+};
+} // namespace iw
+#endif
 
 /*
  * Data block returned by a loader plugin.

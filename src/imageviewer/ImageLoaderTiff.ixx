@@ -175,21 +175,23 @@ ImagePluginResult DecodeTiff(TIFF* handle)
         // Determine channel order for native scanline decoding.
         // Build the IWImageFormat for the native-scanline path.
         // (The tiled/fallback path always produces 8-bit RGBA via libtiff.)
+        static thread_local IWComponentDef nativeComps[4];
         auto BuildNativeFormat = [&](int nComponents, bool alpha) -> IWImageFormat {
             IWImageFormat f = {};
             f.componentCount = static_cast<uint16_t>(nComponents);
             f.bitsPerPixel   = static_cast<uint16_t>(nComponents * componentBitWidth);
             if (isGrayPhotometric) {
-                f.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, componentClass, 0, componentBitWidth };
+                nativeComps[0] = { IW_COMPONENT_SEMANTIC_GRAY, componentClass, 0, componentBitWidth };
                 if (alpha)
-                    f.components[1] = { IW_COMPONENT_SEMANTIC_A, componentClass, componentBitWidth, componentBitWidth };
+                    nativeComps[1] = { IW_COMPONENT_SEMANTIC_A, componentClass, componentBitWidth, componentBitWidth };
             } else {
-                f.components[0] = { IW_COMPONENT_SEMANTIC_R, componentClass, static_cast<uint16_t>(0 * componentBitWidth), componentBitWidth };
-                f.components[1] = { IW_COMPONENT_SEMANTIC_G, componentClass, static_cast<uint16_t>(1 * componentBitWidth), componentBitWidth };
-                f.components[2] = { IW_COMPONENT_SEMANTIC_B, componentClass, static_cast<uint16_t>(2 * componentBitWidth), componentBitWidth };
+                nativeComps[0] = { IW_COMPONENT_SEMANTIC_R, componentClass, static_cast<uint16_t>(0 * componentBitWidth), componentBitWidth };
+                nativeComps[1] = { IW_COMPONENT_SEMANTIC_G, componentClass, static_cast<uint16_t>(1 * componentBitWidth), componentBitWidth };
+                nativeComps[2] = { IW_COMPONENT_SEMANTIC_B, componentClass, static_cast<uint16_t>(2 * componentBitWidth), componentBitWidth };
                 if (alpha)
-                    f.components[3] = { IW_COMPONENT_SEMANTIC_A, componentClass, static_cast<uint16_t>(3 * componentBitWidth), componentBitWidth };
+                    nativeComps[3] = { IW_COMPONENT_SEMANTIC_A, componentClass, static_cast<uint16_t>(3 * componentBitWidth), componentBitWidth };
             }
+            f.components = nativeComps;
             return f;
         };
 
@@ -222,10 +224,7 @@ ImagePluginResult DecodeTiff(TIFF* handle)
             IWImageFormat tiledFmt = {};
             tiledFmt.componentCount = components;
             tiledFmt.bitsPerPixel   = components * 8;
-            tiledFmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
-            tiledFmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
-            tiledFmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
-            tiledFmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 };
+            tiledFmt.components     = iw::kRgba8Components;
 
             ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
             if (!data)

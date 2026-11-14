@@ -238,7 +238,7 @@ static bool IsExactCodeMapping(const ImagePluginData& src,
 
     const uint16_t n  = src.format.componentCount;
     const uint16_t dn = dst.format.componentCount;
-    if (n == 0u || dn == 0u || n > IW_MAX_COMPONENTS)
+    if (n == 0u || dn == 0u || src.format.components == nullptr || dst.format.components == nullptr)
         return false;
 
     for (uint16_t i = 0; i < n; ++i) {

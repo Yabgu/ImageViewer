@@ -20,6 +20,7 @@ struct Image {
     uint32_t        height     = 0;
     ImageColorSpace colorSpace = IMAGE_COLOR_SPACE_UNKNOWN;
     IWImageFormat   format     = {};
+    std::vector<IWComponentDef> components;
     std::vector<uint8_t> pixelData;
 };
 
@@ -35,6 +36,10 @@ inline Image BuildImage(int width, int height,
     img.height     = static_cast<uint32_t>(height);
     img.colorSpace = colorSpace;
     img.format     = fmt;
+    if (fmt.components && fmt.componentCount > 0) {
+        img.components.assign(fmt.components, fmt.components + fmt.componentCount);
+        img.format.components = img.components.data();
+    }
     img.pixelData.assign(pixels, pixels + pixelBytes);
     return img;
 }
@@ -173,26 +178,25 @@ inline Image DeserializeImage(const uint8_t* data, size_t size)
     (void)ReadU8(p); p += 1; // reserved
     img.format.componentCount = ReadU16(p); p += 2;
 
-    if (img.format.componentCount < 1 || img.format.componentCount > IW_MAX_COMPONENTS)
+    if (img.format.componentCount < 1)
         throw std::runtime_error("IWI invalid component count");
 
     const size_t totalHeaderAndMeta = 36 + static_cast<size_t>(img.format.componentCount) * 6 + metaBytes;
     if (size < totalHeaderAndMeta)
         throw std::runtime_error("IWI header/metadata truncated");
 
+    img.components.resize(img.format.componentCount);
     uint16_t bpp = 0;
     for (uint16_t i = 0; i < img.format.componentCount; ++i) {
-        img.format.components[i].semantic =
+        img.components[i].semantic =
             static_cast<IWComponentSemantic>(ReadU8(p)); p += 1;
-        img.format.components[i].componentClass =
+        img.components[i].componentClass =
             static_cast<IWComponentClass>(ReadU8(p)); p += 1;
-        img.format.components[i].bitOffset = ReadU16(p); p += 2;
-        img.format.components[i].bitWidth  = ReadU16(p); p += 2;
-        bpp += img.format.components[i].bitWidth;
+        img.components[i].bitOffset = ReadU16(p); p += 2;
+        img.components[i].bitWidth  = ReadU16(p); p += 2;
+        bpp += img.components[i].bitWidth;
     }
-    for (uint16_t i = img.format.componentCount; i < IW_MAX_COMPONENTS; ++i) {
-        img.format.components[i] = {};
-    }
+    img.format.components   = img.components.data();
     img.format.bitsPerPixel = bpp;
 
     // skip metaBytes

@@ -321,13 +321,7 @@ static ImagePluginResult DecodeJpeg(const jpeg_detail::Source& src,
 	IWImageFormat fmt = {};
 	fmt.componentCount = static_cast<uint16_t>(channelCount);
 	fmt.bitsPerPixel   = static_cast<uint16_t>(channelCount * kBitsPerComponent);
-	if (channelCount == 1) {
-		fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, kBitsPerComponent };
-	} else {
-		fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, kBitsPerComponent };
-		fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, kBitsPerComponent };
-		fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, kBitsPerComponent };
-	}
+	fmt.components = (channelCount == 1) ? iw::kGray8Components : iw::kRgb8Components;
 
 	owned->pixels = std::make_unique<uint8_t[]>(dataSize);
 	if (!owned->pixels) {

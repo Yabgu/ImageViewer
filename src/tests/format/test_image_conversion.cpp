@@ -106,31 +106,51 @@ static IWImageFormat BuildFormatFromPNG(const PNGImageData& img)
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
 
     const uint16_t bw = static_cast<uint16_t>(img.bitDepth);
+    static const IWComponentDef s_gray8[1] = { { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 8 } };
+    static const IWComponentDef s_gray16[1] = { { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 16 } };
+    static const IWComponentDef s_ga8[2] = {
+        { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 8 },
+        { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, 8, 8 }
+    };
+    static const IWComponentDef s_ga16[2] = {
+        { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 16 },
+        { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, 16, 16 }
+    };
+    static const IWComponentDef s_rgb8[3] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 }
+    };
+    static const IWComponentDef s_rgb16[3] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 16 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 16, 16 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 32, 16 }
+    };
+    static const IWComponentDef s_rgba8[4] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 },
+        { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, 24, 8 }
+    };
+    static const IWComponentDef s_rgba16[4] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 16 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 16, 16 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 32, 16 },
+        { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, 48, 16 }
+    };
+
     switch (img.channels) {
     case 1:
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, bw };
+        fmt.components = (bw == 16) ? s_gray16 : s_gray8;
         break;
     case 2:
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0,  bw };
-        fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, bw, bw };
+        fmt.components = (bw == 16) ? s_ga16 : s_ga8;
         break;
     case 3:
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(0 * bw), bw };
-        fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(1 * bw), bw };
-        fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(2 * bw), bw };
+        fmt.components = (bw == 16) ? s_rgb16 : s_rgb8;
         break;
     case 4:
-        fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(0 * bw), bw };
-        fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(1 * bw), bw };
-        fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(2 * bw), bw };
-        fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT,
-                               static_cast<uint16_t>(3 * bw), bw };
+        fmt.components = (bw == 16) ? s_rgba16 : s_rgba8;
         break;
     default:
         throw std::runtime_error(
@@ -223,13 +243,12 @@ TEST_SUITE("IWI format: serialization")
     TEST_CASE("RGB8 binary round-trip (synthetic)")
     {
         constexpr int W = 4, H = 2;
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 24;
-        fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
+        static constexpr IWComponentDef s_rgbComps[3] = {
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 },
+            { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 }
+        };
+        IWImageFormat fmt(3, 24, IW_STORAGE_INTERLEAVED, s_rgbComps);
 
         std::vector<uint8_t> pixels(W * H * 3);
         for (int i = 0; i < W * H * 3; ++i)
@@ -253,11 +272,10 @@ TEST_SUITE("IWI format: serialization")
     TEST_CASE("GRAY16 planar binary round-trip (synthetic)")
     {
         constexpr int W = 3, H = 3;
-        IWImageFormat fmt = {};
-        fmt.componentCount = 1;
-        fmt.bitsPerPixel   = 16;
-        fmt.storageLayout  = IW_STORAGE_PLANAR;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 16 };
+        static constexpr IWComponentDef s_gray16Comp[1] = {
+            { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 16 }
+        };
+        IWImageFormat fmt(1, 16, IW_STORAGE_PLANAR, s_gray16Comp);
 
         std::vector<uint8_t> pixels(W * H * 2);
         for (size_t i = 0; i < pixels.size(); ++i)
@@ -283,13 +301,12 @@ TEST_SUITE("IWI format: serialization")
     TEST_CASE("SaveIWI / LoadIWI file round-trip (synthetic RGB8)")
     {
         constexpr int W = 8, H = 4;
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 24;
-        fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
+        static constexpr IWComponentDef s_rgbComps[3] = {
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 },
+            { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 }
+        };
+        IWImageFormat fmt(3, 24, IW_STORAGE_INTERLEAVED, s_rgbComps);
 
         std::vector<uint8_t> pixels(W * H * 3);
         for (size_t i = 0; i < pixels.size(); ++i)

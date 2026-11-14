@@ -155,21 +155,7 @@ ImagePluginResult DecodeIwi(const Source& src)
     format.componentCount = header.components;
     format.bitsPerPixel   = header.bitsPerPixel;
     format.storageLayout  = header.storageLayout;
-
-    for (uint16_t i = 0; i < header.components; ++i)
-    {
-        /* Stored as read: the file is the authority on what its bytes mean,
-         * and ParseHeader has already narrowed that to unsigned 8-bit colour
-         * in interleaved order. */
-        format.components[i] = IWComponentDef{
-            .semantic       = static_cast<IWComponentSemantic>(
-                                  header.component[i].semantic),
-            .componentClass = static_cast<IWComponentClass>(
-                                  header.component[i].componentClass),
-            .bitOffset      = header.component[i].bitOffset,
-            .bitWidth       = header.component[i].bitWidth,
-        };
-    }
+    format.components     = (header.components == 4) ? iw::kRgba8Components : iw::kRgb8Components;
 
     /* Tightly packed rows: the container has no stride field, so the only
      * layout it defines is one row of (width x components) bytes after the

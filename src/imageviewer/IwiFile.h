@@ -32,6 +32,29 @@
 #define IWI_PAYLOAD_LZ4             "lz4"
 #define IWI_PAYLOAD_ZSTD            "zstd"
 
+/* ── Extensible Metadata Entry & Tags ────────────────────────────────────── */
+
+#define IWI_META_TAG_CAMERA 0x414D4143u /* "CAMA": 3D Camera intrinsics & extrinsics */
+#define IWI_META_TAG_CBOR   0x524F4243u /* "CBOR": IETF RFC 8949 nestable binary JSON*/
+#define IWI_META_TAG_BSON   0x4E4F5342u /* "BSON": BSON document                    */
+#define IWI_META_TAG_MSGP   0x5047534Du /* "MSGP": MessagePack                       */
+#define IWI_META_TAG_JSON   0x4E4F534Au /* "JSON": UTF-8 JSON text                   */
+#define IWI_META_TAG_TEXT   0x54584554u /* "TEXT": UTF-8 key-value string metadata   */
+
+typedef struct IWCameraMeta {
+    float fovDegrees;       /* Vertical FOV in degrees (e.g. 60.0f)     */
+    float nearClip;         /* Near clipping plane (e.g. 0.1f)          */
+    float farClip;          /* Far clipping plane (e.g. 1000.0f)        */
+    float position[3];      /* Camera eye position (X, Y, Z)            */
+    float upVector[3];      /* Camera up direction (normalized X, Y, Z) */
+    float target[3];        /* Look-at target point (X, Y, Z)           */
+} IWCameraMeta;
+
+typedef struct IwiMetaHeader {
+    uint32_t tag;    /* FourCC tag identifying entry type */
+    uint32_t size;   /* Byte length of entry payload      */
+} IwiMetaHeader;
+
 /* ── On-Disk Structs (packed) ────────────────────────────────────────────── */
 
 #pragma pack(push, 1)

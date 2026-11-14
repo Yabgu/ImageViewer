@@ -17,47 +17,63 @@
 
 static IWImageFormat MakeRGB8()
 {
+    static constexpr IWComponentDef c[3] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 }
+    };
     IWImageFormat fmt = {};
     fmt.componentCount = 3;
     fmt.bitsPerPixel   = 24;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components     = c;
     return fmt;
 }
 
 static IWImageFormat MakeRGBA8()
 {
+    static constexpr IWComponentDef c[4] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 },
+        { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, 24, 8 }
+    };
     IWImageFormat fmt = {};
     fmt.componentCount = 4;
     fmt.bitsPerPixel   = 32;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
-    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, 24, 8 };
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components     = c;
     return fmt;
 }
 
 static IWImageFormat MakeRGB16()
 {
+    static constexpr IWComponentDef c[3] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 16 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 16, 16 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 32, 16 }
+    };
     IWImageFormat fmt = {};
     fmt.componentCount = 3;
     fmt.bitsPerPixel   = 48;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 16 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 16, 16 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 32, 16 };
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components     = c;
     return fmt;
 }
 
 static IWImageFormat MakeRGBA32F()
 {
+    static constexpr IWComponentDef c[4] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 32 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 32, 32 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 },
+        { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_FLOAT, 96, 32 }
+    };
     IWImageFormat fmt = {};
     fmt.componentCount = 4;
     fmt.bitsPerPixel   = 128;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 32 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 32, 32 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 };
-    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_FLOAT, 96, 32 };
+    fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+    fmt.components     = c;
     return fmt;
 }
 
@@ -82,22 +98,21 @@ TEST_SUITE("ValidateImageFormat")
 
     TEST_CASE("accepts exotic HSL mixed-precision format")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 30;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_H, IW_COMPONENT_CLASS_UINT,   0,  8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_S, IW_COMPONENT_CLASS_UNORM,  8,  6 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_L, IW_COMPONENT_CLASS_FLOAT, 14, 16 };
+        static constexpr IWComponentDef c[3] = {
+            { IW_COMPONENT_SEMANTIC_H, IW_COMPONENT_CLASS_UINT,   0,  8 },
+            { IW_COMPONENT_SEMANTIC_S, IW_COMPONENT_CLASS_UNORM,  8,  6 },
+            { IW_COMPONENT_SEMANTIC_L, IW_COMPONENT_CLASS_FLOAT, 14, 16 }
+        };
+        IWImageFormat fmt{ 3, 30, IW_STORAGE_INTERLEAVED, c };
         CHECK(ValidateImageFormat(fmt));
     }
 
     TEST_CASE("accepts planar 16-bit grayscale format")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 1;
-        fmt.bitsPerPixel   = 16;
-        fmt.storageLayout  = IW_STORAGE_PLANAR;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 16 };
+        static constexpr IWComponentDef c[1] = {
+            { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 16 }
+        };
+        IWImageFormat fmt{ 1, 16, IW_STORAGE_PLANAR, c };
         CHECK(ValidateImageFormat(fmt));
     }
 
@@ -111,10 +126,11 @@ TEST_SUITE("ValidateImageFormat")
         CHECK(ValidateImageFormat(fmt));
     }
 
-    TEST_CASE("rejects componentCount exceeding IW_MAX_COMPONENTS")
+    TEST_CASE("rejects null components pointer for non-zero componentCount")
     {
         IWImageFormat fmt = {};
-        fmt.componentCount = static_cast<uint16_t>(IW_MAX_COMPONENTS + 1u);
+        fmt.componentCount = 3;
+        fmt.components     = nullptr;
         const char* err    = nullptr;
         CHECK(!ValidateImageFormat(fmt, &err));
         CHECK(err != nullptr);
@@ -122,11 +138,11 @@ TEST_SUITE("ValidateImageFormat")
 
     TEST_CASE("rejects bitWidth == 0 for an active component")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 1;
-        fmt.bitsPerPixel   = 8;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 0 };
-        const char* err    = nullptr;
+        static constexpr IWComponentDef c[1] = {
+            { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 0 }
+        };
+        IWImageFormat fmt{ 1, 8, IW_STORAGE_INTERLEAVED, c };
+        const char* err = nullptr;
         CHECK(!ValidateImageFormat(fmt, &err));
         CHECK(err != nullptr);
     }
@@ -140,22 +156,22 @@ TEST_SUITE("ValidateImageFormat")
 
     TEST_CASE("rejects overlapping bit ranges between two interleaved components")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 2;
-        fmt.bitsPerPixel   = 16;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 4, 8 }; /* overlaps R [0,8) */
-        const char* err    = nullptr;
+        static constexpr IWComponentDef c[2] = {
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 0, 8 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 4, 8 }
+        };
+        IWImageFormat fmt{ 2, 16, IW_STORAGE_INTERLEAVED, c };
+        const char* err = nullptr;
         CHECK(!ValidateImageFormat(fmt, &err));
         CHECK(err != nullptr);
     }
 
     TEST_CASE("rejects component whose range starts beyond bitsPerPixel")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 1;
-        fmt.bitsPerPixel   = 8;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 8, 8 }; /* bitOffset=8 with bitsPerPixel=8 */
+        static constexpr IWComponentDef c[1] = {
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 8, 8 }
+        };
+        IWImageFormat fmt{ 1, 8, IW_STORAGE_INTERLEAVED, c };
         CHECK(!ValidateImageFormat(fmt));
     }
 }
@@ -172,12 +188,7 @@ TEST_SUITE("Loader format descriptors")
     TEST_CASE("JPEG RGB: 3 components, 8-bit UINT, sequential bitOffsets 0/8/16")
     {
         /* Mirrors ImageLoaderJpeg.ixx for a 3-component RGB output. */
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 24;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
+        const IWImageFormat fmt = MakeRGB8();
 
         REQUIRE(ValidateImageFormat(fmt));
         CHECK(fmt.componentCount    == 3);
@@ -193,20 +204,12 @@ TEST_SUITE("Loader format descriptors")
         CHECK(fmt.components[2].semantic      == IW_COMPONENT_SEMANTIC_B);
         CHECK(fmt.components[2].bitOffset     == 16);
         CHECK(fmt.components[2].bitWidth      == 8);
-        /* Slots beyond componentCount must be the NONE sentinel. */
-        CHECK(fmt.components[3].semantic == IW_COMPONENT_SEMANTIC_NONE);
     }
 
     TEST_CASE("PNG RGBA 8-bit: 4 components, alpha last, bitOffsets 0/8/16/24")
     {
         /* Mirrors ImageLoaderPng.ixx PNG_COLOR_TYPE_RGBA branch. */
-        IWImageFormat fmt = {};
-        fmt.componentCount = 4;
-        fmt.bitsPerPixel   = 32;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
-        fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, 24, 8 };
+        const IWImageFormat fmt = MakeRGBA8();
 
         REQUIRE(ValidateImageFormat(fmt));
         CHECK(fmt.componentCount             == 4);
@@ -222,10 +225,10 @@ TEST_SUITE("Loader format descriptors")
            at decode time, so it does not yet emit this exact descriptor.  This
            test documents the expected structure for future native 12-bit support
            and verifies that ValidateImageFormat() accepts it. */
-        IWImageFormat fmt = {};
-        fmt.componentCount = 1;
-        fmt.bitsPerPixel   = 12;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 12 };
+        static constexpr IWComponentDef c[1] = {
+            { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 12 }
+        };
+        const IWImageFormat fmt{ 1, 12, IW_STORAGE_INTERLEAVED, c };
 
         REQUIRE(ValidateImageFormat(fmt));
         CHECK(fmt.componentCount              == 1);
@@ -238,12 +241,7 @@ TEST_SUITE("Loader format descriptors")
     TEST_CASE("WebP RGB: 3 components, 8-bit UINT, R/G/B semantics")
     {
         /* Mirrors ImageLoaderWebp.ixx for opaque (non-alpha) WebP output. */
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 24;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 16, 8 };
+        const IWImageFormat fmt = MakeRGB8();
 
         REQUIRE(ValidateImageFormat(fmt));
         CHECK(fmt.components[0].semantic == IW_COMPONENT_SEMANTIC_R);
@@ -260,14 +258,6 @@ TEST_SUITE("Loader format descriptors")
         CHECK(fmt.componentCount             == 4);
         CHECK(fmt.components[3].semantic     == IW_COMPONENT_SEMANTIC_A);
         CHECK(fmt.components[3].bitOffset    == 24);
-    }
-
-    TEST_CASE("unused component slots beyond componentCount are IW_COMPONENT_SEMANTIC_NONE")
-    {
-        const IWImageFormat fmt = MakeRGB8();
-        /* Zero-initialisation of IWImageFormat guarantees slots 3..7 are NONE. */
-        for (uint16_t i = fmt.componentCount; i < IW_MAX_COMPONENTS; ++i)
-            CHECK(fmt.components[i].semantic == IW_COMPONENT_SEMANTIC_NONE);
     }
 }
 
@@ -315,27 +305,25 @@ TEST_SUITE("ClassifyGLUpload")
 
     TEST_CASE("BGR8 → valid, isBGR=true")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 24;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 16, 8 };
-        const auto h = ClassifyGLUpload(fmt);
+        static constexpr IWComponentDef c[3] = {
+            { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT,  0, 8 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 },
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 16, 8 }
+        };
+        const auto h = ClassifyGLUpload(IWImageFormat{ 3, 24, IW_STORAGE_INTERLEAVED, c });
         CHECK(h.valid);
         CHECK(h.isBGR);
     }
 
     TEST_CASE("BGRA8 → valid, isBGR=true, 4 channels")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 4;
-        fmt.bitsPerPixel   = 32;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 16, 8 };
-        fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, 24, 8 };
-        const auto h = ClassifyGLUpload(fmt);
+        static constexpr IWComponentDef c[4] = {
+            { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT,  0, 8 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 8 },
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 16, 8 },
+            { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UINT, 24, 8 }
+        };
+        const auto h = ClassifyGLUpload(IWImageFormat{ 4, 32, IW_STORAGE_INTERLEAVED, c });
         CHECK(h.valid);
         CHECK(h.isBGR);
         CHECK(h.channels == 4);
@@ -343,11 +331,10 @@ TEST_SUITE("ClassifyGLUpload")
 
     TEST_CASE("GRAY8 → valid, 1 channel")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 1;
-        fmt.bitsPerPixel   = 8;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 8 };
-        const auto h = ClassifyGLUpload(fmt);
+        static constexpr IWComponentDef c[1] = {
+            { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 8 }
+        };
+        const auto h = ClassifyGLUpload(IWImageFormat{ 1, 8, IW_STORAGE_INTERLEAVED, c });
         CHECK(h.valid);
         CHECK(h.channels == 1);
         CHECK(!h.isFloat);
@@ -355,67 +342,62 @@ TEST_SUITE("ClassifyGLUpload")
 
     TEST_CASE("mixed-precision (8-bit R + 16-bit G) → invalid")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 2;
-        fmt.bitsPerPixel   = 24;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0,  8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 16 };
-        CHECK(!ClassifyGLUpload(fmt).valid);
+        static constexpr IWComponentDef c[2] = {
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0,  8 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT,  8, 16 }
+        };
+        CHECK(!ClassifyGLUpload(IWImageFormat{ 2, 24, IW_STORAGE_INTERLEAVED, c }).valid);
     }
 
     TEST_CASE("float16 RGB → invalid (not directly GL-uploadable)")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 48;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 16 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 16, 16 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 32, 16 };
-        CHECK(!ClassifyGLUpload(fmt).valid);
+        static constexpr IWComponentDef c[3] = {
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 16 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 16, 16 },
+            { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 32, 16 }
+        };
+        CHECK(!ClassifyGLUpload(IWImageFormat{ 3, 48, IW_STORAGE_INTERLEAVED, c }).valid);
     }
 
     TEST_CASE("HSL semantics → invalid (exotic, not standard RGB/RGBA)")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 24;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_H, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_S, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_L, IW_COMPONENT_CLASS_UINT, 16, 8 };
-        CHECK(!ClassifyGLUpload(fmt).valid);
+        static constexpr IWComponentDef c[3] = {
+            { IW_COMPONENT_SEMANTIC_H, IW_COMPONENT_CLASS_UINT,  0, 8 },
+            { IW_COMPONENT_SEMANTIC_S, IW_COMPONENT_CLASS_UINT,  8, 8 },
+            { IW_COMPONENT_SEMANTIC_L, IW_COMPONENT_CLASS_UINT, 16, 8 }
+        };
+        CHECK(!ClassifyGLUpload(IWImageFormat{ 3, 24, IW_STORAGE_INTERLEAVED, c }).valid);
     }
 
     TEST_CASE("UNKNOWN semantics (e.g. UV data) → invalid")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 2;
-        fmt.bitsPerPixel   = 16;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT,  0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT,  8, 8 };
-        CHECK(!ClassifyGLUpload(fmt).valid);
+        static constexpr IWComponentDef c[2] = {
+            { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT,  0, 8 },
+            { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT,  8, 8 }
+        };
+        CHECK(!ClassifyGLUpload(IWImageFormat{ 2, 16, IW_STORAGE_INTERLEAVED, c }).valid);
     }
 
     TEST_CASE("planar layout → invalid regardless of channel semantics")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 8;
-        fmt.storageLayout  = IW_STORAGE_PLANAR;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 0, 8 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 0, 8 };
-        CHECK(!ClassifyGLUpload(fmt).valid);
+        static constexpr IWComponentDef c[3] = {
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT, 0, 8 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 0, 8 },
+            { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 0, 8 }
+        };
+        CHECK(!ClassifyGLUpload(IWImageFormat{ 3, 8, IW_STORAGE_PLANAR, c }).valid);
     }
 
     TEST_CASE("5-channel format → invalid (> 4 channels)")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 5;
-        fmt.bitsPerPixel   = 40;
-        for (int i = 0; i < 5; ++i)
-            fmt.components[i] = { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT,
-                                   static_cast<uint16_t>(i * 8), 8 };
-        CHECK(!ClassifyGLUpload(fmt).valid);
+        static constexpr IWComponentDef c[5] = {
+            { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT,  0, 8 },
+            { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT,  8, 8 },
+            { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT, 16, 8 },
+            { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT, 24, 8 },
+            { IW_COMPONENT_SEMANTIC_UNKNOWN, IW_COMPONENT_CLASS_UINT, 32, 8 },
+        };
+        CHECK(!ClassifyGLUpload(IWImageFormat{ 5, 40, IW_STORAGE_INTERLEAVED, c }).valid);
     }
 }
 
@@ -627,10 +609,7 @@ static ImagePluginData* MakeRGBA16Pixel(uint16_t rgbVal, uint16_t aVal = 0xFFFFu
     fmt.componentCount = 4;
     fmt.bitsPerPixel   = 64;
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
-    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 48, 16 };
+    fmt.components     = iw::kRgba16Components;
 
     uint8_t* buf = static_cast<uint8_t*>(std::malloc(8));
     uint16_t* p  = reinterpret_cast<uint16_t*>(buf);
@@ -651,10 +630,7 @@ static ImagePluginData* MakeRGBA16Row(int w, uint16_t rgbVal)
     fmt.componentCount = 4;
     fmt.bitsPerPixel   = 64;
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
-    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 48, 16 };
+    fmt.components     = iw::kRgba16Components;
 
     const int stride = w * 8; /* 8 bytes per pixel */
     uint8_t* buf = static_cast<uint8_t*>(std::malloc(static_cast<size_t>(stride)));
@@ -677,13 +653,12 @@ static ImagePluginData* MakeRGBA16Row(int w, uint16_t rgbVal)
 static ImagePluginData* MakePngStyleRGB8Row(int w, uint8_t r, uint8_t g, uint8_t b,
                                             IWComponentClass cls)
 {
+    (void)cls;
     IWImageFormat fmt = {};
     fmt.componentCount = 3;
     fmt.bitsPerPixel   = 24;
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, cls,  0, 8 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, cls,  8, 8 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, cls, 16, 8 };
+    fmt.components     = iw::kRgb8Components;
 
     const int stride = w * 3;
     uint8_t* buf = static_cast<uint8_t*>(std::malloc(static_cast<size_t>(stride)));
@@ -709,10 +684,7 @@ static ImagePluginData* MakeRGBA16Grid(int w, int h, uint16_t rgbVal)
     fmt.componentCount = 4;
     fmt.bitsPerPixel   = 64;
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
-    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 48, 16 };
+    fmt.components     = iw::kRgba16Components;
 
     const int stride = w * 8;
     uint8_t* buf = static_cast<uint8_t*>(
@@ -740,10 +712,7 @@ static ImagePluginData* MakeGrey16Row(const uint16_t* vals, int w)
     fmt.componentCount = 4;
     fmt.bitsPerPixel   = 64;
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
-    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 48, 16 };
+    fmt.components     = iw::kRgba16Components;
 
     const int stride = w * 8;
     uint8_t* buf = static_cast<uint8_t*>(std::malloc(static_cast<size_t>(stride)));
@@ -1569,14 +1538,7 @@ TEST_SUITE("FilterCore::ExtractPixelF")
 
     TEST_CASE("float32 HDR value 2.0 is clamped to 1.0")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 4;
-        fmt.bitsPerPixel   = 128;
-        fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 32 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 32, 32 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 };
-        fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_FLOAT, 96, 32 };
+        IWImageFormat fmt = MakeRGBA32F();
 
         float vals[4] = {2.0f, 0.5f, -0.5f, 1.5f};
         uint8_t* buf = static_cast<uint8_t*>(std::malloc(16));
@@ -1604,7 +1566,7 @@ TEST_SUITE("FilterCore::ExtractPixelF")
         fmt.componentCount = 1;
         fmt.bitsPerPixel   = 8;
         fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 8 };
+        fmt.components     = iw::kGray8Components;
 
         uint8_t grayBuf[1] = {128u};
         ImagePluginData pd;
@@ -1830,12 +1792,11 @@ TEST_SUITE("ClassifyGLUpload extra")
 {
     TEST_CASE("GRAY8 + ALPHA8 → valid, 2 channels, not BGR")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 2;
-        fmt.bitsPerPixel   = 16;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 8 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, 8, 8 };
-        const auto h = ClassifyGLUpload(fmt);
+        static constexpr IWComponentDef c[2] = {
+            { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 8 },
+            { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UINT, 8, 8 }
+        };
+        const auto h = ClassifyGLUpload(IWImageFormat{ 2, 16, IW_STORAGE_INTERLEAVED, c });
         CHECK(h.valid);
         CHECK(h.channels == 2);
         CHECK(!h.isFloat);
@@ -1844,13 +1805,12 @@ TEST_SUITE("ClassifyGLUpload extra")
 
     TEST_CASE("RGB32F → valid, float, 3 channels")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 96;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 32 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 32, 32 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 };
-        const auto h = ClassifyGLUpload(fmt);
+        static constexpr IWComponentDef c[3] = {
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_FLOAT,  0, 32 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_FLOAT, 32, 32 },
+            { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 }
+        };
+        const auto h = ClassifyGLUpload(IWImageFormat{ 3, 96, IW_STORAGE_INTERLEAVED, c });
         CHECK(h.valid);
         CHECK(h.channels == 3);
         CHECK(h.bitWidth  == 32);
@@ -1860,11 +1820,10 @@ TEST_SUITE("ClassifyGLUpload extra")
 
     TEST_CASE("GRAY16 → valid, 1 channel, 16-bit, not float")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 1;
-        fmt.bitsPerPixel   = 16;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 16 };
-        const auto h = ClassifyGLUpload(fmt);
+        static constexpr IWComponentDef c[1] = {
+            { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UINT, 0, 16 }
+        };
+        const auto h = ClassifyGLUpload(IWImageFormat{ 1, 16, IW_STORAGE_INTERLEAVED, c });
         CHECK(h.valid);
         CHECK(h.channels == 1);
         CHECK(h.bitWidth == 16);
@@ -1880,13 +1839,12 @@ TEST_SUITE("ClassifyGLUpload extra")
 
     TEST_CASE("10-bit packed RGB → invalid (not byte-aligned bit-width)")
     {
-        IWImageFormat fmt = {};
-        fmt.componentCount = 3;
-        fmt.bitsPerPixel   = 30;
-        fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 10 };
-        fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 10, 10 };
-        fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 20, 10 };
-        CHECK(!ClassifyGLUpload(fmt).valid);
+        static constexpr IWComponentDef c[3] = {
+            { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UINT,  0, 10 },
+            { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UINT, 10, 10 },
+            { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UINT, 20, 10 }
+        };
+        CHECK(!ClassifyGLUpload(IWImageFormat{ 3, 30, IW_STORAGE_INTERLEAVED, c }).valid);
     }
 }
 

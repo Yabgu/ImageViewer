@@ -97,18 +97,20 @@ inline IWImageFormat MakeTargetFormat(const IWScreenInfo& screen) noexcept
     fmt.bitsPerPixel   = static_cast<uint16_t>(nc * bw);
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
 
+    static thread_local IWComponentDef s_comps[4];
     static const IWComponentSemantic kSemantics[4] = {
         IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_SEMANTIC_G,
         IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_SEMANTIC_A
     };
     for (uint16_t i = 0; i < nc; ++i) {
-        fmt.components[i] = {
+        s_comps[i] = {
             kSemantics[i],
             IW_COMPONENT_CLASS_UNORM,
             static_cast<uint16_t>(i * bw),
             bw
         };
     }
+    fmt.components = s_comps;
     return fmt;
 }
 

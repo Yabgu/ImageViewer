@@ -170,6 +170,8 @@ private:
 		result.data = nullptr;
 	}
 
+	std::vector<IWComponentDef> componentStorage_;
+
 public:
 	const int           width;
 	const int           height;
@@ -192,17 +194,25 @@ public:
 	}
 
 	Image(Image&& o) noexcept
-		: width(o.width), height(o.height), format(o.format),
+		: componentStorage_(std::move(o.componentStorage_)),
+		  width(o.width), height(o.height), format(o.format),
 		  stride(o.stride), size(o.size), data(o.data), colorSpace(o.colorSpace)
 	{
 		const_cast<uint8_t*&>(o.data) = nullptr;
+		if (!componentStorage_.empty()) {
+			const_cast<const IWComponentDef*&>(format.components) = componentStorage_.data();
+		}
 	}
 
 	Image(const Image& o)
-		: width(o.width), height(o.height), format(o.format),
+		: componentStorage_(o.componentStorage_),
+		  width(o.width), height(o.height), format(o.format),
 		  stride(o.stride), size(o.size), data(new uint8_t[o.size]), colorSpace(o.colorSpace)
 	{
 		std::copy(o.data, o.data + o.size, data);
+		if (!componentStorage_.empty()) {
+			const_cast<const IWComponentDef*&>(format.components) = componentStorage_.data();
+		}
 	}
 
 	/* Primary constructor.  Takes ownership of storage; allocates internally if
@@ -218,6 +228,10 @@ public:
 	{
 		if (w <= 0 || h <= 0)
 			[[unlikely]] throw std::runtime_error("Image dimensions must be positive");
+		if (fmt.components && fmt.componentCount > 0) {
+			componentStorage_.assign(fmt.components, fmt.components + fmt.componentCount);
+			const_cast<const IWComponentDef*&>(this->format.components) = componentStorage_.data();
+		}
 	}
 
 	~Image()

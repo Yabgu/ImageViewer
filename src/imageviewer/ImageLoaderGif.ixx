@@ -231,10 +231,7 @@ ImagePluginData* CompositeFirstFrame(GifFileType* gif)
     fmt.componentCount = 4;
     fmt.bitsPerPixel   = 32;
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
-    fmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
-    fmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
-    fmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
-    fmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 };
+    fmt.components     = iw::kRgba8Components;
 
     ImagePluginData* data = new ImagePluginData{
         .width      = canvasW,
