@@ -44,8 +44,8 @@ inline constexpr char kMagic[] = IWI_FILE_MAGIC;
 inline constexpr std::size_t kBaseHeaderBytes = IWI_FILE_BASE_HEADER_BYTES;
 inline constexpr std::size_t kHeaderBytes = sizeof(IwiFileHeader);
 
-export using ::IwiFileComponent;
-export using ::IwiFileHeader;
+using ::IwiFileComponent;
+using ::IwiFileHeader;
 
 /*
  * Status codes for header parsing.
