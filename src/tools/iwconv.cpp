@@ -24,8 +24,25 @@ static void WritePNG(const std::string& path, const iw::Image& iwi)
         throw std::runtime_error("WritePNG: malformed IWI image format");
     }
 
-    if (iwi.format.storageLayout == IW_STORAGE_PLANAR)
-        throw std::runtime_error("WritePNG: planar IWI images are not supported");
+    /*
+     * Any storage flag this writer does not implement, not just planar.
+     *
+     * The layout is a 64-bit descriptor - 32 bits of flags plus a 32-bit
+     * stride - so `storageLayout == IW_STORAGE_PLANAR` compared the whole
+     * 64-bit value against 1.  That is true only for flags==PLANAR with
+     * stride==0, so a planar file with a declared stride slipped through and
+     * was then written as if its planes were rows.  A bit test is the only
+     * correct form here; equality on a bitmask is a category error.
+     */
+    const uint32_t layoutFlags = iwi.format.storageLayout.flags;
+    if ((layoutFlags & static_cast<uint32_t>(IW_STORAGE_FLAG_PLANAR)) != 0u ||
+        layoutFlags != 0u ||
+        iwi.format.storageLayout.stride != 0u)
+    {
+        throw std::runtime_error(
+            "WritePNG: IWI storage layout is planar, strided or uses flags this "
+            "writer does not implement");
+    }
 
     const int w   = static_cast<int>(iwi.width);
     const int h   = static_cast<int>(iwi.height);

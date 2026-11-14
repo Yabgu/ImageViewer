@@ -900,3 +900,110 @@ TEST_SUITE("IWI thumbnail: registration identifiers")
         }
     }
 }
+
+/*
+ * The head buffer bound.
+ *
+ * The provider reads a head of the file and hands the parser two lengths: the
+ * bytes it actually read, and the size of the container they came from.  The
+ * parser believes both, so a head length larger than the buffer is a stack
+ * overread inside whatever host loaded the DLL - Explorer's dllhost.exe, on
+ * files nobody chose to open.
+ *
+ * These cases pin the bound.  A container whose component table does not fit
+ * in the head must be refused as unsupported BEFORE any table byte is read,
+ * and a container larger than the head with a normal table must still work -
+ * that is the provider's whole design: read the head, seek to the rows.
+ */
+
+TEST_CASE("A component table larger than the head is refused, not read")
+{
+    /*
+     * 700 components needs 36 + 4200 bytes of table, past the provider's 4 KiB
+     * head bound.  The payload has to match the declared geometry or the
+     * parser refuses for truncation before the table bound is ever reached,
+     * so it is 16x16 x 700 components of filler.
+     */
+    Spec spec;
+    spec.components = 700;
+    spec.width = 16;
+    spec.height = 16;
+
+    const std::size_t payload =
+        static_cast<std::size_t>(spec.width) * spec.height * spec.components;
+    std::vector<uint8_t> pixels(payload, 0x40);
+    std::vector<uint8_t> bytes = MakeIwi(spec, pixels);
+
+    const std::size_t containerBytes = bytes.size();
+    INFO("container bytes: " << containerBytes);
+    INFO("component table bytes: " << (36u + 700u * 6u));
+
+    MemorySource source(std::move(bytes));
+    iwi::ThumbnailImage image;
+    std::string reason;
+
+    /*
+     * Unsupported - "valid, not previewable" - and never Malformed.  Malformed
+     * is what reading past the head buffer would look like: the parser would
+     * walk stack garbage and reject some component as misaligned.
+     */
+    const iwi::ThumbnailStatus s = iwi::RenderThumbnail(source, 64, image, &reason);
+    CHECK(s == iwi::ThumbnailStatus::Unsupported);
+    CHECK(Contains(reason, "component table"));
+}
+
+TEST_CASE("A large but in-bound component table is refused for having no RGBA form")
+{
+    /*
+     * 200 components fits the head bound (36 + 1200 < 4096), so this reaches
+     * the phase after the table is read: a valid container with no thumbnail
+     * representation.  Kept separate from the bound case above so a change to
+     * either limit fails a named test rather than a shared one.
+     */
+    Spec spec;
+    spec.components = 200;
+    spec.width = 4;
+    spec.height = 4;
+
+    const std::size_t payload =
+        static_cast<std::size_t>(spec.width) * spec.height * spec.components;
+    std::vector<uint8_t> pixels(payload, 0x40);
+    std::vector<uint8_t> bytes = MakeIwi(spec, pixels);
+
+    MemorySource source(std::move(bytes));
+    iwi::ThumbnailImage image;
+    std::string reason;
+
+    const iwi::ThumbnailStatus s = iwi::RenderThumbnail(source, 64, image, &reason);
+    CHECK(s == iwi::ThumbnailStatus::Unsupported);
+    CHECK(Contains(reason, "component count"));
+}
+TEST_CASE("A container far larger than the head buffer still previews")
+{
+    /*
+     * The provider must not need the whole file.  A 4x4 RGBA image with a
+     * multi-megabyte payload is not realistic, but it is the shape that would
+     * break a reader that slurped instead of seeking: containerBytes far
+     * exceeds any head buffer, and the rows it samples are still addressable.
+     */
+    Spec spec;
+    spec.width = 4;
+    spec.height = 4;
+
+    const std::size_t pixelCount = static_cast<std::size_t>(spec.width) * spec.height * 4u;
+    std::vector<uint8_t> pixels(pixelCount, 0);
+    Pixels4(4, 4, [](uint32_t, uint32_t, int c) { return static_cast<uint8_t>(40 + 20 * c); });
+
+    std::vector<uint8_t> bytes = MakeIwi(spec, pixels, 4u * 1024u * 1024u);
+    INFO("container bytes: " << bytes.size());
+    REQUIRE(bytes.size() > 4u * 1024u * 1024u);
+
+    MemorySource source(std::move(bytes));
+    iwi::ThumbnailImage image;
+    std::string reason;
+
+    const iwi::ThumbnailStatus s = iwi::RenderThumbnail(source, 64, image, &reason);
+    CHECK_MESSAGE(s == iwi::ThumbnailStatus::Ok, reason);
+    CHECK(image.width == 4);
+    CHECK(image.height == 4);
+}

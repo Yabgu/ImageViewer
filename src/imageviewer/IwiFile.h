@@ -168,6 +168,39 @@ typedef struct IwiFileHeader {
     uint16_t         componentCount;  /* 34: number of component records that follow */
 } IwiFileHeader;
 
+/*
+ * Layout pins, compiled in every translation unit that includes this header
+ * rather than only in this repository's test target.
+ *
+ * Why these two and not just the exact-offset asserts in
+ * test_abi_constants.cpp: sizeof(IwiFileHeader) is 40 while the wire header is
+ * 36, because the 64-bit layout descriptor gives the struct alignment 8 and it
+ * is padded to a multiple of that.  That 4-byte gap is load-bearing - the
+ * component table starts at byte 36, inside what sizeof says the struct
+ * occupies - so a field added at the end (a natural gamma, say) would keep
+ * sizeof at 40, leave componentCount at 34, and make iwi_file_components()
+ * point into the struct itself.
+ *
+ * The first assert catches a field that pushes componentCount past the base
+ * header.  The second catches the struct shrinking below it, which would put
+ * the table before the end of the fields.  Both are `<=' / '>=' rather than
+ * '==' on purpose: they constrain the relation, not one arithmetic outcome, so
+ * they keep working if a pad byte is ever inserted deliberately.
+ */
+#ifdef __cplusplus
+static_assert(offsetof(IwiFileHeader, componentCount) + sizeof(uint16_t)
+                  <= IWI_FILE_BASE_HEADER_BYTES,
+              "componentCount must end within the 36-byte base header");
+static_assert(sizeof(IwiFileHeader) >= IWI_FILE_BASE_HEADER_BYTES,
+              "the struct must be at least as large as the wire header");
+#else
+_Static_assert(offsetof(IwiFileHeader, componentCount) + sizeof(uint16_t)
+                   <= IWI_FILE_BASE_HEADER_BYTES,
+               "componentCount must end within the 36-byte base header");
+_Static_assert(sizeof(IwiFileHeader) >= IWI_FILE_BASE_HEADER_BYTES,
+               "the struct must be at least as large as the wire header");
+#endif
+
 /* -- Status --------------------------------------------------------------- */
 
 /*
