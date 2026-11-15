@@ -92,7 +92,7 @@ static void SetError(const char* msg) noexcept
  */
 static pixman_format_code_t GetPixmanFormat(const IWImageFormat& fmt) noexcept
 {
-    if (fmt.storageLayout != IW_STORAGE_INTERLEAVED) return (pixman_format_code_t)0;
+    if (!fmt.storageLayout.isInterleavedTight()) return (pixman_format_code_t)0;
 
     const uint16_t nc = fmt.componentCount;
     if (nc == 0 || nc > 4) return (pixman_format_code_t)0;
@@ -226,8 +226,8 @@ static bool PixmanConvert(const ImagePluginData& src,
 static bool IsExactCodeMapping(const ImagePluginData& src,
                                const ImagePluginData& dst) noexcept
 {
-    if (src.format.storageLayout != IW_STORAGE_INTERLEAVED ||
-        dst.format.storageLayout != IW_STORAGE_INTERLEAVED)
+    if (!src.format.storageLayout.isInterleavedTight() ||
+        !dst.format.storageLayout.isInterleavedTight())
         return false;
 
     /* pixman_image_create_bits() requires 4-byte-aligned row strides.  Both
@@ -238,7 +238,7 @@ static bool IsExactCodeMapping(const ImagePluginData& src,
 
     const uint16_t n  = src.format.componentCount;
     const uint16_t dn = dst.format.componentCount;
-    if (n == 0u || dn == 0u || n > IW_MAX_COMPONENTS)
+    if (n == 0u || dn == 0u || src.format.components == nullptr || dst.format.components == nullptr)
         return false;
 
     for (uint16_t i = 0; i < n; ++i) {
@@ -416,7 +416,14 @@ IWFilterImageSet* FilterImage(const ImagePluginData*  src,
         return nullptr;
     }
 
-    const IWImageFormat targetFmt = FilterCore::MakeTargetFormat(*screen);
+    /*
+     * The target table only has to live for this call: AllocFrame gives every
+     * frame its own copy (FilterCore::AdoptFormat), so the frames that outlive
+     * FilterImage do not point at this stack array.
+     */
+    IWComponentDef targetComps[4];
+    const IWImageFormat targetFmt =
+        FilterCore::MakeTargetFormat(*screen, targetComps, 4);
 
     /* Read named arguments (all optional; defaults shown in comments). */
     const uint32_t mode    = GetArgU32(options, "mode",     kModeNone);

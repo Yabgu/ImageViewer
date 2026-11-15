@@ -90,12 +90,9 @@ struct Rgb8Source
         data.data       = pixels.data();
 
         data.format = IWImageFormat{};
-        data.format.componentCount = 3;
         data.format.bitsPerPixel   = 24;
         data.format.storageLayout  = IW_STORAGE_INTERLEAVED;
-        data.format.components[0]  = { IW_COMPONENT_SEMANTIC_R, cls,  0, 8 };
-        data.format.components[1]  = { IW_COMPONENT_SEMANTIC_G, cls,  8, 8 };
-        data.format.components[2]  = { IW_COMPONENT_SEMANTIC_B, cls, 16, 8 };
+        iw_plugin_data_bind(data, iw::kRgb8Components, 3u);
     }
 };
 
@@ -151,9 +148,7 @@ struct Rgb16Source
         data.format.componentCount = 3;
         data.format.bitsPerPixel   = 48;
         data.format.storageLayout  = IW_STORAGE_INTERLEAVED;
-        data.format.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 16 };
-        data.format.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, 16, 16 };
-        data.format.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 32, 16 };
+        data.format.components     = iw::kRgb16Components;
     }
 };
 /* Min / max / mean of one channel across every pixel of every frame. */
@@ -407,5 +402,63 @@ TEST_SUITE("FilterPixman ABI: spatial modes on a 16-bit source")
      * fixed single-frame dither leaves a one-code lattice (variance ~0.083). */
     CHECK(varST < 0.03);
     CHECK(varBN > 0.05);
+    }
+}
+TEST_SUITE("Filter plugin: frame ownership")
+{
+    /*
+     * The filter's output frames outlive FilterImage, so their descriptors must
+     * not point at anything that call owned.
+     *
+     * This is the defect the plugin layer's owned blob replaced: the target
+     * format's component table used to be a `static thread_local` array, so two
+     * FilterImage calls on one thread describing different screen depths left
+     * the first frame's descriptor reading the second call's bit width.  The
+     * frame looked valid and described itself wrongly - the worst kind of
+     * failure, because the pixels were fine and the metadata lied.
+     */
+    TEST_CASE("a frame keeps its component table when the next call uses another depth")
+    {
+        Rgb8Source src(4, 4, kMidCode, IW_COMPONENT_CLASS_UNORM);
+
+        iwabi::FilterPlugin& plugin = Plugin();
+
+        IWScreenInfo screen8{ 8, 3 };
+        FilterArgs   opts8(static_cast<uint32_t>(kModeNone));
+        IWFilterImageSet* first = plugin.Filter(&src.data, &screen8, &opts8.options);
+        REQUIRE(first != nullptr);
+        REQUIRE(first->frameCount == 1u);
+        REQUIRE(first->frames[0] != nullptr);
+
+        const ImagePluginData& firstFrame = *first->frames[0];
+        const IWComponentDef* const firstTable = firstFrame.format.components;
+        REQUIRE(firstTable != nullptr);
+        REQUIRE(firstFrame.format.componentCount == 3u);
+        CHECK(firstTable[0].bitWidth == 8u);
+
+        /* The frame owns its table rather than borrowing the caller's. */
+        CHECK(firstFrame.ownedBlob != nullptr);
+        CHECK(firstFrame.freeOwnedBlob != nullptr);
+
+        IWScreenInfo screen10{ 10, 3 };
+        FilterArgs   opts10(static_cast<uint32_t>(kModeNone));
+        IWFilterImageSet* second = plugin.Filter(&src.data, &screen10, &opts10.options);
+        REQUIRE(second != nullptr);
+        REQUIRE(second->frameCount == 1u);
+        REQUIRE(second->frames[0] != nullptr);
+
+        /* Read the FIRST set after the second call: this is the assertion that
+         * fails on a shared table, where it now reports 10. */
+        CHECK(firstFrame.format.components[0].bitWidth == 8u);
+        CHECK(firstFrame.format.components[1].bitWidth == 8u);
+        CHECK(firstFrame.components == firstFrame.format.components);
+
+        CHECK(second->frames[0]->format.components[0].bitWidth == 10u);
+
+        /* Distinct allocations, so neither release can touch the other. */
+        CHECK(firstFrame.format.components != second->frames[0]->format.components);
+
+        plugin.Free(first);
+        plugin.Free(second);
     }
 }

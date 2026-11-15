@@ -1,0 +1,18 @@
+; Export list for IwiThumbnailProvider.dll.
+;
+; A .def is used rather than __declspec(dllexport) because combaseapi.h
+; already declares DllGetClassObject and DllCanUnloadNow (as STDAPI) for every
+; COM server.  A module unit that re-declared them with dllexport produced
+; C2375 "redefinition; different linkage" under MSVC, and the entry points
+; cannot legally be *defined* in a module purview once the global module
+; fragment has declared them.  Naming them here keeps the module unit free of
+; the conflict and leaves the export list in one obvious place.
+;
+; There is deliberately no DllRegisterServer: registration is per-user and
+; belongs to scripts/install-desktop-windows.{ps1,bat}, not to an elevated
+; regsvr32 that would write for the administrator instead of the user.
+LIBRARY IwiThumbnailProvider
+
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

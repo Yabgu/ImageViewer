@@ -12,7 +12,7 @@
  *
  * Returns false (and optionally sets *outError to a static description string)
  * when any of the following holds:
- *   - componentCount > IW_MAX_COMPONENTS
+ *   - active components have null components pointer
  *   - any active component has bitWidth == 0
  *   - any active component's bit range (bitOffset+bitWidth) exceeds bitsPerPixel
  *     (interleaved only)
@@ -28,15 +28,15 @@ inline bool ValidateImageFormat(const IWImageFormat& fmt,
         return false;
     };
 
-    if (fmt.componentCount > IW_MAX_COMPONENTS)
-        return fail("componentCount exceeds IW_MAX_COMPONENTS");
+    if (fmt.componentCount > 0u && fmt.components == nullptr)
+        return fail("components pointer is null for non-zero componentCount");
 
     for (uint16_t i = 0u; i < fmt.componentCount; ++i) {
         if (fmt.components[i].bitWidth == 0u)
             return fail("component bitWidth is 0");
     }
 
-    if (fmt.storageLayout == IW_STORAGE_INTERLEAVED) {
+    if (fmt.storageLayout.isInterleavedTight()) {
         for (uint16_t i = 0u; i < fmt.componentCount; ++i) {
             const uint32_t end = static_cast<uint32_t>(fmt.components[i].bitOffset)
                                + fmt.components[i].bitWidth;
@@ -92,7 +92,7 @@ inline IWGLUploadHint ClassifyGLUpload(const IWImageFormat& fmt) noexcept
 {
     const IWGLUploadHint INVALID = {};   /* zero-init → valid=false */
 
-    if (fmt.storageLayout != IW_STORAGE_INTERLEAVED) return INVALID;
+    if (!fmt.storageLayout.isInterleavedTight()) return INVALID;
 
     const uint16_t n = fmt.componentCount;
     if (n == 0u || n > 4u) return INVALID;

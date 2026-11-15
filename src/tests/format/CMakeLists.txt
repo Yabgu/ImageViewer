@@ -6,12 +6,15 @@ endif()
 find_package(doctest REQUIRED)
 find_package(PNG REQUIRED)
 
-add_executable(iview_format_tests test_image_conversion.cpp)
+add_executable(iview_format_tests test_image_conversion.cpp
+                            test_iwi_anti_drift.cpp)
 
 set_property(TARGET iview_format_tests PROPERTY CXX_STANDARD 23)
 
 target_link_libraries(iview_format_tests PRIVATE
     iw_format
+    iw_iwi_file
+    iw_iwi_format
     PNG::PNG
     doctest::doctest
 )

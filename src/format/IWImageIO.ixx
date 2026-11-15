@@ -8,6 +8,7 @@ module;
 #include <vector>
 
 #include "ImagePluginDef.h"
+#include "IwiFile.h"
 
 export module IWImageIO;
 
@@ -20,7 +21,72 @@ struct Image {
     uint32_t        height     = 0;
     ImageColorSpace colorSpace = IMAGE_COLOR_SPACE_UNKNOWN;
     IWImageFormat   format     = {};
+    std::vector<IWComponentDef> components;
     std::vector<uint8_t> pixelData;
+
+    /*
+     * `format.components` points into `components`, so every copy and move has
+     * to re-point it.  Without these the default copy leaves it aimed at the
+     * source's vector, and the descriptor dangles the moment the source dies -
+     * or, worse, keeps reading the source's storage while the destination
+     * believes it owns its own.
+     *
+     * This is the same shape Image.ixx uses (componentStorage_) for the viewer's
+     * copy of this type; see the ownership rule in ImagePluginDef.h.
+     */
+    Image() = default;
+
+    Image(const Image& other) { CopyFrom(other); }
+    Image(Image&& other) noexcept { MoveFrom(std::move(other)); }
+
+    Image& operator=(const Image& other)
+    {
+        if (this != &other) {
+            CopyFrom(other);
+        }
+        return *this;
+    }
+
+    Image& operator=(Image&& other) noexcept
+    {
+        if (this != &other) {
+            MoveFrom(std::move(other));
+        }
+        return *this;
+    }
+
+private:
+    /* The one place `format.components` is set from the owned storage. */
+    void RebindComponents() noexcept
+    {
+        format.components = components.empty() ? nullptr : components.data();
+    }
+
+    void CopyFrom(const Image& other)
+    {
+        width      = other.width;
+        height     = other.height;
+        colorSpace = other.colorSpace;
+        format     = other.format;
+        components = other.components;
+        pixelData  = other.pixelData;
+        RebindComponents();
+    }
+
+    void MoveFrom(Image&& other) noexcept
+    {
+        width      = other.width;
+        height     = other.height;
+        colorSpace = other.colorSpace;
+        format     = other.format;
+        components = std::move(other.components);
+        pixelData  = std::move(other.pixelData);
+        RebindComponents();
+
+        /* The moved-from object still reports its old count; null its pointer
+         * so a stray read is a null dereference rather than a dangling one. */
+        other.format.components = nullptr;
+    }
 };
 
 // ── Builder ───────────────────────────────────────────────────────────────────
@@ -35,6 +101,10 @@ inline Image BuildImage(int width, int height,
     img.height     = static_cast<uint32_t>(height);
     img.colorSpace = colorSpace;
     img.format     = fmt;
+    if (fmt.components && fmt.componentCount > 0) {
+        img.components.assign(fmt.components, fmt.components + fmt.componentCount);
+        img.format.components = img.components.data();
+    }
     img.pixelData.assign(pixels, pixels + pixelBytes);
     return img;
 }
@@ -48,17 +118,19 @@ inline Image BuildImage(int width, int height,
 //  0       4    magic           char[4]  = {'I','W','I','1'}
 //  4       4    width           uint32_t
 //  8       4    height          uint32_t
-// 12       1    colorSpace      uint8_t  (ImageColorSpace value)
-// 13       2    componentCount  uint16_t
-// 15       2    bitsPerPixel    uint16_t
-// 17       1    storageLayout   uint8_t  (0=INTERLEAVED, 1=PLANAR)
-// 18      48    components[8]   each slot is 6 bytes:
+// 12       4    metaBytes       uint32_t
+// 16       8    storageLayout   uint64_t (IWStorageLayout: flags u32, stride u32)
+// 24       8    payloadEncoding char[8]  ("raw\0\0\0\0\0")
+// 32       1    colorSpace      uint8_t  (ImageColorSpace enum)
+// 33       1    reserved        uint8_t  (0)
+// 34       2    componentCount  uint16_t
+// 36     N*6    components[N]   each slot is 6 bytes:
 //                   semantic       uint8_t
 //                   componentClass uint8_t
 //                   bitOffset      uint16_t
 //                   bitWidth       uint16_t
-// 66       8    pixelDataSize   uint64_t
-// 74       *    pixelData       uint8_t[]
+// 36+N*6   *    metaBlob        uint8_t[metaBytes]
+//    *     *    pixelData       uint8_t[]
 
 namespace detail {
 
@@ -87,26 +159,6 @@ inline void WriteU64(std::vector<uint8_t>& buf, uint64_t v)
         buf.push_back(static_cast<uint8_t>(v >> (8 * i)));
 }
 
-inline uint8_t  ReadU8 (const uint8_t* p) { return *p; }
-inline uint16_t ReadU16(const uint8_t* p)
-{
-    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
-}
-inline uint32_t ReadU32(const uint8_t* p)
-{
-    return  static_cast<uint32_t>(p[0])
-         | (static_cast<uint32_t>(p[1]) << 8)
-         | (static_cast<uint32_t>(p[2]) << 16)
-         | (static_cast<uint32_t>(p[3]) << 24);
-}
-inline uint64_t ReadU64(const uint8_t* p)
-{
-    uint64_t v = 0;
-    for (int i = 0; i < 8; ++i)
-        v |= static_cast<uint64_t>(p[i]) << (8 * i);
-    return v;
-}
-
 } // namespace detail
 
 // ── Serialize / Deserialize ───────────────────────────────────────────────────
@@ -114,20 +166,24 @@ inline uint64_t ReadU64(const uint8_t* p)
 inline std::vector<uint8_t> SerializeImage(const Image& img)
 {
     using namespace detail;
+    const size_t headerBytes = 36 + static_cast<size_t>(img.format.componentCount) * 6;
     std::vector<uint8_t> buf;
-    buf.reserve(74 + img.pixelData.size());
+    buf.reserve(headerBytes + img.pixelData.size());
 
     static constexpr char kMagic[4] = {'I', 'W', 'I', '1'};
     buf.insert(buf.end(), kMagic, kMagic + 4);
 
     WriteU32(buf, img.width);
     WriteU32(buf, img.height);
+    WriteU32(buf, 0); // metaBytes = 0
+    WriteU64(buf, img.format.storageLayout.raw);
+    static constexpr char kEncoding[8] = {'r', 'a', 'w', 0, 0, 0, 0, 0};
+    buf.insert(buf.end(), kEncoding, kEncoding + 8);
     WriteU8 (buf, static_cast<uint8_t>(img.colorSpace));
+    WriteU8 (buf, 0); // reserved
     WriteU16(buf, img.format.componentCount);
-    WriteU16(buf, img.format.bitsPerPixel);
-    WriteU8 (buf, img.format.storageLayout == IW_STORAGE_PLANAR ? 1 : 0);
 
-    for (int i = 0; i < IW_MAX_COMPONENTS; ++i) {
+    for (uint16_t i = 0; i < img.format.componentCount; ++i) {
         const IWComponentDef& cd = img.format.components[i];
         WriteU8 (buf, static_cast<uint8_t>(cd.semantic));
         WriteU8 (buf, static_cast<uint8_t>(cd.componentClass));
@@ -135,57 +191,93 @@ inline std::vector<uint8_t> SerializeImage(const Image& img)
         WriteU16(buf, cd.bitWidth);
     }
 
-    WriteU64(buf, static_cast<uint64_t>(img.pixelData.size()));
     buf.insert(buf.end(), img.pixelData.begin(), img.pixelData.end());
     return buf;
 }
 
+/*
+ * Read a container into an Image, for conversion rather than display.
+ *
+ * The grammar is IwiFile.cpp's - this function does not parse.  That is the
+ * whole point of the split: this reader and the viewer's loader used to carry
+ * two copies of the header rules and they drifted, so iwconv wrote 16-bit and
+ * grayscale files that iview then refused.
+ *
+ * This is the *converter's* policy, and it is deliberately wider than the
+ * viewer's: one component is fine, 16-bit samples are fine, planar planes are
+ * fine, because the output carries them through untouched.  Its only
+ * capability rule is the codec, since it cannot decompress either.
+ *
+ * The payload is returned as stored, not converted to RGBA.  iwi_decode
+ * produces RGBA and belongs to the display path; rounding 16-bit samples
+ * through RGBA8 here would silently destroy the precision this function exists
+ * to preserve.
+ */
 inline Image DeserializeImage(const uint8_t* data, size_t size)
 {
-    using namespace detail;
-    // 4 (magic) + 4 (width) + 4 (height) + 1 (colorSpace) + 2 (componentCount)
-    // + 2 (bitsPerPixel) + 1 (storageLayout) + 8*6 (components) + 8 (pixelDataSize) = 74
-    constexpr size_t kMinSize = 74;
-    if (size < kMinSize)
-        throw std::runtime_error("IWI data too short");
-
-    const uint8_t* p = data;
-    static constexpr char kMagic[4] = {'I', 'W', 'I', '1'};
-    if (std::memcmp(data, kMagic, 4) != 0)
-        throw std::runtime_error("IWI magic mismatch — not an IWI file");
-    p += 4;
-
-    Image img;
-    img.width  = ReadU32(p); p += 4;
-    img.height = ReadU32(p); p += 4;
-    img.colorSpace = static_cast<ImageColorSpace>(ReadU8(p)); p += 1;
-
-    img.format.componentCount = ReadU16(p); p += 2;
-    img.format.bitsPerPixel   = ReadU16(p); p += 2;
-    img.format.storageLayout  = ReadU8(p) ? IW_STORAGE_PLANAR
-                                           : IW_STORAGE_INTERLEAVED;
-    p += 1;
-
-    for (int i = 0; i < IW_MAX_COMPONENTS; ++i) {
-        img.format.components[i].semantic =
-            static_cast<IWComponentSemantic>(ReadU8(p)); p += 1;
-        img.format.components[i].componentClass =
-            static_cast<IWComponentClass>(ReadU8(p)); p += 1;
-        img.format.components[i].bitOffset = ReadU16(p); p += 2;
-        img.format.components[i].bitWidth  = ReadU16(p); p += 2;
+    if (data == nullptr) {
+        throw std::runtime_error("IWI: no input");
     }
 
-    const uint64_t pixelBytes = ReadU64(p); p += 8;
-    // p is now exactly data + 74 (kMinSize), which is <= data + size.
-    const size_t consumed  = static_cast<size_t>(p - data);
-    const size_t remaining = size - consumed;
-    if (remaining < static_cast<size_t>(pixelBytes))
-        throw std::runtime_error("IWI pixel data truncated");
+    /* Size the blob the grammar fills: 36 + 6N. */
+    const size_t required = iwi_file_required_size(data, size);
+    std::vector<uint8_t> blob(required == 0 ? IWI_FILE_BASE_HEADER_BYTES : required, 0);
 
-    img.pixelData.assign(p, p + pixelBytes);
+    const int rc = iwi_parse_structural(
+        reinterpret_cast<IwiFileHeader*>(blob.data()), blob.size(), data, size);
+
+    if (rc != IWI_STATUS_OK) {
+        throw std::runtime_error(std::string("IWI: ") + iwi_status_message(rc));
+    }
+
+    /* The validated base header, copied out of the blob the same way the C
+     * API wrote it: IWI_FILE_BASE_HEADER_BYTES, never sizeof, because the
+     * struct's four tail-padding bytes overlap the component table. */
+    IwiFileHeader base{};
+    std::memcpy(&base, blob.data(), IWI_FILE_BASE_HEADER_BYTES);
+
+    if (!iwi_payload_encoding_is_raw(&base)) {
+        throw std::runtime_error(std::string("IWI: ") +
+                                 iwi_status_message(IWI_STATUS_UNSUPPORTED_ENCODING));
+    }
+
+    Image img;
+    img.width                 = base.width;
+    img.height                = base.height;
+    img.colorSpace            = static_cast<ImageColorSpace>(base.colorSpace);
+    img.format.storageLayout  = base.storageLayout;
+    img.format.componentCount = base.componentCount;
+
+    const IwiFileComponent* comps = iwi_file_components(
+        reinterpret_cast<const IwiFileHeader*>(blob.data()));
+
+    img.components.resize(base.componentCount);
+    uint32_t bitsPerPixel = 0;
+    for (uint16_t i = 0; i < base.componentCount; ++i) {
+        img.components[i].semantic = static_cast<IWComponentSemantic>(comps[i].semantic);
+        img.components[i].componentClass = static_cast<IWComponentClass>(comps[i].componentClass);
+        img.components[i].bitOffset = comps[i].bitOffset;
+        img.components[i].bitWidth  = comps[i].bitWidth;
+        bitsPerPixel += comps[i].bitWidth;
+    }
+    img.format.components   = img.components.data();
+    /* The ABI's field is uint16_t and there is no component cap, so a wide
+     * table is saturated rather than wrapped.  Three or four 8-bit components
+     * make this a no-op; it is here so the narrowing is deliberate. */
+    img.format.bitsPerPixel = static_cast<uint16_t>(
+        bitsPerPixel > 0xFFFFu ? 0xFFFFu : bitsPerPixel);
+
+    const size_t payloadOffset =
+        IWI_FILE_BASE_HEADER_BYTES +
+        static_cast<size_t>(base.componentCount) * IWI_FILE_COMPONENT_BYTES +
+        static_cast<size_t>(base.metaBytes);
+
+    /* Everything after the header, metadata and table.  Trailing slack is
+     * included rather than trimmed, which is the behaviour this function has
+     * always had and what the round-trip tests assert. */
+    img.pixelData.assign(data + payloadOffset, data + size);
     return img;
 }
-
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
 inline void SaveIWI(const std::string& path, const Image& img)

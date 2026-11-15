@@ -73,6 +73,16 @@ $AppExeName  = 'iview.exe'
 $VerbKeyName = 'OpenWithImageViewer'
 $VerbLabel   = 'Open with ImageViewer'
 
+# Thumbnail handler.  These three values are also compiled into
+# IwiThumbnailProvider.dll (src/imageviewer/shell/ThumbnailProviderIds.ixx),
+# and src/tests/test_iwi_thumbnail.cpp fails the build's test suite if this
+# file, the .bat file and the module ever disagree.  A mismatch would not
+# error: Explorer would simply find no handler and draw the file-type icon.
+$ThumbnailProviderClsid = '{8A3D6F2C-5B47-4C1E-9F1A-6E2D4B8C0A31}'
+$ThumbnailShellExGuid   = '{E357FCCD-A995-4576-B01F-234630154E96}'   # fixed by Windows
+$ThumbnailDllName       = 'IwiThumbnailProvider.dll'
+$ThumbnailFriendlyName  = 'ImageViewer IWI Thumbnail Provider'
+
 $ClassesRoot = 'HKCU:\Software\Classes'
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot    = Split-Path -Parent $ScriptDir
@@ -161,6 +171,12 @@ if ($Uninstall) {
     Remove-RegTree "$ClassesRoot\Applications\$AppExeName"
     Remove-RegTree "$ClassesRoot\SystemFileAssociations\$Extension\shell\$VerbKeyName"
 
+    # The thumbnail handler lives in two places the ProgID removal above does
+    # not reach: its own CLSID key, and the ShellEx key under .iwi.  The
+    # ProgID's own ShellEx goes with the ProgID tree.
+    Remove-RegTree "$ClassesRoot\CLSID\$ThumbnailProviderClsid"
+    Remove-RegTree "$ClassesRoot\$Extension\ShellEx\$ThumbnailShellExGuid"
+
     # Restore whatever owned .iwi before this script ran.  Anything else would
     # leave the extension pointing at a ProgID whose key no longer exists.
     if ($previous) {
@@ -244,6 +260,31 @@ else {
     Write-Note 'plugins: ImageLoaderIWI.dll is beside it'
 }
 
+# ── Locate the thumbnail provider ───────────────────────────────────────────
+#
+# The provider sits beside iview.exe, like the plugins.  It is optional: without
+# it the association still opens files, Explorer just draws the file-type icon,
+# so a missing DLL skips the ShellEx registration instead of failing the
+# install.  -Force registers it anyway, for the case where the build is about to
+# produce it.
+
+$thumbnailDll        = Join-Path (Split-Path -Parent $exe) $ThumbnailDllName
+$thumbnailRegistered = $false
+
+if (Test-Path -LiteralPath $thumbnailDll) {
+    Write-Note "thumbnails: $ThumbnailDllName is beside it"
+    $thumbnailRegistered = $true
+}
+elseif ($Force) {
+    Write-Note "warning: no $ThumbnailDllName beside the binary; registering anyway"
+    $thumbnailRegistered = $true
+}
+else {
+    Write-Note "thumbnails: no $ThumbnailDllName beside the binary — skipping"
+    Write-Note "            (build with -DIMAGEVIEWER_BUILD_THUMBNAIL_PROVIDER=ON,"
+    Write-Note "             or pass -Force to register it anyway)"
+}
+
 # ── Register the type ───────────────────────────────────────────────────────
 
 Write-Step "Registering the $ContentType type for $Extension"
@@ -290,6 +331,34 @@ Set-RegValue -Path $verb             -Name 'Icon' -Value "`"$exe`",0"
 Set-RegValue -Path "$verb\command"   -Name ''     -Value "`"$exe`" `"%1`""
 Write-Note "right-click verb: `"$VerbLabel`""
 
+# ── Register the thumbnail provider ─────────────────────────────────────────
+#
+# Three keys: the COM class itself, and a ShellEx\{thumbnail verb} entry under
+# both the extension and the ProgID.  Both ShellEx locations are written on
+# purpose — the ProgID's is the one Explorer uses after resolving .iwi, and the
+# extension's covers the case where the shell consults the extension key
+# directly.  Only HKCU is touched, so no elevation is needed and the handler is
+# registered for this user rather than for the administrator regsvr32 would run
+# as.
+
+if ($thumbnailRegistered) {
+    Write-Step 'Registering the .iwi thumbnail handler'
+
+    $clsidKey      = "$ClassesRoot\CLSID\$ThumbnailProviderClsid"
+    $inprocKey     = "$clsidKey\InprocServer32"
+    $extShellEx    = "$ClassesRoot\$Extension\ShellEx\$ThumbnailShellExGuid"
+    $progIdShellEx = "$ClassesRoot\$ProgId\ShellEx\$ThumbnailShellExGuid"
+
+    Set-RegValue -Path $clsidKey  -Name ''              -Value $ThumbnailFriendlyName
+    Set-RegValue -Path $inprocKey -Name ''              -Value $thumbnailDll
+    Set-RegValue -Path $inprocKey -Name 'ThreadingModel' -Value 'Apartment'
+    Set-RegValue -Path $extShellEx    -Name '' -Value $ThumbnailProviderClsid
+    Set-RegValue -Path $progIdShellEx -Name '' -Value $ThumbnailProviderClsid
+
+    Write-Note "$clsidKey"
+    Write-Note "ShellEx under $Extension and $ProgId"
+}
+
 # ── Verify ──────────────────────────────────────────────────────────────────
 #
 # Read every value back from the hive and compare. A write through the wrong
@@ -309,6 +378,16 @@ $checks = @(
     @{ Path = $verb;                                                  Name = '';            Value = $VerbLabel }
     @{ Path = "$verb\command";                                        Name = '';            Value = $expectedOpen }
 )
+
+if ($thumbnailRegistered) {
+    $checks += @(
+        @{ Path = "$ClassesRoot\CLSID\$ThumbnailProviderClsid";                 Name = '';               Value = $ThumbnailFriendlyName }
+        @{ Path = "$ClassesRoot\CLSID\$ThumbnailProviderClsid\InprocServer32";  Name = '';               Value = $thumbnailDll }
+        @{ Path = "$ClassesRoot\CLSID\$ThumbnailProviderClsid\InprocServer32";  Name = 'ThreadingModel'; Value = 'Apartment' }
+        @{ Path = "$ClassesRoot\$Extension\ShellEx\$ThumbnailShellExGuid";      Name = '';               Value = $ThumbnailProviderClsid }
+        @{ Path = "$ClassesRoot\$ProgId\ShellEx\$ThumbnailShellExGuid";         Name = '';               Value = $ThumbnailProviderClsid }
+    )
+}
 $mismatched = 0
 foreach ($check in $checks) {
     $actual = Get-RegValue -Path $check.Path -Name $check.Name
@@ -331,5 +410,6 @@ Write-Host @"
 ImageViewer is registered for $Extension.
   handler   $exe
   type      $ContentType
+  thumbnails $(if ($thumbnailRegistered) { $ThumbnailDllName } else { 'not registered (DLL not found)' })
   undo      ./scripts/install-desktop-windows.ps1 -Uninstall
 "@

@@ -1,6 +1,7 @@
 module;
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <cstddef>
@@ -8,8 +9,11 @@ module;
 #include <vector>
 
 #include "ImagePluginDef.h"
+#include "IwiFile.h"
 
 export module ImageLoaderIWI;
+
+import IwiFormat;
 
 /*
  * IWI ("ImageViewer Image") is the container Tension writes its 2D textures,
@@ -17,42 +21,14 @@ export module ImageLoaderIWI;
  * already models, serialized verbatim, so this loader has no decoder library to
  * wrap: it parses a fixed header and hands the pixel bytes through.
  *
- * The header is 74 bytes, all integers little-endian:
- *
- *   offset  size  field
- *        0     4  magic "IWI1"
- *        4     4  width           u32
- *        8     4  height          u32
- *       12     1  colorSpace      u8   (ImageColorSpace)
- *       13     2  componentCount  u16
- *       15     2  bitsPerPixel    u16
- *       17     1  storageLayout   u8   (0 interleaved, 1 planar)
- *       18    48  components[8]   6 bytes each:
- *                                    semantic       u8
- *                                    componentClass u8
- *                                    bitOffset      u16
- *                                    bitWidth       u16
- *       66     8  pixelDataSize   u64
- *       74     *  pixelData       u8[]
- *
- * Written by src/format/IWImageIO.ixx; read back by Tension in
- * tension-core/src/render2d/iwi.rs.  This is the third reader of the same
- * layout, and it keeps the field offsets as named constants rather than a
- * packed struct so no compiler is asked to agree about alignment at offset 13.
- *
- * # What this loader accepts
- *
- * Interleaved RGB8 and RGBA8: 3 or 4 components, 8 bits each, at offsets
- * i * 8, semantics R/G/B[/A] in order.  That is everything Tension currently
- * ships (ui.iwi and sprites.iwi are both this shape) and everything the host
- * can upload without a conversion.
- *
- * Everything else in the header — planar storage, sub-8-bit or mixed-width
- * components, components parked off their i * 8 slot, exotic semantics — is
- * refused with a decode error rather than reinterpreted.  A wrong guess here
- * renders wrong colours, which is worse than an honest refusal: the file says
- * exactly how its bits are arranged, and if that arrangement is not one this
- * loader implements, saying so is the correct answer.
+ * The container is 36 bytes of base header followed by 6 bytes per component,
+ * then any metadata, then the payload; the acceptance rules live behind the C
+ * API in IwiFile.h (src/format/IwiFile.cpp), shared with the Windows shell
+ * thumbnail provider.  That is deliberate: Explorer and iview must not disagree
+ * about which files are valid, and a second copy of those rules would be a
+ * second thing to keep correct.  The refusals below are that parser's statuses,
+ * reported through ImagePluginGetLastError() with the wording the ABI tests
+ * assert.
  *
  * # What this loader does not export
  *
@@ -66,57 +42,6 @@ export module ImageLoaderIWI;
 static thread_local char lastError[256] = "";
 
 namespace {
-
-/* Field offsets, named so the two readers in this file cannot drift. */
-constexpr std::size_t kHeaderBytes     = 74;
-constexpr std::size_t kOffMagic        = 0;
-constexpr std::size_t kOffWidth        = 4;
-constexpr std::size_t kOffHeight       = 8;
-constexpr std::size_t kOffColorSpace   = 12;
-constexpr std::size_t kOffComponentNum = 13;
-constexpr std::size_t kOffBitsPerPixel = 15;
-constexpr std::size_t kOffStorage      = 17;
-constexpr std::size_t kOffComponents   = 18;
-constexpr std::size_t kComponentStride = 6;
-constexpr std::size_t kOffPixelBytes   = 66;
-
-/* Component record fields, relative to its own start. */
-constexpr std::size_t kCompOffSemantic = 0;
-constexpr std::size_t kCompOffClass    = 1;
-constexpr std::size_t kCompOffBitOff   = 2;
-constexpr std::size_t kCompOffBitWidth = 4;
-
-/* The only component classes an 8-bit colour sample can mean.  UINT and UNORM
- * both describe an unsigned byte; SINT/SNORM/FLOAT would change what the
- * sample value means, so they are refused instead of silently treated as
- * colour. */
-constexpr uint8_t kClassUint  = IW_COMPONENT_CLASS_UINT;
-constexpr uint8_t kClassUnorm = IW_COMPONENT_CLASS_UNORM;
-
-/* Byte-wise little-endian reads.  Deliberately not memcpy into a u32: that
- * would inherit host endianness, and this container is specified little-endian
- * everywhere. */
-uint16_t ReadU16(const uint8_t* p)
-{
-    return static_cast<uint16_t>(p[0])
-         | static_cast<uint16_t>(static_cast<uint16_t>(p[1]) << 8u);
-}
-
-uint32_t ReadU32(const uint8_t* p)
-{
-    return  static_cast<uint32_t>(p[0])
-         | (static_cast<uint32_t>(p[1]) << 8u)
-         | (static_cast<uint32_t>(p[2]) << 16u)
-         | (static_cast<uint32_t>(p[3]) << 24u);
-}
-
-uint64_t ReadU64(const uint8_t* p)
-{
-    uint64_t v = 0;
-    for (unsigned i = 0; i < 8u; ++i)
-        v |= static_cast<uint64_t>(p[i]) << (8u * i);
-    return v;
-}
 
 /*
  * Where the container bytes come from.  Exactly one field is set: `span` for
@@ -193,6 +118,38 @@ ImagePluginResult Fail(ImagePluginResultCode code, const char* reason)
     return ImagePluginResult{ .code = code, .data = nullptr };
 }
 
+/*
+ * Report a container status in the wording the ABI tests read.
+ *
+ * Two sentences, because they call for two different actions: a corrupt file is
+ * the user's problem to re-obtain, while a valid file this build cannot display
+ * is not, and calling it corrupt sends them looking for a re-download that will
+ * not help.  The status says which case it is; iwi_status_message() supplies the
+ * reason, which is where the "magic", "planar", "offset" and "header"
+ * substrings come from.
+ */
+ImagePluginResult FailForStatus(int rc)
+{
+    char message[512];
+    if (iwi_status_is_unsupported(rc))
+    {
+        std::snprintf(message, sizeof(message),
+                      "valid IWI file, but this viewer cannot display it: "
+                      "%s (try iwconv for conversion)", iwi_status_message(rc));
+    }
+    else
+    {
+        std::snprintf(message, sizeof(message), "corrupt file: %s",
+                      iwi_status_message(rc));
+    }
+
+    const ImagePluginResultCode code =
+        (rc == IWI_STATUS_GEOMETRY_TOO_LARGE)
+            ? IMAGE_PLUGIN_ALLOC_ERROR
+            : IMAGE_PLUGIN_DECODE_ERROR;
+    return Fail(code, message);
+}
+
 ImagePluginResult DecodeIwi(const Source& src)
 {
     lastError[0] = '\0';
@@ -214,210 +171,130 @@ ImagePluginResult DecodeIwi(const Source& src)
         return Fail(IMAGE_PLUGIN_FILE_ERROR, "Empty input");
     }
 
-    /* The magic is checked only after the length, because comparing four bytes
-     * of a shorter buffer would read past it.  A file too short to hold the
-     * header is broken; a long file with the wrong magic is not an IWI. */
-    if (size < kHeaderBytes)
+    /*
+     * Container grammar, into a blob this loader owns.
+     *
+     * One allocation holds the 36-byte base header and the component table, so
+     * the descriptor can point straight at iwi_file_components(blob): no
+     * translation loop, no second table, and no fixed-size array for a
+     * many-component file to overrun.  The blob is handed to the caller as
+     * ownedBlob and released through FreeImageData().
+     *
+     * iwi_file_required_size() returns 0 when the base header cannot be read at
+     * all - bad magic, shorter than the header, or zero components.
+     */
+    const std::size_t blobBytes = iwi_file_required_size(bytes, size);
+    if (blobBytes == 0)
     {
-        char reason[128];
-        std::snprintf(reason, sizeof(reason),
-                      "IWI is %zu bytes; the header alone is %zu",
-                      size, kHeaderBytes);
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
-    }
-    if (std::memcmp(bytes + kOffMagic, "IWI1", 4) != 0)
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR,
-                    "not an IWI1 container (magic mismatch)");
-
-    const uint32_t width      = ReadU32(bytes + kOffWidth);
-    const uint32_t height     = ReadU32(bytes + kOffHeight);
-    const uint8_t  colorSpace = bytes[kOffColorSpace];
-    const uint16_t components = ReadU16(bytes + kOffComponentNum);
-    const uint16_t bitsPerPx  = ReadU16(bytes + kOffBitsPerPixel);
-    const uint8_t  storage    = bytes[kOffStorage];
-    const uint64_t pixelBytes = ReadU64(bytes + kOffPixelBytes);
-
-    if (storage != IW_STORAGE_INTERLEAVED)
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR,
-                    "IWI planar storage is not supported");
-
-    if (components != 3u && components != 4u)
-    {
-        char reason[160];
-        std::snprintf(reason, sizeof(reason),
-                      "IWI has %u components; only RGB8 (3) and RGBA8 (4) "
-                      "are supported",
-                      static_cast<unsigned>(components));
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
+        /*
+         * The parser decides those cases before it looks at the output buffer,
+         * so a base-sized scratch buffer gets the real status - and therefore
+         * the real reason string - out of it.
+         */
+        IwiFileHeader probe{};
+        return FailForStatus(iwi_parse_structural(&probe, IWI_FILE_BASE_HEADER_BYTES,
+                                                  bytes, size));
     }
 
-    if (bitsPerPx != static_cast<uint16_t>(components * 8u))
+    IwiFileHeader* const blob =
+        static_cast<IwiFileHeader*>(std::malloc(blobBytes));
+    if (blob == nullptr)
+        return Fail(IMAGE_PLUGIN_ALLOC_ERROR, "Out of memory");
+
+    int rc = iwi_parse_structural(blob, blobBytes, bytes, size);
+    if (rc == IWI_STATUS_OK)
     {
-        char reason[160];
-        std::snprintf(reason, sizeof(reason),
-                      "IWI declares %u bits per pixel for %u components; only "
-                      "8-bit components are supported",
-                      static_cast<unsigned>(bitsPerPx),
-                      static_cast<unsigned>(components));
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
+        /*
+         * Renderability, which is this loader's opinion rather than a container
+         * rule.  The grammar accepts far more than this viewer displays -
+         * planar layouts, 16-bit samples, any component count - and each of
+         * those would render wrong or not at all.  The policy is therefore
+         * applied here, and the refusal is reported as "valid, cannot display"
+         * rather than as corruption.
+         *
+         * iw::ViewerPolicyStatus is the same policy the thumbnail provider and
+         * iwi::ParseHeader use, so all three accept one set of files.  It is
+         * applied to the blob rather than re-parsed, so there is still exactly
+         * one parse.
+         */
+        rc = iwi::ViewerPolicyStatus(blob);
+    }
+    if (rc != IWI_STATUS_OK)
+    {
+        iwi_file_free(blob);
+        return FailForStatus(rc);
     }
 
-    /* Each component must be an 8-bit unsigned sample sitting exactly where
-     * the interleaved layout puts it, with the semantics that make it colour.
-     * Every one of these is a place a wrong guess would render a plausible but
-     * incorrect image, so each is checked and named in the error. */
+    const std::uint16_t components = blob->componentCount;
+    const IwiFileComponent* const comps = iwi_file_components(blob);
+
+    /*
+     * Every width is 8 bits after the policy, so a pixel is `components` bytes.
+     * The sum is accumulated in 32 bits and narrowed deliberately: a uint16
+     * accumulator would wrap on a file with many narrow components, and the
+     * 3-or-4 policy above should not be what keeps the arithmetic correct.
+     */
+    std::uint32_t bitsPerPixel = 0;
+    for (std::uint16_t i = 0; i < components; ++i)
+        bitsPerPixel += comps[i].bitWidth;
+    if (bitsPerPixel > 0xFFFFu) bitsPerPixel = 0xFFFFu;
+
     IWImageFormat format = {};
     format.componentCount = components;
-    format.bitsPerPixel   = bitsPerPx;
-    format.storageLayout  = IW_STORAGE_INTERLEAVED;
+    format.bitsPerPixel   = static_cast<std::uint16_t>(bitsPerPixel);
+    format.storageLayout  = blob->storageLayout;
+    /*
+     * IwiFileComponent and IWComponentDef are the same six bytes in the same
+     * order, which test_abi_constants.cpp pins with static_asserts.  That is
+     * what makes this a view of the blob's tail rather than a reinterpretation
+     * of unrelated data - and it is why no translation loop exists here.
+     */
+    format.components = reinterpret_cast<const IWComponentDef*>(comps);
 
-    static constexpr uint8_t kExpectedSemantics[4] = {
-        IW_COMPONENT_SEMANTIC_R,
-        IW_COMPONENT_SEMANTIC_G,
-        IW_COMPONENT_SEMANTIC_B,
-        IW_COMPONENT_SEMANTIC_A,
-    };
+    /* Tightly packed rows: the container defines one row of (width x
+     * components) bytes after the next, and the policy has already refused any
+     * declared stride.  The payload starts after the component table and any
+     * metadata, which is what iwi_parse_structural validated. */
+    const std::size_t headerBytes = IWI_FILE_BASE_HEADER_BYTES +
+        static_cast<std::size_t>(components) * IWI_FILE_COMPONENT_BYTES +
+        blob->metaBytes;
+    const std::size_t stride = static_cast<std::size_t>(blob->width) * components;
+    const std::size_t total  = stride * blob->height;
 
-    for (uint16_t i = 0; i < components; ++i)
+    uint8_t* pixelData = nullptr;
+    try
     {
-        const uint8_t* rec = bytes + kOffComponents + i * kComponentStride;
-        const uint8_t  semantic = rec[kCompOffSemantic];
-        const uint8_t  cls      = rec[kCompOffClass];
-        const uint16_t bitOff   = ReadU16(rec + kCompOffBitOff);
-        const uint16_t bitWidth = ReadU16(rec + kCompOffBitWidth);
-
-        if (semantic != kExpectedSemantics[i])
-        {
-            char reason[160];
-            std::snprintf(reason, sizeof(reason),
-                          "IWI component %u has semantic %u; expected R, G, B"
-                          "%s in that order",
-                          static_cast<unsigned>(i),
-                          static_cast<unsigned>(semantic),
-                          components == 4u ? ", A" : "");
-            return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
-        }
-        if (cls != kClassUint && cls != kClassUnorm)
-        {
-            char reason[160];
-            std::snprintf(reason, sizeof(reason),
-                          "IWI component %u has class %u; only UINT (0) and "
-                          "UNORM (2) are understood",
-                          static_cast<unsigned>(i), static_cast<unsigned>(cls));
-            return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
-        }
-        if (bitWidth != 8u || bitOff != static_cast<uint16_t>(i * 8u))
-        {
-            char reason[180];
-            std::snprintf(reason, sizeof(reason),
-                          "IWI component %u is %u bits at offset %u; expected "
-                          "8 bits at offset %u",
-                          static_cast<unsigned>(i),
-                          static_cast<unsigned>(bitWidth),
-                          static_cast<unsigned>(bitOff),
-                          static_cast<unsigned>(i * 8u));
-            return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
-        }
-
-        /* Stored as read: the file is the authority on what its bytes mean,
-         * and the checks above have already narrowed that to unsigned 8-bit
-         * colour in interleaved order. */
-        format.components[i] = IWComponentDef{
-            .semantic       = static_cast<IWComponentSemantic>(semantic),
-            .componentClass = static_cast<IWComponentClass>(cls),
-            .bitOffset      = bitOff,
-            .bitWidth       = bitWidth,
-        };
+        pixelData = new uint8_t[total];
     }
-
-    if (width == 0u || height == 0u)
+    catch (...)
     {
-        char reason[128];
-        std::snprintf(reason, sizeof(reason),
-                      "IWI dimensions are %ux%u", width, height);
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
+        iwi_file_free(blob);   /* owned from here on; the caller never sees it */
+        throw;
     }
+    std::memcpy(pixelData, bytes + headerBytes, total);
 
-    /* ImagePluginData carries width/height/stride as int, so the geometry has
-     * to fit before anything is sized from it.  The multiplication is done in
-     * u64 and overflow-checked rather than trusted: a header claiming
-     * 4 billion by 4 billion would otherwise wrap into a small allocation and
-     * a huge copy. */
-    constexpr uint64_t kIntMax = static_cast<uint64_t>(0x7FFFFFFF);
-    if (width > kIntMax || height > kIntMax ||
-        static_cast<uint64_t>(width) > kIntMax / components)
-    {
-        char reason[160];
-        std::snprintf(reason, sizeof(reason),
-                      "IWI dimensions %ux%u exceed the addressable range",
-                      width, height);
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
-    }
-
-    const uint64_t pixels      = static_cast<uint64_t>(width) * height;
-    constexpr uint64_t kMaxSize = static_cast<uint64_t>(static_cast<std::size_t>(-1));
-    if (pixels > kMaxSize / components)
-    {
-        char reason[160];
-        std::snprintf(reason, sizeof(reason),
-                      "IWI geometry %ux%u x %u components is too large",
-                      width, height, static_cast<unsigned>(components));
-        return Fail(IMAGE_PLUGIN_ALLOC_ERROR, reason);
-    }
-    const uint64_t expected = pixels * components;
-
-    if (pixelBytes < expected)
-    {
-        char reason[192];
-        std::snprintf(reason, sizeof(reason),
-                      "IWI declares %llu pixel bytes; %ux%u x %u components "
-                      "needs %llu",
-                      static_cast<unsigned long long>(pixelBytes),
-                      width, height, static_cast<unsigned>(components),
-                      static_cast<unsigned long long>(expected));
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
-    }
-
-    /* payloadEnd is validated without adding, so a declared pixelDataSize near
-     * UINT64_MAX cannot wrap the comparison and pass. */
-    if (pixelBytes > static_cast<uint64_t>(size) - kHeaderBytes)
-    {
-        char reason[192];
-        std::snprintf(reason, sizeof(reason),
-                      "IWI is %zu bytes; the header plus %llu declared pixel "
-                      "bytes needs more",
-                      size, static_cast<unsigned long long>(pixelBytes));
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR, reason);
-    }
-
-    /* Tightly packed rows: the container has no stride field, so the only
-     * layout it defines is one row of (width x components) bytes after the
-     * next.  Any bytes declared beyond that are trailing slack and are not
-     * copied. */
-    const std::size_t stride = static_cast<std::size_t>(width) * components;
-    const std::size_t total  = static_cast<std::size_t>(expected);
-
-    uint8_t* pixelData = new uint8_t[total];
-    std::memcpy(pixelData, bytes + kHeaderBytes, total);
-
-    /* The descriptor is a second allocation, so it can fail after the pixels
-     * exist; release them rather than leaking on the throw path. */
+    /* The descriptor is a third allocation, so it can fail after the pixels
+     * exist; release both rather than leaking on the throw path. */
     ImagePluginData* data = nullptr;
     try
     {
-        data = new ImagePluginData{
-            .width      = static_cast<int>(width),
-            .height     = static_cast<int>(height),
-            .stride     = static_cast<int>(stride),
-            .colorSpace = DecodeColorSpace(colorSpace),
-            .size       = total,
-            .data       = pixelData,
-            .format     = format,
-        };
+        data = new ImagePluginData{};
+        data->width      = static_cast<int>(blob->width);
+        data->height     = static_cast<int>(blob->height);
+        data->stride     = static_cast<int>(stride);
+        data->colorSpace = DecodeColorSpace(blob->colorSpace);
+        data->size       = total;
+        data->data       = pixelData;
+        data->format     = format;
+        /* The table is the tail of `blob`, so the descriptor owns the blob and
+         * releases it through FreeImageData().  No copy of the table exists. */
+        iw_plugin_data_bind(*data, format.components, format.componentCount);
+        iw_plugin_data_own(*data, blob, iwi_file_free);
     }
     catch (...)
     {
         delete[] pixelData;
+        iwi_file_free(blob);
         throw;
     }
 
@@ -485,6 +362,11 @@ export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)
 {
     if (imageData)
     {
+        /* The component table lives inside ownedBlob when the loader produced
+         * one; releasing it is the only thing that keeps the descriptor's two
+         * views from outliving their storage. */
+        if (imageData->freeOwnedBlob)
+            imageData->freeOwnedBlob(imageData->ownedBlob);
         delete[] imageData->data;
         delete imageData;
     }

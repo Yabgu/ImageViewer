@@ -5,7 +5,7 @@
  * correctly, and LoadImageFromMemory on the same bytes produces an identical
  * descriptor and identical pixels.
  *
- * The fixture is gif_4x4.gif, emitted by fixtures/generate_format_fixtures.c:
+ * The fixture is gif_4x4.gif, emitted by fixtures/generate_format_fixtures.cpp:
  * a GIF89a with a 16-entry global colour table in raster order, so palette
  * index i is pixel i and the decoded RGB is the same 4x4 pattern every other
  * fixture encodes:

@@ -40,7 +40,7 @@
 # The memory-span TU compiles against whatever subset of loaders exists: each
 # of its cases is behind the same IW_<FMT>_PLUGIN_PATH define as the per-format
 # file, so a build with two loaders still links and still tests those two.
-set(_abi_sources main.cpp test_imageloader_memory.cpp)
+set(_abi_sources main.cpp test_imageloader_memory.cpp test_plugin_ownership.cpp)
 set(_abi_plugin_targets "")
 
 macro(_abi_add_loader TARGET_ID SOURCE EXTRA_MESSAGE)
@@ -152,18 +152,47 @@ add_dependencies(iview_abi_tests ${_abi_plugin_targets})
 # plugins' imports from the MSYS2 prefix instead, so it keeps loading the
 # build-tree artefacts in place.
 if(WIN32 AND IMAGEVIEWER_COPY_RUNTIME_DLLS)
+    #
+    # Deploy the plugins, and the runtime DLLs they import, next to the ABI test
+    # binary.  Three things this has to get right:
+    #
+    #   1. run after the plugins are built.  A stamped custom command with
+    #      `DEPENDS $<TARGET_FILE:...>` looked cleaner but the Visual Studio
+    #      generator normalizes that path and then reports MSB8064 ("specified
+    #      dependency ... does not exist"), so the copy could run before the
+    #      plugins existed and the test then failed with ERROR_MOD_NOT_FOUND.
+    #      A target ordered by add_dependencies is generator-independent.
+    #
+    #   2. run again when a plugin changes.  The original POST_BUILD step hung
+    #      off iview_abi_tests, so a plugin-only edit relinked the plugin,
+    #      nothing re-ran the copy, and the suite validated the previous DLL.
+    #      A custom target with no OUTPUT runs on every build; the work is a
+    #      handful of file copies.
+    #
+    #   3. copy for each plugin separately.  The copy script globs the plugin's
+    #      whole output directory (vcpkg's applocal step puts the import DLLs
+    #      there, and the target graph cannot list them), so two concurrent
+    #      copies into the same destination collide.  The COMMANDs of one target
+    #      run in order.
+    #
+    add_custom_target(deploy_abi_plugins
+        COMMENT "Deploying plugin DLLs next to the ABI tests"
+        VERBATIM)
+
     foreach(_plugin IN LISTS _abi_plugin_targets)
-        add_custom_command(TARGET iview_abi_tests POST_BUILD
+        add_custom_command(TARGET deploy_abi_plugins
             COMMAND ${CMAKE_COMMAND}
                 "-DPLUGIN_DIR=$<TARGET_FILE_DIR:${_plugin}>"
                 "-DDEST_DIR=$<TARGET_FILE_DIR:iview_abi_tests>"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/copy_plugin_dlls.cmake"
-            VERBATIM
-        )
+            VERBATIM)
     endforeach()
+
+    add_dependencies(deploy_abi_plugins ${_abi_plugin_targets})
+    add_dependencies(iview_abi_tests deploy_abi_plugins)
+
     target_compile_definitions(iview_abi_tests PRIVATE IW_ABI_PLUGINS_DEPLOYED=1)
 endif()
-
 target_link_libraries(iview_abi_tests PRIVATE doctest::doctest)
 
 # dlopen lives in libdl on Linux; macOS and Windows need nothing extra.

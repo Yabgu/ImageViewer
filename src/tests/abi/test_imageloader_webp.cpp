@@ -6,7 +6,7 @@
  * descriptor and identical pixels.
  *
  * The fixture is lossless_4x4.webp (VP8L, emitted by
- * fixtures/generate_format_fixtures.c).  Lossless on purpose: a lossy VP8
+ * fixtures/generate_format_fixtures.cpp).  Lossless on purpose: a lossy VP8
  * encode would still be self-consistent between the two decode paths, but the
  * exact sample values would depend on the encoder build, and the assertions
  * below are exact.

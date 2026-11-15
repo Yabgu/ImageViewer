@@ -988,12 +988,16 @@ private:
 		pd.size       = image.size;
 		pd.data       = image.data;
 		pd.format     = image.format;
+		/* This is a view: the components belong to the Image, not to `pd`, so
+		 * no ownedBlob is attached and both views are pointed at the same
+		 * table. */
+		iw_plugin_data_bind(pd, image.format.components, image.format.componentCount);
 		return pd;
 	}
 
 	static bool IsPackedRgba8(const IWImageFormat& f) noexcept
 	{
-		if (f.storageLayout != IW_STORAGE_INTERLEAVED) return false;
+		if (!f.storageLayout.isInterleavedTight()) return false;
 		if (f.componentCount != 4u || f.bitsPerPixel != 32u) return false;
 		static const IWComponentSemantic kOrder[4] = {
 			IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_SEMANTIC_G,
@@ -1011,7 +1015,7 @@ private:
 
 	static bool IsPackedRgb8(const IWImageFormat& f) noexcept
 	{
-		if (f.storageLayout != IW_STORAGE_INTERLEAVED) return false;
+		if (!f.storageLayout.isInterleavedTight()) return false;
 		if (f.componentCount != 3u || f.bitsPerPixel != 24u) return false;
 		static const IWComponentSemantic kOrder[3] = {
 			IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_SEMANTIC_B
@@ -1028,7 +1032,7 @@ private:
 
 	static bool IsPackedGray8(const IWImageFormat& f) noexcept
 	{
-		return f.storageLayout == IW_STORAGE_INTERLEAVED &&
+		return f.storageLayout.isInterleavedTight() &&
 		       f.componentCount == 1u && f.bitsPerPixel == 8u &&
 		       f.components[0].semantic       == IW_COMPONENT_SEMANTIC_GRAY &&
 		       f.components[0].componentClass == IW_COMPONENT_CLASS_UNORM &&
@@ -1287,7 +1291,7 @@ private:
 	static unsigned SourceBits(const Image& image) noexcept
 	{
 		unsigned bits = 0;
-		const uint32_t count = std::min<uint32_t>(image.format.componentCount, IW_MAX_COMPONENTS);
+		const uint32_t count = image.format.componentCount;
 		for (uint32_t c = 0; c < count; ++c)
 			if (image.format.components[c].bitWidth > bits)
 				bits = image.format.components[c].bitWidth;

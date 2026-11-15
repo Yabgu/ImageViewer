@@ -1,12 +1,12 @@
 /*
- * generate_fixtures.c — regenerates the JPEG fixtures in this directory.
+ * generate_fixtures.cpp — regenerates the JPEG fixtures in this directory.
  *
  * The .jpg files here are synthetic images whose job is to give the JPEG
  * loader ABI tests known properties.  They are checked in as binaries, so this
  * file exists to make them reproducible rather than opaque: rebuilding from
  * this source reproduces them byte-for-byte.
  *
- *   cc -O2 -o /tmp/gen_fixtures generate_fixtures.c -ljpeg
+ *   c++ -O2 -o /tmp/gen_fixtures generate_fixtures.cpp -ljpeg
  *   mkdir -p /tmp/fx && /tmp/gen_fixtures /tmp/fx
  *   for f in gray_1comp ycbcr_3comp cmyk_4comp two_comp orient6_3comp; do
  *     cmp /tmp/fx/$f.jpg $f.jpg && echo "ok $f"

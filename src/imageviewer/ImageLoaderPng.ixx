@@ -211,22 +211,20 @@ ImagePluginResult DecodePng(const Source& src)
 
         switch (color_type) {
         case PNG_COLOR_TYPE_GRAY:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, bw };
+            fmt.components = (bw == 16) ? iw::kGray16Components : iw::kGray8Components;
             break;
         case PNG_COLOR_TYPE_GRAY_ALPHA:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0,  bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_UNORM, bw, bw };
+            /* `bw` honoured like every other case.  A 16-bit gray+alpha PNG is
+             * two 16-bit samples at bit offsets 0 and 16; handing it the 8-bit
+             * table described pixels the file does not contain. */
+            fmt.components = (bw == 16) ? iw::kGrayAlpha16Components
+                                        : iw::kGrayAlpha8Components;
             break;
         case PNG_COLOR_TYPE_RGBA:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(0 * bw), bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(1 * bw), bw };
-            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(2 * bw), bw };
-            fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(3 * bw), bw };
+            fmt.components = (bw == 16) ? iw::kRgba16Components : iw::kRgba8Components;
             break;
         default: /* PNG_COLOR_TYPE_RGB and palette-expanded RGB */
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(0 * bw), bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(1 * bw), bw };
-            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, static_cast<uint16_t>(2 * bw), bw };
+            fmt.components = (bw == 16) ? iw::kRgb16Components : iw::kRgb8Components;
             break;
         }
     }
@@ -254,15 +252,16 @@ ImagePluginResult DecodePng(const Source& src)
     ImagePluginData* data = nullptr;
     try
     {
-        data = new ImagePluginData{
-            .width             = width,
-            .height            = height,
-            .stride            = strideBytes,
-            .colorSpace        = colorSpace,
-            .size              = dataSize,
-            .data              = pixels,
-            .format            = fmt
-        };
+        data = new ImagePluginData{};
+        data->width             = width;
+        data->height            = height;
+        data->stride            = strideBytes;
+        data->colorSpace        = colorSpace;
+        data->size              = dataSize;
+        data->data              = pixels;
+        data->format            = fmt;
+        /* The table is one of the constexpr sets fmt already points at. */
+        iw_plugin_data_bind(*data, fmt.components, fmt.componentCount);
     }
     catch (const std::bad_alloc&)
     {

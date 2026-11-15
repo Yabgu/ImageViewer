@@ -8,6 +8,36 @@ on:
   workflow_dispatch:
 
 jobs:
+  #
+  # The exported .iwi / plugin headers are a C contract: Tension binds the
+  # format through FFI and a C engine consumes it the same way.  This job is
+  # first and deliberately cheap - it compiles those headers as C11 with
+  # -pedantic-errors before anything else runs, because "the project builds"
+  # never meant "the headers are C": five `enum X : uint8_t` declarations
+  # (C23, not C11) sat in ImagePluginDef.h and every other job stayed green.
+  c11-header-gate:
+    name: Check (C11 header compatibility)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # A C compiler is the only input. The script compiles the headers
+      # directly rather than configuring the project, so this job cannot be
+      # broken by a missing project dependency - and cannot pass because the
+      # project happens to be configured.
+      - name: Install a C compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Compile the exported headers as C11
+        run: bash ci/check-iwi-c-header.sh
+
   build-linux-native:
     name: Build (Linux / system libraries, no vcpkg)
     runs-on: [linux, x64]

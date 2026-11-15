@@ -1,5 +1,5 @@
 /*
- * generate_format_fixtures.c — regenerates the non-JPEG fixtures in this
+ * generate_format_fixtures.cpp — regenerates the non-JPEG fixtures in this
  * directory.
  *
  * These are the inputs for the per-format ABI tests (test_imageloader_png.cpp,
@@ -8,12 +8,21 @@
  * known-property file whose decoded bytes can be compared between the file
  * path and the memory path, and against the numbers asserted below.
  *
- *   cc -O2 -o /tmp/gen_formats generate_format_fixtures.c \
+ *   c++ -O2 -I../../../imageviewer -o /tmp/gen_formats \
+ *       generate_format_fixtures.cpp \
  *       $(pkg-config --cflags --libs libpng libwebp libtiff-4)
  *   mkdir -p /tmp/fx && /tmp/gen_formats /tmp/fx
  *   for f in rgba_4x4.png lossless_4x4.webp rgb_4x4.tif rgb_4x4.bmp gif_4x4.gif; do
  *     cmp /tmp/fx/$f $f && echo "ok $f"
  *   done
+ *
+ * The -I is not optional: the IWI fixture stamps IMAGE_COLOR_SPACE_SRGB into the
+ * colour-space byte, and that enumerator lives in ImagePluginDef.h rather than
+ * being spelled as a literal here.  The generator used to reference it without
+ * including the header, which only compiled because nothing ever built this
+ * file -- it is a hand-run tool, not a CMake target.  Renaming it to .cpp and
+ * adding the include is what makes `c++ generate_format_fixtures.cpp` a real
+ * check instead of an assumption.
  *
  * All four fixtures encode the same 4x4 RGB pattern, so the RGB numbers the
  * tests assert are the same numbers for every format:
@@ -55,6 +64,11 @@
 #include <png.h>
 #include <tiffio.h>
 #include <webp/encode.h>
+
+/* IMAGE_COLOR_SPACE_SRGB, stamped into the IWI fixture's colour-space byte.
+ * Included rather than written as the literal 0 so the fixture follows the ABI
+ * enum instead of duplicating its value. */
+#include "ImagePluginDef.h"
 
 #define W 4
 #define H 4
@@ -105,7 +119,13 @@ static void put_u64le(uint8_t *p, uint64_t v)
 }
 
 /*
- * IWI: the 74-byte header ImageLoaderIWI parses, written field by field.
+ * IWI: the header ImageLoaderIWI parses, written field by field.
+ *
+ * The header is 36 bytes of base fields followed by 6 bytes per component, so
+ * 42 for a single component, 54 here for three and 60 for four -- not the fixed
+ * 64 this comment used to claim.  `headerBytes` below is derived from
+ * `components` for that reason, and the metadata that would follow the table is
+ * zero here (metaBytes = 0), so the payload starts at 36 + 6N.
  *
  * `components` is 3 (RGB, opaque) or 4 (RGBA, with the alpha ramp).  Both
  * fixtures carry exactly the same RGB samples as the other formats' fixtures,
@@ -113,42 +133,47 @@ static void put_u64le(uint8_t *p, uint64_t v)
  * A = 240 + x, which is what distinguishes a loader that reads the alpha
  * component from one that synthesises 255.
  *
- * Semantics are written as R=1, G=2, B=3, A=4 and class as UNORM=2, matching
- * the container Tension's writer (apps/docs/tools/lib/iwi.mjs) produces.
+ * Semantics are written as R=1, G=2, B=3, A=4 and class as UNORM=2.
  */
 static int write_iwi_components(const char *path, int components)
 {
-    uint8_t buf[74 + W * H * 4];
-    memset(buf, 0, 74);
+    const size_t headerBytes = 36 + (size_t)components * 6;
+    const size_t pixelBytes  = (size_t)W * H * (size_t)components;
+    const size_t totalBytes  = headerBytes + pixelBytes;
+
+    uint8_t *buf = (uint8_t *)malloc(totalBytes);
+    if (!buf) return 1;
+    memset(buf, 0, totalBytes);
 
     memcpy(buf + 0, "IWI1", 4);
     put_u32le(buf + 4, W);
     put_u32le(buf + 8, H);
-    buf[12] = 0;                              /* sRGB */
-    put_u16le(buf + 13, (uint16_t)components);
-    put_u16le(buf + 15, (uint16_t)(components * 8));
-    buf[17] = 0;                              /* interleaved */
+    put_u32le(buf + 12, 0);                         /* metaBytes = 0 */
+    put_u64le(buf + 16, 0);                         /* storageLayout = 0 */
+    memcpy(buf + 24, "raw\0\0\0\0\0", 8);           /* payloadEncoding = "raw" */
+    buf[32] = (uint8_t)IMAGE_COLOR_SPACE_SRGB;      /* sRGB */
+    buf[33] = 0;                                    /* reserved */
+    put_u16le(buf + 34, (uint16_t)components);
 
     for (int i = 0; i < components; ++i) {
-        uint8_t *rec = buf + 18 + i * 6;
+        uint8_t *rec = buf + 36 + i * 6;
         rec[0] = (uint8_t)(i + 1);            /* R, G, B[, A] */
         rec[1] = 2;                           /* UNORM */
         put_u16le(rec + 2, (uint16_t)(i * 8));
         put_u16le(rec + 4, 8);
     }
 
-    const size_t bytes = (size_t)W * H * (size_t)components;
-    put_u64le(buf + 66, (uint64_t)bytes);
     if (components == 4)
-        fill_rgba(buf + 74);
+        fill_rgba(buf + headerBytes);
     else
-        fill_rgb(buf + 74);
+        fill_rgb(buf + headerBytes);
 
     FILE *f = fopen(path, "wb");
-    if (!f) return 1;
-    const size_t written = fwrite(buf, 1, 74 + bytes, f);
+    if (!f) { free(buf); return 1; }
+    const size_t written = fwrite(buf, 1, totalBytes, f);
     fclose(f);
-    return written == 74 + bytes ? 0 : 1;
+    free(buf);
+    return written == totalBytes ? 0 : 1;
 }
 
 static int write_iwi_rgba(const char *path) { return write_iwi_components(path, 4); }

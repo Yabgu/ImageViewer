@@ -320,7 +320,13 @@ inline std::string DecodeDifference(const ImagePluginData& a, const ImagePluginD
     if (a.stride != b.stride) return "stride differs";
     if (a.size   != b.size)   return "size differs";
     if (a.colorSpace != b.colorSpace) return "colorSpace differs";
-    if (std::memcmp(&a.format, &b.format, sizeof(IWImageFormat)) != 0)
+    if (a.format.componentCount != b.format.componentCount ||
+        a.format.bitsPerPixel   != b.format.bitsPerPixel   ||
+        a.format.storageLayout  != b.format.storageLayout  ||
+        (a.format.componentCount > 0 &&
+         (a.format.components == nullptr || b.format.components == nullptr ||
+          std::memcmp(a.format.components, b.format.components,
+                      a.format.componentCount * sizeof(IWComponentDef)) != 0)))
         return "IWImageFormat differs";
     if (a.data == nullptr || b.data == nullptr) return "null pixel buffer";
     if (std::memcmp(a.data, b.data, a.size) != 0) return "pixel bytes differ";
@@ -369,6 +375,15 @@ inline uint32_t PixelComponent(const ImagePluginData& d, int ch, int x, int y)
  */
 inline std::string DescriptorProblem(const ImagePluginData& d)
 {
+    /*
+     * Admission first: every descriptor a plugin hands back must carry the
+     * struct version this test binary was built against, and its two views of
+     * the component table must agree.  A stale DLL or a producer that set only
+     * one of them fails here, before any field is interpreted.
+     */
+    if (!iw_plugin_data_is_compatible(d))
+        return "descriptor failed the version/ownership admission check";
+
     const char* fmtError = nullptr;
     if (!ValidateImageFormat(d.format, &fmtError)) {
         return std::string("ValidateImageFormat rejected the descriptor: ") +

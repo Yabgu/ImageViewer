@@ -75,6 +75,20 @@ if(Glad_FOUND AND NOT TARGET glad::glad)
     if(_GLAD_GENERATED)
         # Compile the generated source into a static library
         add_library(_glad_generated STATIC "${_GLAD_SRC}")
+
+        #
+        # glad's generator emits C, but this project enables only CXX: the .iwi
+        # container's C API is `extern "C"` implemented in C++ precisely so a C
+        # compiler never has to be enabled here.  Without this the target has no
+        # linker language and configure fails with "CMake can not determine
+        # linker language for target: _glad_generated".
+        #
+        # glad's generated code is C++-clean (it is maintained to compile as
+        # either language), so declaring the source CXX is honest rather than a
+        # hack: it is compiled by the C++ compiler and linked as C++.
+        #
+        set_source_files_properties("${_GLAD_SRC}" PROPERTIES LANGUAGE CXX)
+
         target_include_directories(_glad_generated PUBLIC "${GLAD_INCLUDE_DIR}")
 
         add_library(glad::glad INTERFACE IMPORTED)

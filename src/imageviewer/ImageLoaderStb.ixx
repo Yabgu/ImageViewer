@@ -153,28 +153,24 @@ ImagePluginResult DecodeStb(const Source& src)
         const IWComponentClass cls = isHdr ? IW_COMPONENT_CLASS_FLOAT : IW_COMPONENT_CLASS_UNORM;
         fmt.componentCount = static_cast<uint16_t>(componentsPerPixel);
         fmt.bitsPerPixel   = static_cast<uint16_t>(componentsPerPixel) * bw;
-        switch (componentsPerPixel) {
-        case 1:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, cls, 0, bw };
-            break;
-        case 2:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, cls, 0,  bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_A,    cls, bw, bw };
-            break;
-        case 3:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, cls, static_cast<uint16_t>(0 * bw), bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls, static_cast<uint16_t>(1 * bw), bw };
-            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, static_cast<uint16_t>(2 * bw), bw };
-            break;
-        default:
-            stbi_image_free(pixels);
-            throw std::runtime_error("Unsupported number of channels: " + std::to_string(componentsPerPixel));
-        case 4:
-            fmt.components[0] = { IW_COMPONENT_SEMANTIC_R, cls, static_cast<uint16_t>(0 * bw), bw };
-            fmt.components[1] = { IW_COMPONENT_SEMANTIC_G, cls, static_cast<uint16_t>(1 * bw), bw };
-            fmt.components[2] = { IW_COMPONENT_SEMANTIC_B, cls, static_cast<uint16_t>(2 * bw), bw };
-            fmt.components[3] = { IW_COMPONENT_SEMANTIC_A, cls, static_cast<uint16_t>(3 * bw), bw };
-            break;
+        if (isHdr) {
+            switch (componentsPerPixel) {
+            case 3: fmt.components = iw::kRgb32FComponents; break;
+            case 4: fmt.components = iw::kRgba32FComponents; break;
+            default:
+                stbi_image_free(pixels);
+                throw std::runtime_error("Unsupported number of channels: " + std::to_string(componentsPerPixel));
+            }
+        } else {
+            switch (componentsPerPixel) {
+            case 1: fmt.components = iw::kGray8Components; break;
+            case 2: fmt.components = iw::kGrayAlpha8Components; break;
+            case 3: fmt.components = iw::kRgb8Components; break;
+            case 4: fmt.components = iw::kRgba8Components; break;
+            default:
+                stbi_image_free(pixels);
+                throw std::runtime_error("Unsupported number of channels: " + std::to_string(componentsPerPixel));
+            }
         }
     }
 
@@ -186,6 +182,12 @@ ImagePluginResult DecodeStb(const Source& src)
         throw std::runtime_error("Failed to allocate image buffer");
     }
 
+    /* Construct in place: this loader keeps the descriptor and the pixels in
+     * one allocation, so the block must be initialised rather than memset -
+     * the default constructor zeroes ownedBlob/freeOwnedBlob and stamps the
+     * ABI version, and it must not be allowed to touch the pixels that follow. */
+    new (block) ImagePluginData();
+
     block->width      = width;
     block->height     = height;
     block->stride     = static_cast<int>(static_cast<size_t>(width) * componentsPerPixel * bytesPerChannel);
@@ -193,6 +195,9 @@ ImagePluginResult DecodeStb(const Source& src)
     block->size       = dataSize;
     block->data       = static_cast<uint8_t*>(static_cast<void*>(block)) + sizeof(ImagePluginData);
     block->format     = fmt;
+    /* The component table is one of the constexpr sets; the pixels live in this
+     * allocation but the table does not, so nothing is owned through the blob. */
+    iw_plugin_data_bind(*block, fmt.components, fmt.componentCount);
 
     std::memcpy(block->data, pixels, dataSize);
     stbi_image_free(pixels);

@@ -49,7 +49,7 @@ private:
 	 *              (each plane has this stride; total size = stride × height × componentCount) */
 	static int ComputeStride(int width, const IWImageFormat& fmt) noexcept
 	{
-		if (fmt.storageLayout == IW_STORAGE_PLANAR && fmt.componentCount > 0u) {
+		if (fmt.storageLayout.isPlanar() && fmt.componentCount > 0u) {
 			// Planar: stride is the byte-width of one row of a single component plane.
 			// bitsPerPixel is the total across all components; divide to get per-component.
 			// Integer division rounds down — if components have unequal widths the caller
@@ -63,7 +63,7 @@ private:
 
 	static size_t ComputeSize(int height, int stride, const IWImageFormat& fmt) noexcept
 	{
-		if (fmt.storageLayout == IW_STORAGE_PLANAR)
+		if (fmt.storageLayout.isPlanar())
 			return static_cast<size_t>(height) * stride * fmt.componentCount;
 		return static_cast<size_t>(height) * stride;
 	}
@@ -120,8 +120,9 @@ private:
 			return PluginFileName("ImageLoaderJpeg");
 		if (std::regex_match(extension, std::regex("\\.png|\\.apng", std::regex::icase)))
 			return PluginFileName("ImageLoaderPng");
-		/* Tension's texture container: a 74-byte header Tension writes and
-		 * ImageLoaderIWI reads. */
+		/* Tension's texture container: 36 bytes of base header plus 6 per
+		 * component, then the payload.  Tension writes it; ImageLoaderIWI reads
+		 * it through the C API in src/format/IwiFile.cpp. */
 		if (std::regex_match(extension, std::regex("\\.iwi", std::regex::icase)))
 			return PluginFileName("ImageLoaderIWI");
 		if (std::regex_match(extension, std::regex("\\.webp", std::regex::icase)))
@@ -155,6 +156,26 @@ private:
 		return result;
 	}
 
+	/*
+	 * Admission check on what a plugin handed back.
+	 *
+	 * The descriptor carries the ABI version it was built against and two views
+	 * of one component table; both have to agree before any field is read.  The
+	 * alternative is reading a stale DLL's struct at this build's offsets, which
+	 * is a silent misread rather than an error the user can act on.
+	 *
+	 * Throws inside the caller's try block so the plugin's own FreeImageData
+	 * still releases its buffers.
+	 */
+	static void RequireCompatible(const ImagePluginData& d)
+	{
+		if (iw_plugin_data_is_compatible(d)) return;
+		throw std::runtime_error(
+			"Plugin returned an incompatible image descriptor: struct version " +
+			std::to_string(d.structVersion) + ", expected " +
+			std::to_string(IW_PLUGIN_STRUCT_VERSION));
+	}
+
 	static void FreeImageResultViaPlugin(PluginManager& manager,
 	                                      const std::filesystem::path& pluginPath,
 	                                      ImagePluginResult& result)
@@ -169,6 +190,8 @@ private:
 		entry->freeFunc(result.data);
 		result.data = nullptr;
 	}
+
+	std::vector<IWComponentDef> componentStorage_;
 
 public:
 	const int           width;
@@ -192,17 +215,25 @@ public:
 	}
 
 	Image(Image&& o) noexcept
-		: width(o.width), height(o.height), format(o.format),
+		: componentStorage_(std::move(o.componentStorage_)),
+		  width(o.width), height(o.height), format(o.format),
 		  stride(o.stride), size(o.size), data(o.data), colorSpace(o.colorSpace)
 	{
 		const_cast<uint8_t*&>(o.data) = nullptr;
+		if (!componentStorage_.empty()) {
+			const_cast<const IWComponentDef*&>(format.components) = componentStorage_.data();
+		}
 	}
 
 	Image(const Image& o)
-		: width(o.width), height(o.height), format(o.format),
+		: componentStorage_(o.componentStorage_),
+		  width(o.width), height(o.height), format(o.format),
 		  stride(o.stride), size(o.size), data(new uint8_t[o.size]), colorSpace(o.colorSpace)
 	{
 		std::copy(o.data, o.data + o.size, data);
+		if (!componentStorage_.empty()) {
+			const_cast<const IWComponentDef*&>(format.components) = componentStorage_.data();
+		}
 	}
 
 	/* Primary constructor.  Takes ownership of storage; allocates internally if
@@ -218,6 +249,10 @@ public:
 	{
 		if (w <= 0 || h <= 0)
 			[[unlikely]] throw std::runtime_error("Image dimensions must be positive");
+		if (fmt.components && fmt.componentCount > 0) {
+			componentStorage_.assign(fmt.components, fmt.components + fmt.componentCount);
+			const_cast<const IWComponentDef*&>(this->format.components) = componentStorage_.data();
+		}
 	}
 
 	~Image()
@@ -241,6 +276,7 @@ public:
 		 * at upload time. */
 		try
 		{
+			RequireCompatible(*pluginResult.data);
 			Image result = CopyFromPluginData(*pluginResult.data);
 			FreeImageResultViaPlugin(manager, pluginPath, pluginResult);
 			return result;
@@ -374,6 +410,7 @@ inline ImagePreview Image::PreviewFromFile(const std::filesystem::path& path,
 		{
 			try
 			{
+				RequireCompatible(*previewResult.data);
 				Image preview = CopyFromPluginData(*previewResult.data);
 				const int previewWidth  = preview.width;
 				const int previewHeight = preview.height;

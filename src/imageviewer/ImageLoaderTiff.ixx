@@ -172,24 +172,23 @@ ImagePluginResult DecodeTiff(TIFF* handle)
         const bool supportsNativeScanline =
             (isGrayPhotometric || isRgbPhotometric) && (planarConfig == PLANARCONFIG_CONTIG);
 
-        // Determine channel order for native scanline decoding.
         // Build the IWImageFormat for the native-scanline path.
         // (The tiled/fallback path always produces 8-bit RGBA via libtiff.)
+        //
+        // This used to fill a `static thread_local IWComponentDef nativeComps[4]`
+        // and hand its address to the caller.  Two TIFFs loaded on one thread
+        // therefore shared one table, and the second load silently rewrote the
+        // first image's descriptor - the image data stayed correct while the
+        // thing describing it changed underneath.  The table is now one of the
+        // static-storage sets from ImagePluginDef.h, chosen by the (shape,
+        // class, width) the file declares, so it is immutable and needs no
+        // lifetime management at all.
         auto BuildNativeFormat = [&](int nComponents, bool alpha) -> IWImageFormat {
             IWImageFormat f = {};
             f.componentCount = static_cast<uint16_t>(nComponents);
             f.bitsPerPixel   = static_cast<uint16_t>(nComponents * componentBitWidth);
-            if (isGrayPhotometric) {
-                f.components[0] = { IW_COMPONENT_SEMANTIC_GRAY, componentClass, 0, componentBitWidth };
-                if (alpha)
-                    f.components[1] = { IW_COMPONENT_SEMANTIC_A, componentClass, componentBitWidth, componentBitWidth };
-            } else {
-                f.components[0] = { IW_COMPONENT_SEMANTIC_R, componentClass, static_cast<uint16_t>(0 * componentBitWidth), componentBitWidth };
-                f.components[1] = { IW_COMPONENT_SEMANTIC_G, componentClass, static_cast<uint16_t>(1 * componentBitWidth), componentBitWidth };
-                f.components[2] = { IW_COMPONENT_SEMANTIC_B, componentClass, static_cast<uint16_t>(2 * componentBitWidth), componentBitWidth };
-                if (alpha)
-                    f.components[3] = { IW_COMPONENT_SEMANTIC_A, componentClass, static_cast<uint16_t>(3 * componentBitWidth), componentBitWidth };
-            }
+            f.components = iw::ComponentTable(isGrayPhotometric, alpha,
+                                              componentClass, componentBitWidth);
             return f;
         };
 
@@ -222,27 +221,27 @@ ImagePluginResult DecodeTiff(TIFF* handle)
             IWImageFormat tiledFmt = {};
             tiledFmt.componentCount = components;
             tiledFmt.bitsPerPixel   = components * 8;
-            tiledFmt.components[0]  = { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 };
-            tiledFmt.components[1]  = { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 };
-            tiledFmt.components[2]  = { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 };
-            tiledFmt.components[3]  = { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 };
+            tiledFmt.components     = iw::kRgba8Components;
 
-            ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
-            if (!data)
+            void* slot = std::malloc(sizeof(ImagePluginData));
+            if (!slot)
             {
                 std::free(pixelData);
                 throw std::runtime_error("Failed to allocate ImagePluginData for TIFF raster decode");
             }
-            std::memset(data, 0, sizeof(ImagePluginData));
-            *data = ImagePluginData{
-                .width      = static_cast<int>(width),
-                .height     = static_cast<int>(height),
-                .stride     = static_cast<int>(width) * components,
-                .colorSpace = IMAGE_COLOR_SPACE_SRGB,
-                .size       = dataSize,
-                .data       = pixelData,
-                .format     = tiledFmt
-            };
+            /* Constructed, not memset: the default constructor zeroes the
+             * ownership fields and stamps the ABI version, which a plain
+             * memset of a struct with a constructor would leave to chance. */
+            ImagePluginData* data = new (slot) ImagePluginData();
+            data->width      = static_cast<int>(width);
+            data->height     = static_cast<int>(height);
+            data->stride     = static_cast<int>(width) * components;
+            data->colorSpace = IMAGE_COLOR_SPACE_SRGB;
+            data->size       = dataSize;
+            data->data       = pixelData;
+            data->format     = tiledFmt;
+            /* RGBA8 is a static table: this descriptor owns no component blob. */
+            iw_plugin_data_bind(*data, tiledFmt.components, tiledFmt.componentCount);
             result.code = IMAGE_PLUGIN_OK;
             result.data = data;
             return result;
@@ -290,22 +289,23 @@ ImagePluginResult DecodeTiff(TIFF* handle)
         }
         std::free(rowBuf);
 
-        ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
-        if (!data)
+        void* slot = std::malloc(sizeof(ImagePluginData));
+        if (!slot)
         {
             std::free(pixelData);
             throw std::runtime_error("Failed to allocate ImagePluginData for TIFF scanline decode");
         }
-        std::memset(data, 0, sizeof(ImagePluginData));
-        *data = ImagePluginData{
-            .width      = static_cast<int>(width),
-            .height     = static_cast<int>(height),
-            .stride     = static_cast<int>(packRowBytes),
-            .colorSpace = colorSpace,
-            .size       = dataSize,
-            .data       = pixelData,
-            .format     = BuildNativeFormat(static_cast<int>(samplesPerPixel), hasAlpha)
-        };
+        ImagePluginData* data = new (slot) ImagePluginData();
+        data->width      = static_cast<int>(width);
+        data->height     = static_cast<int>(height);
+        data->stride     = static_cast<int>(packRowBytes);
+        data->colorSpace = colorSpace;
+        data->size       = dataSize;
+        data->data       = pixelData;
+        data->format     = BuildNativeFormat(static_cast<int>(samplesPerPixel), hasAlpha);
+        /* The native-format table is one of the static constexpr sets, so
+         * nothing here owns component storage. */
+        iw_plugin_data_bind(*data, data->format.components, data->format.componentCount);
         result.code = IMAGE_PLUGIN_OK;
         result.data = data;
     }

@@ -1,0 +1,30 @@
+# Line endings.
+#
+# The project is built on Linux (CI matrix, MSYS2, the headless plugin jobs) and
+# on Windows.  One convention for both: LF in the repository and LF in the
+# working tree.  Without this file the convention is per-file folklore, and a
+# single editor or code-generating tool re-flips a file and turns a 40-line
+# change into a 1500-line one.
+* text=auto eol=lf
+
+# Batch files are the one exception.  cmd.exe parses labels and `goto` on its
+# own line-ending rules and mis-handles a bare LF, so these stay CRLF in the
+# working tree.  `eol=crlf` converts on checkout and normalizes back to LF in
+# the index, so the repository stays consistent.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets: never normalized, never treated as text by diff or merge.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.tif   binary
+*.tiff  binary
+*.bmp   binary
+*.iwi   binary
+*.hdr   binary
+*.ico   binary
+*.obj   binary
+*.lib   binary
