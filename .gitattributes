@@ -1,18 +1,30 @@
-# Line endings.
+# Line endings: none converted, in either direction.
 #
 # The project is built on Linux (CI matrix, MSYS2, the headless plugin jobs) and
-# on Windows.  One convention for both: LF in the repository and LF in the
-# working tree.  Without this file the convention is per-file folklore, and a
-# single editor or code-generating tool re-flips a file and turns a 40-line
-# change into a 1500-line one.
-* text=auto eol=lf
+# on Windows.  `-text` makes git store the working-tree bytes and check out those
+# same bytes: there is no `text=auto` sniffing and no `eol=` conversion on commit
+# or on checkout.  So a file cannot differ between the two platforms because of
+# git, and an unchanged file never shows up as rewritten.
+#
+# What the repository holds, then, is what everyone gets:
+#
+#   - LF everywhere: sources, CMake, shell scripts, the PowerShell script.
+#   - CRLF in the batch files, and only there.  cmd.exe parses labels and `goto`
+#     on its own line-ending rules and mis-handles a bare LF, so `*.bat` and
+#     `*.cmd` are CRLF *in the repository*.  With no conversion configured, a
+#     CRLF blob checks out as CRLF on every platform.  Stating them here beats
+#     `eol=crlf` over an LF index: with conversion on, the cleaning filter's
+#     output could never match a CRLF blob, so these two files reported as
+#     modified on every `git status` in every checkout.
+#
+# Because nothing is converted, a stray CRLF in any other file stays in the
+# commit.  Keep it out with an editor setting, not with git rewriting files.
+* -text
 
-# Batch files are the one exception.  cmd.exe parses labels and `goto` on its
-# own line-ending rules and mis-handles a bare LF, so these stay CRLF in the
-# working tree.  `eol=crlf` converts on checkout and normalizes back to LF in
-# the index, so the repository stays consistent.
-*.bat text eol=crlf
-*.cmd text eol=crlf
+# The one exception, stated so it is visible in `git check-attr` and
+# `git ls-files --eol` rather than only in the comment above.
+*.bat -text
+*.cmd -text
 
 # Binary assets: never normalized, never treated as text by diff or merge.
 *.png   binary
