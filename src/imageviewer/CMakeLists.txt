@@ -181,6 +181,27 @@ set_property(TARGET iw_plugin_host PROPERTY CXX_STANDARD 23)
 # without linking a line of viewer code.  What stays here is IwiFormat.ixx,
 # which is the viewer's policy layer on top of that grammar.
 
+# The viewer's .iwi policy layer, on its own.
+#
+# IwiFormat.ixx is the caller-facing answer to "can this viewer display this
+# file": the grammar (from src/format) plus ImageViewer's capability rules,
+# which is why it lives here and not with the format library.  It is split out
+# of iw_iwi_thumbnail because it has no COM in it: the format tests import it,
+# and ImageLoaderIWI imports it on every platform, so it must exist whether or
+# not the Windows thumbnail provider is being built.
+add_library(iw_iwi_format STATIC)
+
+target_sources(iw_iwi_format PUBLIC
+    FILE_SET iwi_format_policy TYPE CXX_MODULES
+    FILES
+        IwiFormat.ixx
+)
+
+# IwiFormat.ixx includes IwiFile.h and ImagePluginDef.h from its global module
+# fragment; iw_iwi_file exports both directories.
+target_link_libraries(iw_iwi_format PUBLIC iw_iwi_file)
+set_property(TARGET iw_iwi_format PROPERTY CXX_STANDARD 23)
+
 # ── Windows shell thumbnail provider ────────────────────────────────────────
 #
 # Makes Explorer render .iwi files instead of the generic file-type icon.  It
@@ -200,28 +221,8 @@ option(IMAGEVIEWER_BUILD_THUMBNAIL_PROVIDER
 
 if(WIN32 AND IMAGEVIEWER_BUILD_THUMBNAIL_PROVIDER)
 
-# The portable half: header parsing, decimation and colour handling, with no
-# COM in it.  The tests import this, so it is a target of its own.
-# The viewer's .iwi policy layer, on its own.
-#
-# IwiFormat.ixx is the caller-facing answer to "can this viewer display this
-# file": the grammar (from src/format) plus ImageViewer's capability rules,
-# which is why it lives here and not with the format library.  It is split out
-# of iw_iwi_thumbnail because it has no COM in it: the format tests import it,
-# and they must not have to link a Win32 module to do that.
-add_library(iw_iwi_format STATIC)
-
-target_sources(iw_iwi_format PUBLIC
-    FILE_SET iwi_format_policy TYPE CXX_MODULES
-    FILES
-        IwiFormat.ixx
-)
-
-# IwiFormat.ixx includes IwiFile.h and ImagePluginDef.h from its global module
-# fragment; iw_iwi_file exports both directories.
-target_link_libraries(iw_iwi_format PUBLIC iw_iwi_file)
-set_property(TARGET iw_iwi_format PROPERTY CXX_STANDARD 23)
-
+# The portable half: decimation and colour handling, with no COM in it.  The
+# tests import this, so it is a target of its own.
 add_library(iw_iwi_thumbnail STATIC)
 
 target_sources(iw_iwi_thumbnail PUBLIC
