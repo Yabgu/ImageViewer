@@ -82,6 +82,7 @@ enum class IwiStatus {
     UnexpectedComponentLayout,
     OutOfSpace,
     Unsupported,
+    NoComponents,
 };
 
 /*
@@ -153,6 +154,7 @@ inline IwiStatus MapStatus(int rc) noexcept
     case IWI_STATUS_UNEXPECTED_SEMANTIC:         return IwiStatus::UnexpectedSemantic;
     case IWI_STATUS_UNADDRESSABLE_GEOMETRY:      return IwiStatus::UnaddressableGeometry;
     case IWI_STATUS_UNSUPPORTED:                 return IwiStatus::Unsupported;
+    case IWI_STATUS_NO_COMPONENTS:               return IwiStatus::NoComponents;
     }
     return IwiStatus::UnexpectedComponentLayout;
 }

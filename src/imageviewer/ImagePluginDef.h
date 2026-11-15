@@ -227,6 +227,24 @@ typedef union IWStorageLayout {
         return (flags & static_cast<uint32_t>(IW_STORAGE_FLAG_PLANAR)) != 0u;
     }
     constexpr bool isInterleaved() const noexcept { return !isPlanar(); }
+
+    /*
+     * Interleaved *and* tightly packed: no flags at all and no declared stride.
+     *
+     * This is the layout every consumer here actually implements.  `isInterleaved`
+     * answers a different question - "not planar" - and a file with FLIP_X set
+     * is interleaved by that answer while still being a layout nobody renders.
+     * A renderer that wants "plain packed rows" must ask this one.
+     *
+     * Written as a member so the nine sites that used to compare the union
+     * against a small integer (`layout == IW_STORAGE_INTERLEAVED`, which is
+     * raw == 0 by accident of the converting constructor) have one correct
+     * spelling to call instead.
+     */
+    constexpr bool isInterleavedTight() const noexcept
+    {
+        return flags == 0u && stride == 0u;
+    }
 #endif
 } IWStorageLayout;
 
@@ -246,6 +264,27 @@ typedef union IWStorageLayout {
  * bitsPerPixel is the total number of bits consumed per logical pixel
  * for IW_STORAGE_INTERLEAVED, or per sample (one component of one pixel)
  * for IW_STORAGE_PLANAR.
+ *
+ * # Ownership of `components`
+ *
+ * `components` is a borrowed pointer, and who owns the storage behind it is the
+ * one rule every producer must get right.  It may point at:
+ *
+ *   - a static-storage component table from namespace iw above (kRgb8Components
+ *     and friends, or something ComponentTable selected).  These live for the
+ *     life of the program and need no handling; ownedBlob == NULL.
+ *   - storage owned by the holder of the descriptor - a member vector in a C++
+ *     type, or the ownedBlob a plugin-layer ImagePluginData carries.  Whoever
+ *     copies the descriptor must re-point this field at their own storage; a
+ *     copy that does not is left reading the source, which is either a dangling
+ *     pointer or a silent aliasing bug.
+ *
+ * It must never be assigned the `.data()` of a vector that can later reallocate,
+ * unless the same object re-points it after every change.
+ *
+ * Both directions have bitten this tree already: IWImageIO::Image left the
+ * pointer aimed at the source's vector across a copy, and the TIFF loader
+ * shared one mutable table between images loaded on the same thread.
  */
 struct IWImageFormat {
     uint16_t              componentCount;                 /* number of active components                        */
@@ -406,6 +445,49 @@ inline constexpr IWComponentDef kRgba32FComponents[4] = {
     { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_FLOAT, 64, 32 },
     { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_FLOAT, 96, 32 }
 };
+inline constexpr IWComponentDef kGray32FComponents[1] = {
+    { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_FLOAT, 0, 32 }
+};
+inline constexpr IWComponentDef kGrayAlpha32FComponents[2] = {
+    { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_FLOAT,  0, 32 },
+    { IW_COMPONENT_SEMANTIC_A,    IW_COMPONENT_CLASS_FLOAT, 32, 32 }
+};
+
+/*
+ * The table for a native layout, selected at run time.
+ *
+ * A loader that learns its layout from the file - TIFF is the one, with
+ * per-sample bit depth and sample format - cannot point at one table at compile
+ * time.  The alternative it used to take was a mutable scratch array shared
+ * across calls, which meant the second load on a thread silently rewrote the
+ * first image's descriptor.
+ *
+ * These are all static-storage constexpr tables, so the returned pointer never
+ * dangles and needs no ownership handling - which is why this needs none of the
+ * machinery the owned-blob path in C3b adds.
+ */
+inline const IWComponentDef* ComponentTable(bool gray, bool alpha,
+                                            IWComponentClass cls,
+                                            uint16_t bitWidth) noexcept
+{
+    const bool isFloat = (cls == IW_COMPONENT_CLASS_FLOAT);
+
+    if (gray) {
+        if (alpha) {
+            if (isFloat)          return kGrayAlpha32FComponents;
+            return bitWidth == 16 ? kGrayAlpha16Components : kGrayAlpha8Components;
+        }
+        if (isFloat)              return kGray32FComponents;
+        return bitWidth == 16 ? kGray16Components : kGray8Components;
+    }
+
+    if (alpha) {
+        if (isFloat)              return kRgba32FComponents;
+        return bitWidth == 16 ? kRgba16Components : kRgba8Components;
+    }
+    if (isFloat)                  return kRgb32FComponents;
+    return bitWidth == 16 ? kRgb16Components : kRgb8Components;
+}
 } // namespace iw
 #endif /* __cplusplus */
 

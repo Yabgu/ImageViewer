@@ -158,6 +158,41 @@ static_assert(sizeof(iw::kRgba8Components) == 4 * sizeof(IWComponentDef));
 static_assert(iw::kGrayAlpha16Components[0].bitWidth == 16);
 static_assert(iw::kGrayAlpha16Components[1].bitOffset == 16);
 
+/* -- The layout predicates the renderer actually asks ---------------------- */
+
+/*
+ * Nine sites used to compare the 64-bit union against a small integer, which is
+ * `raw == 0` or `raw == 1` by accident of the converting constructor.  They now
+ * ask these two questions instead, so the answers are pinned here.
+ */
+/* The value-0 descriptor: the one a file with no flags and no stride has. */
+constexpr IWStorageLayout kTight(0u, 0u);
+
+static_assert(kTight.isInterleavedTight());
+static_assert(!kTight.isPlanar());
+
+constexpr IWStorageLayout kPlanar(static_cast<uint32_t>(IW_STORAGE_FLAG_PLANAR), 0u);
+static_assert(kPlanar.isPlanar());
+static_assert(!kPlanar.isInterleavedTight());
+
+/* A flag that is not planar is still not "plain packed rows" - the case the old
+ * `!= IW_STORAGE_INTERLEAVED` test got right only because it compared the whole
+ * 64-bit value. */
+constexpr IWStorageLayout kFlipX(static_cast<uint32_t>(IW_STORAGE_FLAG_FLIP_X), 0u);
+static_assert(!kFlipX.isPlanar());
+static_assert(!kFlipX.isInterleavedTight());
+
+/* PLANAR|COLUMNAR: planar by bit, and the combination the old equality test
+ * missed entirely (raw == 3, which is neither 0 nor 1). */
+constexpr IWStorageLayout kPlanarColumnar(
+    static_cast<uint32_t>(IW_STORAGE_FLAG_PLANAR) |
+    static_cast<uint32_t>(IW_STORAGE_FLAG_COLUMNAR), 0u);
+static_assert(kPlanarColumnar.isPlanar());
+
+/* A declared stride disqualifies tight packing even with no flag bits. */
+constexpr IWStorageLayout kStrided(0u, 64u);
+static_assert(!kStrided.isInterleavedTight());
+
 } // namespace
 
 int main()

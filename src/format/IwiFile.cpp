@@ -198,9 +198,11 @@ static int ParseStructural(IwiFileHeader* out, size_t out_size,
 
     /* A container with no components describes no pixels.  That is a fact
      * about the grammar, not a cap: one component is fine, seven hundred is
-     * fine, zero is not a container. */
+     * fine, zero is not a container.  It is therefore MALFORMED, not
+     * unsupported - this used to return UNSUPPORTED_COMPONENT_COUNT, which told
+     * a user their file was valid-but-hidden when it was simply broken. */
     if (componentCount < IWI_FILE_MIN_COMPONENTS) {
-        return IWI_STATUS_UNSUPPORTED_COMPONENT_COUNT;
+        return IWI_STATUS_NO_COMPONENTS;
     }
 
     /* Header + component table + metadata must all be readable from `head`. */
@@ -288,6 +290,8 @@ int iwi_parse_structural(IwiFileHeader* out, size_t out_size,
     return ParseStructural(out, out_size, bytes, size, size);
 }
 
+/* Callers: IwiThumbnail.ixx (sizes its head read before parsing) and the
+ * thumbnail provider's own magic sniff.  Nothing speculative. */
 int iwi_file_peek_components(const uint8_t* bytes, size_t len, uint16_t* out_count)
 {
     if (bytes == nullptr || out_count == nullptr || len < IWI_FILE_BASE_HEADER_BYTES) {
@@ -303,6 +307,8 @@ int iwi_file_peek_components(const uint8_t* bytes, size_t len, uint16_t* out_cou
     return IWI_STATUS_OK;
 }
 
+/* Callers: IWImageIO.ixx (the converter's codec policy) and IwiFormat.ixx (the
+ * viewer's).  Both need the same answer, so neither writes its own comparison. */
 int iwi_payload_encoding_is_raw(const IwiFileHeader* f)
 {
     if (f == nullptr) {
@@ -345,6 +351,24 @@ int iwi_decode(const IwiFileHeader* f, const uint8_t* bytes, size_t size,
     const uint32_t metaBytes = ReadU32LE(reinterpret_cast<const uint8_t*>(&f->metaBytes));
     const uint16_t componentCount =
         ReadU16LE(reinterpret_cast<const uint8_t*>(&f->componentCount));
+
+    /*
+     * Layout and codec first: this function reads the payload as tightly packed
+     * interleaved bytes, so a file that says otherwise must be refused HERE.
+     * Ignoring the flags would decode a planar or strided image as though it
+     * were interleaved - wrong pixels with a success code, which is the worst
+     * answer an API can give.  The grammar accepts these layouts (they are
+     * legal IWI); the decoder is the layer that would have ignored them, so the
+     * decoder is the layer that rejects them.
+     */
+    const uint32_t flags  = f->storageLayout.flags;
+    const uint32_t stride = f->storageLayout.stride;
+    if (flags != 0u || stride != 0u) {
+        return IWI_STATUS_UNSUPPORTED_STORAGE;
+    }
+    if (!EncodingIsRaw(f->payloadEncoding)) {
+        return IWI_STATUS_UNSUPPORTED_ENCODING;
+    }
 
     /*
      * Presentation limit, not a container limit.  Only 3 and 4 components have
@@ -435,10 +459,11 @@ void iwi_file_free(void* blob)
  *
  * Two things these strings must do, and one of them is a contract:
  *
- *   - separate corruption from capability.  "not an IWI container" is a
- *     different sentence from "valid IWI, but this build cannot display it",
- *     and a user who sees the second should not go looking for a corrupt file
- *     or a re-download.
+ *   - report the fact, not the verdict.  These strings say what is wrong with
+ *     the file; whether that reads as "corrupt" or as "cannot display" depends
+ *     on the front end, so the front end composes the sentence.  The loader
+ *     prefixes "corrupt file: " or "valid IWI file, but this viewer cannot
+ *     display it: ..." accordingly.
  *
  *   - keep the words "magic", "planar", "offset", "header", "8-bit",
  *     "addressable" and "dimensions" in the messages for their statuses.  The
@@ -460,6 +485,8 @@ const char* iwi_status_message(int status)
         return "not an IWI container (magic mismatch)";
     case IWI_STATUS_ZERO_DIMENSION:
         return "IWI dimensions are zero; an image needs a non-zero width and height";
+    case IWI_STATUS_NO_COMPONENTS:
+        return "IWI declares no components; a container needs at least one";
     case IWI_STATUS_GEOMETRY_TOO_LARGE:
         return "IWI geometry overflows the addressable range";
     case IWI_STATUS_PAYLOAD_TRUNCATED:
@@ -473,26 +500,24 @@ const char* iwi_status_message(int status)
 
     /* ---- unsupported: a valid IWI this build cannot display ---- */
     case IWI_STATUS_UNSUPPORTED:
-        return "valid IWI, but it uses a feature this build does not support";
+        return "it uses a feature this build does not support";
     case IWI_STATUS_UNSUPPORTED_ENCODING:
-        return "valid IWI, but its payload encoding is not one this build "
-               "decodes; only \"raw\" is supported";
+        return "payload encoding is not one this build decodes; only \"raw\" "
+               "is supported";
     case IWI_STATUS_UNSUPPORTED_STORAGE:
-        return "valid IWI, but its storage layout is planar, columnar, "
-               "mirrored or stride-aligned; this build reads only interleaved, "
-               "tightly packed rows";
+        return "storage layout is planar, columnar, mirrored or stride-aligned; "
+               "this build reads only interleaved, tightly packed rows";
     case IWI_STATUS_UNSUPPORTED_COMPONENT_COUNT:
-        return "valid IWI, but this viewer displays only 3- or 4-component "
-               "RGB(A) rasters; grayscale and multi-band component counts have "
-               "no RGBA form";
+        return "component count has no RGBA form; only 3- or 4-component RGB(A) "
+               "rasters are displayed, so grayscale and multi-band captures are "
+               "not shown";
     case IWI_STATUS_UNSUPPORTED_COMPONENT_CLASS:
-        return "valid IWI, but its component class is not integer or unsigned "
-               "normalised data";
+        return "component class is not integer or unsigned-normalised data";
     case IWI_STATUS_UNSUPPORTED_BIT_DEPTH:
-        return "valid IWI, but its component bit depth is not 8-bit; 16-bit "
-               "and wider samples are not displayed by this build";
+        return "component bit depth is not 8-bit; 16-bit and wider samples are "
+               "not displayed";
     case IWI_STATUS_UNEXPECTED_SEMANTIC:
-        return "valid IWI, but its component semantics are not an RGB(A) raster";
+        return "component semantics are not an RGB(A) raster";
     }
     return "unknown IWI status";
 }

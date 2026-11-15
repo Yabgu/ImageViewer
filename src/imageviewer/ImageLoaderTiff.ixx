@@ -172,26 +172,23 @@ ImagePluginResult DecodeTiff(TIFF* handle)
         const bool supportsNativeScanline =
             (isGrayPhotometric || isRgbPhotometric) && (planarConfig == PLANARCONFIG_CONTIG);
 
-        // Determine channel order for native scanline decoding.
         // Build the IWImageFormat for the native-scanline path.
         // (The tiled/fallback path always produces 8-bit RGBA via libtiff.)
-        static thread_local IWComponentDef nativeComps[4];
+        //
+        // This used to fill a `static thread_local IWComponentDef nativeComps[4]`
+        // and hand its address to the caller.  Two TIFFs loaded on one thread
+        // therefore shared one table, and the second load silently rewrote the
+        // first image's descriptor - the image data stayed correct while the
+        // thing describing it changed underneath.  The table is now one of the
+        // static-storage sets from ImagePluginDef.h, chosen by the (shape,
+        // class, width) the file declares, so it is immutable and needs no
+        // lifetime management at all.
         auto BuildNativeFormat = [&](int nComponents, bool alpha) -> IWImageFormat {
             IWImageFormat f = {};
             f.componentCount = static_cast<uint16_t>(nComponents);
             f.bitsPerPixel   = static_cast<uint16_t>(nComponents * componentBitWidth);
-            if (isGrayPhotometric) {
-                nativeComps[0] = { IW_COMPONENT_SEMANTIC_GRAY, componentClass, 0, componentBitWidth };
-                if (alpha)
-                    nativeComps[1] = { IW_COMPONENT_SEMANTIC_A, componentClass, componentBitWidth, componentBitWidth };
-            } else {
-                nativeComps[0] = { IW_COMPONENT_SEMANTIC_R, componentClass, static_cast<uint16_t>(0 * componentBitWidth), componentBitWidth };
-                nativeComps[1] = { IW_COMPONENT_SEMANTIC_G, componentClass, static_cast<uint16_t>(1 * componentBitWidth), componentBitWidth };
-                nativeComps[2] = { IW_COMPONENT_SEMANTIC_B, componentClass, static_cast<uint16_t>(2 * componentBitWidth), componentBitWidth };
-                if (alpha)
-                    nativeComps[3] = { IW_COMPONENT_SEMANTIC_A, componentClass, static_cast<uint16_t>(3 * componentBitWidth), componentBitWidth };
-            }
-            f.components = nativeComps;
+            f.components = iw::ComponentTable(isGrayPhotometric, alpha,
+                                              componentClass, componentBitWidth);
             return f;
         };
 

@@ -23,6 +23,70 @@ struct Image {
     IWImageFormat   format     = {};
     std::vector<IWComponentDef> components;
     std::vector<uint8_t> pixelData;
+
+    /*
+     * `format.components` points into `components`, so every copy and move has
+     * to re-point it.  Without these the default copy leaves it aimed at the
+     * source's vector, and the descriptor dangles the moment the source dies -
+     * or, worse, keeps reading the source's storage while the destination
+     * believes it owns its own.
+     *
+     * This is the same shape Image.ixx uses (componentStorage_) for the viewer's
+     * copy of this type; see the ownership rule in ImagePluginDef.h.
+     */
+    Image() = default;
+
+    Image(const Image& other) { CopyFrom(other); }
+    Image(Image&& other) noexcept { MoveFrom(std::move(other)); }
+
+    Image& operator=(const Image& other)
+    {
+        if (this != &other) {
+            CopyFrom(other);
+        }
+        return *this;
+    }
+
+    Image& operator=(Image&& other) noexcept
+    {
+        if (this != &other) {
+            MoveFrom(std::move(other));
+        }
+        return *this;
+    }
+
+private:
+    /* The one place `format.components` is set from the owned storage. */
+    void RebindComponents() noexcept
+    {
+        format.components = components.empty() ? nullptr : components.data();
+    }
+
+    void CopyFrom(const Image& other)
+    {
+        width      = other.width;
+        height     = other.height;
+        colorSpace = other.colorSpace;
+        format     = other.format;
+        components = other.components;
+        pixelData  = other.pixelData;
+        RebindComponents();
+    }
+
+    void MoveFrom(Image&& other) noexcept
+    {
+        width      = other.width;
+        height     = other.height;
+        colorSpace = other.colorSpace;
+        format     = other.format;
+        components = std::move(other.components);
+        pixelData  = std::move(other.pixelData);
+        RebindComponents();
+
+        /* The moved-from object still reports its old count; null its pointer
+         * so a stray read is a null dereference rather than a dangling one. */
+        other.format.components = nullptr;
+    }
 };
 
 // ── Builder ───────────────────────────────────────────────────────────────────

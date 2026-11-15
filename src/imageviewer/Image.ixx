@@ -49,7 +49,7 @@ private:
 	 *              (each plane has this stride; total size = stride × height × componentCount) */
 	static int ComputeStride(int width, const IWImageFormat& fmt) noexcept
 	{
-		if (fmt.storageLayout == IW_STORAGE_PLANAR && fmt.componentCount > 0u) {
+		if (fmt.storageLayout.isPlanar() && fmt.componentCount > 0u) {
 			// Planar: stride is the byte-width of one row of a single component plane.
 			// bitsPerPixel is the total across all components; divide to get per-component.
 			// Integer division rounds down — if components have unequal widths the caller
@@ -63,7 +63,7 @@ private:
 
 	static size_t ComputeSize(int height, int stride, const IWImageFormat& fmt) noexcept
 	{
-		if (fmt.storageLayout == IW_STORAGE_PLANAR)
+		if (fmt.storageLayout.isPlanar())
 			return static_cast<size_t>(height) * stride * fmt.componentCount;
 		return static_cast<size_t>(height) * stride;
 	}

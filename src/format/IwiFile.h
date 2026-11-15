@@ -234,6 +234,7 @@ typedef enum IwiFileStatus {
     IWI_STATUS_PAYLOAD_TRUNCATED = 6,
     IWI_STATUS_COMPONENT_LAYOUT = 7,   /* bitOffset / bitWidth disagree with position */
     IWI_STATUS_ENOSPC = 8,             /* caller's buffer smaller than required       */
+    IWI_STATUS_NO_COMPONENTS = 17,     /* componentCount == 0: describes no pixels    */
 
     /* Valid container, unsupported feature */
     IWI_STATUS_UNSUPPORTED_ENCODING = 9,
@@ -326,6 +327,9 @@ int iwi_parse_structural(IwiFileHeader* out, size_t out_size,
  * Sniff a buffer without parsing it: does it start with the IWI magic, and if
  * so how many component records does it announce?
  *
+ * Called by the shell thumbnail provider, which must know how large a table to
+ * read before it can parse anything.
+ *
  * For a reader that must decide how much to read before it parses anything -
  * the shell thumbnail provider reads a head sized by the component table.  It
  * exists so no second file has to know that the count is a little-endian u16 at
@@ -339,6 +343,9 @@ int iwi_file_peek_components(const uint8_t* bytes, size_t len, uint16_t* out_cou
 
 /*
  * Is the payload encoding the one this build reads?
+ *
+ * Called by both policies - the viewer's in IwiFormat.ixx and the converter's
+ * in IWImageIO.ixx - so the eight-byte comparison exists once.
  *
  * The container's encoding field is eight bytes and holds a codec name.  This
  * compares the whole field, not a prefix: "rawgarba" is not "raw", and a

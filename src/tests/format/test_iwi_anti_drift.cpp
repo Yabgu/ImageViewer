@@ -401,9 +401,14 @@ void CheckCapabilityDivergence(const char* name,
                   "policy must refuse '" << name << "' with the specific code");
     CHECK(iwi_status_is_unsupported(policy) != 0);
 
+    /*
+     * The library reports the fact - what the file does that this build cannot
+     * handle.  Whether that is phrased as "corrupt" or as "valid, cannot
+     * display" is the front end's sentence, composed in ImageLoaderIWI and
+     * asserted in test_imageloader_iwi.cpp.  Here the requirement is that the
+     * message names the feature rather than staying generic.
+     */
     const char* msg = iwi_status_message(policy);
-    CHECK_MESSAGE(std::strstr(msg, "valid IWI") != nullptr,
-                  "the refusal for '" << name << "' must say the file is valid");
     CHECK_MESSAGE(std::strstr(msg, feature) != nullptr,
                   "the refusal for '" << name << "' must name the feature ("
                   << feature << ")");

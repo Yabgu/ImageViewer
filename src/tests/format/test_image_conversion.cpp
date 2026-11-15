@@ -333,3 +333,84 @@ TEST_SUITE("IWI format: serialization")
                           pixels.data(), pixels.size()) == 0);
     }
 }
+
+
+/*
+ * ── The descriptor survives a copy ─────────────────────────────────────────
+ *
+ * `IWImageFormat.components` is a borrowed pointer.  iw::Image owns its own
+ * table, so every copy has to re-point the descriptor at the copy's storage -
+ * otherwise the destination keeps reading the source's vector, which is a
+ * dangling pointer once the source dies and a silent aliasing bug before that.
+ *
+ * The test copies, destroys the source, and then reads through the copy's
+ * descriptor.  Under the old default copy the pointer would still be aimed at
+ * the freed source.
+ */
+TEST_CASE("Copying an Image leaves the copy's descriptor pointing at itself")
+{
+    static constexpr IWComponentDef kRgb[3] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 }
+    };
+
+    const std::vector<uint8_t> pixels = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+    const IWImageFormat fmt(3, 24, IW_STORAGE_INTERLEAVED, kRgb);
+
+    /*
+     * Copy-assign from a live source, then let it die.  Written as an explicit
+     * assignment rather than `Image copy = source;` on purpose: a return or an
+     * initialisation from a local can be elided, and an elided copy never
+     * exercises the bug this test exists for.
+     */
+    iw::Image copy;
+    {
+        const iw::Image source = iw::BuildImage(2, 2, IMAGE_COLOR_SPACE_SRGB,
+                                                fmt, pixels.data(), pixels.size());
+        copy = source;
+    }
+
+    REQUIRE(copy.format.components != nullptr);
+    REQUIRE(copy.format.components != kRgb);   /* it owns a copy, not the global */
+
+    /* Read through the descriptor after the source is gone. */
+    CHECK(copy.format.components[0].semantic == IW_COMPONENT_SEMANTIC_R);
+    CHECK(copy.format.components[1].bitOffset == 8);
+    CHECK(copy.format.components[2].bitWidth  == 8);
+
+    /* And the storage is the destination's own. */
+    CHECK(copy.format.components == copy.components.data());
+}
+
+TEST_CASE("Assigning one Image over another re-points the descriptor")
+{
+    static constexpr IWComponentDef kGray[1] = {
+        { IW_COMPONENT_SEMANTIC_GRAY, IW_COMPONENT_CLASS_UNORM, 0, 8 }
+    };
+    static constexpr IWComponentDef kRgba[4] = {
+        { IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_CLASS_UNORM,  0, 8 },
+        { IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_CLASS_UNORM,  8, 8 },
+        { IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_CLASS_UNORM, 16, 8 },
+        { IW_COMPONENT_SEMANTIC_A, IW_COMPONENT_CLASS_UNORM, 24, 8 }
+    };
+
+    const std::vector<uint8_t> grayPixels(4, 0x20);
+    const std::vector<uint8_t> rgbaPixels(16, 0x40);
+
+    iw::Image dst = iw::BuildImage(2, 2, IMAGE_COLOR_SPACE_SRGB,
+                                   IWImageFormat(1, 8, IW_STORAGE_INTERLEAVED, kGray),
+                                   grayPixels.data(), grayPixels.size());
+    {
+        const iw::Image src = iw::BuildImage(2, 2, IMAGE_COLOR_SPACE_SRGB,
+                                             IWImageFormat(4, 32, IW_STORAGE_INTERLEAVED, kRgba),
+                                             rgbaPixels.data(), rgbaPixels.size());
+        dst = src;
+    }
+
+    REQUIRE(dst.format.components != nullptr);
+    CHECK(dst.format.components == dst.components.data());
+    CHECK(dst.format.componentCount == 4u);
+    CHECK(dst.format.components[3].semantic == IW_COMPONENT_SEMANTIC_A);
+    CHECK(dst.format.components[3].bitOffset == 24);
+}

@@ -146,7 +146,29 @@ ImagePluginResult DecodeIwi(const Source& src)
             parsed.status == iwi::IwiStatus::GeometryTooLarge
                 ? IMAGE_PLUGIN_ALLOC_ERROR
                 : IMAGE_PLUGIN_DECODE_ERROR;
-        return Fail(code, parsed.reason);
+
+        /*
+         * Two different sentences, because they call for two different actions.
+         *
+         * A corrupt file is the user's problem to re-obtain; a valid file this
+         * build cannot display is not, and telling them it is corrupt sends
+         * them looking for a re-download that will not help.  The parser says
+         * which case it is; the wording is the front end's job, so it is
+         * composed here rather than in the library.
+         */
+        char message[512];
+        if (parsed.unsupported())
+        {
+            std::snprintf(message, sizeof(message),
+                          "valid IWI file, but this viewer cannot display it: "
+                          "%s (try iwconv for conversion)", parsed.reason);
+        }
+        else
+        {
+            std::snprintf(message, sizeof(message),
+                          "corrupt file: %s", parsed.reason);
+        }
+        return Fail(code, message);
     }
 
     const iwi::IwiHeader& header = parsed.header;

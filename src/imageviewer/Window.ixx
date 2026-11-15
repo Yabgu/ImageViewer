@@ -993,7 +993,7 @@ private:
 
 	static bool IsPackedRgba8(const IWImageFormat& f) noexcept
 	{
-		if (f.storageLayout != IW_STORAGE_INTERLEAVED) return false;
+		if (!f.storageLayout.isInterleavedTight()) return false;
 		if (f.componentCount != 4u || f.bitsPerPixel != 32u) return false;
 		static const IWComponentSemantic kOrder[4] = {
 			IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_SEMANTIC_G,
@@ -1011,7 +1011,7 @@ private:
 
 	static bool IsPackedRgb8(const IWImageFormat& f) noexcept
 	{
-		if (f.storageLayout != IW_STORAGE_INTERLEAVED) return false;
+		if (!f.storageLayout.isInterleavedTight()) return false;
 		if (f.componentCount != 3u || f.bitsPerPixel != 24u) return false;
 		static const IWComponentSemantic kOrder[3] = {
 			IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_SEMANTIC_G, IW_COMPONENT_SEMANTIC_B
@@ -1028,7 +1028,7 @@ private:
 
 	static bool IsPackedGray8(const IWImageFormat& f) noexcept
 	{
-		return f.storageLayout == IW_STORAGE_INTERLEAVED &&
+		return f.storageLayout.isInterleavedTight() &&
 		       f.componentCount == 1u && f.bitsPerPixel == 8u &&
 		       f.components[0].semantic       == IW_COMPONENT_SEMANTIC_GRAY &&
 		       f.components[0].componentClass == IW_COMPONENT_CLASS_UNORM &&

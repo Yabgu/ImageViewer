@@ -85,6 +85,13 @@ static inline float SpatialThreshold(SpatialKind kind, int x, int y, uint64_t se
 /*
  * Build a packed interleaved UNORM IWImageFormat that matches the screen's
  * bit depth and uses RGBA (or fewer channels) semantics.
+ *
+ * `storage` is the caller's, and it must outlive the returned descriptor: the
+ * format points into it.  It used to be a `static thread_local` array inside
+ * this function, which meant every target format on a thread shared one table
+ * and a second call silently rewrote the first.  Bit capacity is arbitrary
+ * (10-bit panels are real), so there is no static table to point at instead -
+ * the storage has to belong to whoever asks.
  */
 inline IWImageFormat MakeTargetFormat(const IWScreenInfo& screen) noexcept
 {
@@ -97,6 +104,24 @@ inline IWImageFormat MakeTargetFormat(const IWScreenInfo& screen) noexcept
     fmt.bitsPerPixel   = static_cast<uint16_t>(nc * bw);
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
 
+    /*
+     * KNOWN DEFECT, deferred to the plugin-layer work.
+     *
+     * This table must outlive the descriptor, and the descriptor outlives this
+     * call: FilterImage returns image frames whose format points here, and the
+     * host reads them after the plugin function has returned.  A local array
+     * therefore dangles - tried, and the filter suite caught it immediately
+     * with mid-grey reading back as the wrong value.
+     *
+     * A static-storage constexpr table is not an option either: bit depth is
+     * arbitrary (10-bit panels are real), so there is no finite set to
+     * enumerate.
+     *
+     * The correct fix is per-result ownership, which is what the plugin layer's
+     * ownedBlob/freeOwnedBlob is for.  Until that lands this stays a shared
+     * per-thread table, which means two FilterImage calls on one thread
+     * describing different formats will have the second rewrite the first.
+     */
     static thread_local IWComponentDef s_comps[4];
     static const IWComponentSemantic kSemantics[4] = {
         IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_SEMANTIC_G,

@@ -567,6 +567,82 @@ int main()
                   == IWI_STATUS_PAYLOAD_TRUNCATED,
               "16-bit file short by its extra bytes is refused");
     }
+    /* --- the decoder refuses layouts it would otherwise misread ---------- */
+    /*
+     * iwi_decode reads the payload as tightly packed interleaved bytes.  The
+     * grammar accepts planar, columnar and strided files because they are legal
+     * IWI, so the DECODER is the layer that must refuse them - otherwise it
+     * returns a success code and wrong pixels, which is worse than an error.
+     */
+    {
+        struct Case { const char* name; uint32_t flags; uint32_t stride; };
+        const Case cases[] = {
+            { "planar",          static_cast<uint32_t>(IW_STORAGE_FLAG_PLANAR),       0u },
+            { "columnar",        static_cast<uint32_t>(IW_STORAGE_FLAG_COLUMNAR),     0u },
+            { "flip-x",          static_cast<uint32_t>(IW_STORAGE_FLAG_FLIP_X),       0u },
+            { "flip-y",          static_cast<uint32_t>(IW_STORAGE_FLAG_FLIP_Y),       0u },
+            { "stride-8bit",     static_cast<uint32_t>(IW_STORAGE_FLAG_STRIDE_8BIT),  0u },
+            { "stride-16bit",    static_cast<uint32_t>(IW_STORAGE_FLAG_STRIDE_16BIT), 0u },
+            { "stride-32bit",    static_cast<uint32_t>(IW_STORAGE_FLAG_STRIDE_32BIT), 0u },
+            { "stride declared", 0u,                                                 64u },
+            { "planar|columnar", static_cast<uint32_t>(IW_STORAGE_FLAG_PLANAR) |
+                                 static_cast<uint32_t>(IW_STORAGE_FLAG_COLUMNAR),     0u },
+        };
+
+        for (const Case& c : cases) {
+            Spec spec;
+            spec.storageFlags  = c.flags;
+            spec.storageStride = c.stride;
+
+            const std::vector<uint8_t> file = MakeIwi(spec);
+            std::vector<uint8_t> blob = AllocBlob(iwi_file_required_size(file.data(), file.size()));
+
+            /* Grammar: a layout is not a grammar question. */
+            check(iwi_parse_structural(AsHeader(blob), blob.size(), file.data(), file.size())
+                      == IWI_STATUS_OK,
+                  "layout is grammatically valid");
+
+            std::vector<uint8_t> rgba(static_cast<std::size_t>(spec.width) * spec.height * 4u, 0);
+            const int drc = iwi_decode(AsHeader(blob), file.data(), file.size(),
+                                       rgba.data(), rgba.size());
+            check(drc == IWI_STATUS_UNSUPPORTED_STORAGE,
+                  "decoder refuses a layout it would misread");
+            check(iwi_status_is_unsupported(drc) != 0,
+                  "a refused layout is a capability answer, not corruption");
+        }
+    }
+
+    /* --- the decoder refuses a codec it cannot read ---------------------- */
+    {
+        Spec spec;
+        spec.encodingGarbage = true;
+        const std::vector<uint8_t> file = MakeIwi(spec);
+        std::vector<uint8_t> blob = AllocBlob(iwi_file_required_size(file.data(), file.size()));
+        check(iwi_parse_structural(AsHeader(blob), blob.size(), file.data(), file.size())
+                  == IWI_STATUS_OK,
+              "grammar accepts any codec name");
+
+        std::vector<uint8_t> rgba(static_cast<std::size_t>(spec.width) * spec.height * 4u, 0);
+        check(iwi_decode(AsHeader(blob), file.data(), file.size(), rgba.data(), rgba.size())
+                  == IWI_STATUS_UNSUPPORTED_ENCODING,
+              "decoder refuses a codec it cannot decode");
+    }
+
+    /* --- zero components is malformed, not unsupported ------------------- */
+    {
+        Spec spec;
+        spec.components = 0;
+        const std::vector<uint8_t> file = MakeIwi(spec);
+
+        std::vector<uint8_t> blob = AllocBlob(64);
+        const int rc = iwi_parse_structural(AsHeader(blob), blob.size(),
+                                            file.data(), file.size());
+        check(rc == IWI_STATUS_NO_COMPONENTS, "zero components is malformed");
+        check(iwi_status_is_unsupported(rc) == 0,
+              "a container with no pixel format is not a capability gap");
+        checkMessage(rc, "component", "the message names the component count");
+    }
+
     if (failures != 0) {
         std::printf("%d check(s) failed\n", failures);
         return 1;

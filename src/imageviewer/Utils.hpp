@@ -36,7 +36,7 @@ inline bool ValidateImageFormat(const IWImageFormat& fmt,
             return fail("component bitWidth is 0");
     }
 
-    if (fmt.storageLayout == IW_STORAGE_INTERLEAVED) {
+    if (fmt.storageLayout.isInterleavedTight()) {
         for (uint16_t i = 0u; i < fmt.componentCount; ++i) {
             const uint32_t end = static_cast<uint32_t>(fmt.components[i].bitOffset)
                                + fmt.components[i].bitWidth;
@@ -92,7 +92,7 @@ inline IWGLUploadHint ClassifyGLUpload(const IWImageFormat& fmt) noexcept
 {
     const IWGLUploadHint INVALID = {};   /* zero-init → valid=false */
 
-    if (fmt.storageLayout != IW_STORAGE_INTERLEAVED) return INVALID;
+    if (!fmt.storageLayout.isInterleavedTight()) return INVALID;
 
     const uint16_t n = fmt.componentCount;
     if (n == 0u || n > 4u) return INVALID;

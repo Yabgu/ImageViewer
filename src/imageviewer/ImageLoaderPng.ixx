@@ -214,7 +214,11 @@ ImagePluginResult DecodePng(const Source& src)
             fmt.components = (bw == 16) ? iw::kGray16Components : iw::kGray8Components;
             break;
         case PNG_COLOR_TYPE_GRAY_ALPHA:
-            fmt.components = iw::kGrayAlpha8Components;
+            /* `bw` honoured like every other case.  A 16-bit gray+alpha PNG is
+             * two 16-bit samples at bit offsets 0 and 16; handing it the 8-bit
+             * table described pixels the file does not contain. */
+            fmt.components = (bw == 16) ? iw::kGrayAlpha16Components
+                                        : iw::kGrayAlpha8Components;
             break;
         case PNG_COLOR_TYPE_RGBA:
             fmt.components = (bw == 16) ? iw::kRgba16Components : iw::kRgba8Components;

@@ -92,7 +92,7 @@ static void SetError(const char* msg) noexcept
  */
 static pixman_format_code_t GetPixmanFormat(const IWImageFormat& fmt) noexcept
 {
-    if (fmt.storageLayout != IW_STORAGE_INTERLEAVED) return (pixman_format_code_t)0;
+    if (!fmt.storageLayout.isInterleavedTight()) return (pixman_format_code_t)0;
 
     const uint16_t nc = fmt.componentCount;
     if (nc == 0 || nc > 4) return (pixman_format_code_t)0;
@@ -226,8 +226,8 @@ static bool PixmanConvert(const ImagePluginData& src,
 static bool IsExactCodeMapping(const ImagePluginData& src,
                                const ImagePluginData& dst) noexcept
 {
-    if (src.format.storageLayout != IW_STORAGE_INTERLEAVED ||
-        dst.format.storageLayout != IW_STORAGE_INTERLEAVED)
+    if (!src.format.storageLayout.isInterleavedTight() ||
+        !dst.format.storageLayout.isInterleavedTight())
         return false;
 
     /* pixman_image_create_bits() requires 4-byte-aligned row strides.  Both

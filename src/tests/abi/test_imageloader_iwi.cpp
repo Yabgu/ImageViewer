@@ -389,3 +389,54 @@ TEST_SUITE("IWI loader ABI: header refusals")
                                                    bytes.begin() + 30));
     }
 }
+
+
+/*
+ * ── What the user is told ──────────────────────────────────────────────────
+ *
+ * Two failures that used to read the same now read differently, because they
+ * need different actions.  "Corrupt" means re-obtain the file; "valid, cannot
+ * display" means re-obtaining will not help.
+ */
+TEST_SUITE("IWI loader ABI: error messages")
+{
+    TEST_CASE("A valid file this viewer cannot display says so and points at iwconv")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+
+        /* Two components: a well-formed container with no RGBA form. */
+        const std::string reason = RefusedReason(plugin, MakeIwi(2, 2, 2));
+
+        INFO("message: " << reason);
+        CHECK(reason.find("valid IWI file, but this viewer cannot display") != std::string::npos);
+        CHECK(reason.find("iwconv") != std::string::npos);
+        CHECK(reason.find("corrupt") == std::string::npos);
+    }
+
+    TEST_CASE("A corrupt file is reported as corrupt, not as a display limitation")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+
+        std::vector<uint8_t> bytes = MakeIwi(2, 2, 4);
+        bytes[0] = 'X';                    /* magic */
+        const std::string reason = RefusedReason(plugin, bytes);
+
+        INFO("message: " << reason);
+        CHECK(reason.find("corrupt file:") != std::string::npos);
+        CHECK(reason.find("magic") != std::string::npos);
+        CHECK(reason.find("iwconv") == std::string::npos);
+    }
+
+    TEST_CASE("A truncated file is corrupt, and still names the header")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+
+        std::vector<uint8_t> bytes = MakeIwi(2, 2, 4);
+        bytes.resize(10);
+        const std::string reason = RefusedReason(plugin, bytes);
+
+        INFO("message: " << reason);
+        CHECK(reason.find("corrupt file:") != std::string::npos);
+        CHECK(reason.find("header") != std::string::npos);
+    }
+}
