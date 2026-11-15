@@ -202,22 +202,40 @@ if(WIN32 AND IMAGEVIEWER_BUILD_THUMBNAIL_PROVIDER)
 
 # The portable half: header parsing, decimation and colour handling, with no
 # COM in it.  The tests import this, so it is a target of its own.
+# The viewer's .iwi policy layer, on its own.
+#
+# IwiFormat.ixx is the caller-facing answer to "can this viewer display this
+# file": the grammar (from src/format) plus ImageViewer's capability rules,
+# which is why it lives here and not with the format library.  It is split out
+# of iw_iwi_thumbnail because it has no COM in it: the format tests import it,
+# and they must not have to link a Win32 module to do that.
+add_library(iw_iwi_format STATIC)
+
+target_sources(iw_iwi_format PUBLIC
+    FILE_SET iwi_format_policy TYPE CXX_MODULES
+    FILES
+        IwiFormat.ixx
+)
+
+# IwiFormat.ixx includes IwiFile.h and ImagePluginDef.h from its global module
+# fragment; iw_iwi_file exports both directories.
+target_link_libraries(iw_iwi_format PUBLIC iw_iwi_file)
+set_property(TARGET iw_iwi_format PROPERTY CXX_STANDARD 23)
+
 add_library(iw_iwi_thumbnail STATIC)
 
 target_sources(iw_iwi_thumbnail PUBLIC
     FILE_SET iwi_thumbnail TYPE CXX_MODULES
     FILES
-        IwiFormat.ixx
         shell/IwiThumbnail.ixx
         shell/ThumbnailProviderIds.ixx
 )
 
-# IwiFormat.ixx includes IwiFile.h from its global module fragment.
 target_include_directories(iw_iwi_thumbnail PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(iw_iwi_thumbnail PUBLIC iw_iwi_file)
+target_link_libraries(iw_iwi_thumbnail PUBLIC iw_iwi_format)
 set_property(TARGET iw_iwi_thumbnail PROPERTY CXX_STANDARD 23)
 
 # The COM wrapper.  Exports DllGetClassObject and DllCanUnloadNow, nothing
@@ -316,7 +334,6 @@ target_sources(ImageLoaderIWI PUBLIC
     FILE_SET iwiloader TYPE CXX_MODULES
     FILES
         ImageLoaderIWI.ixx
-        IwiFormat.ixx
 )
 set_property(TARGET ImageLoaderIWI PROPERTY CXX_STANDARD 23)
 
@@ -325,9 +342,9 @@ target_include_directories(ImageLoaderIWI PRIVATE
 )
 
 # The loader and the shell thumbnail provider must accept exactly the same
-# files, and they do: both import IwiFormat, which delegates to the parser in
-# IwiFile.cpp.  There is one implementation of the accept/reject rules.
-target_link_libraries(ImageLoaderIWI PRIVATE iw_iwi_file)
+# files, and they do: both import IwiFormat, which is the viewer policy over the
+# grammar in src/format/IwiFile.cpp.  There is one implementation of each.
+target_link_libraries(ImageLoaderIWI PRIVATE iw_iwi_format)
 
 # WebP Plugin DLL — only when libwebp is available
 if(WebP_FOUND)

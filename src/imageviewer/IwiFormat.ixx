@@ -167,6 +167,91 @@ inline void CopyReason(char (&dest)[192], int rc) noexcept
 }
 
 
+/*
+ * This build's capability policy, applied to a header the grammar accepted.
+ *
+ * Everything here is a statement about what ImageViewer can put on a screen,
+ * not about what an IWI file may contain.  A 1-component 16-bit planar capture
+ * is a well-formed file; it is just not an RGBA raster.
+ *
+ * Order matters for the message a user sees.  Bit depth and class come before
+ * the count, so a 16-bit grayscale file is reported as "not 8-bit" rather than
+ * as an unremarkable count problem - the depth is the more specific fact.
+ */
+/* The storage flag bits this build implements.  Everything else is a layout
+ * this decoder does not apply, and accepting it silently would render the
+ * image transposed or mirrored with no error. */
+inline constexpr uint32_t kSupportedStorageFlags = 0u;
+
+inline int ApplyViewerPolicy(const IwiFileHeader* f) noexcept
+{
+    if (f == nullptr) {
+        return IWI_STATUS_NO_INPUT;
+    }
+
+    /*
+     * Storage layout is a bitmask, so this is a mask test plus an exact test,
+     * never an equality against one flag.  This build implements interleaved,
+     * tightly packed rows and nothing else; a declared stride would change the
+     * payload arithmetic, so a file that sets one is refused rather than
+     * silently read as if it were absent.
+     */
+    const uint32_t flags  = f->storageLayout.flags;
+    const uint32_t stride = f->storageLayout.stride;
+
+    if ((flags & static_cast<uint32_t>(IW_STORAGE_FLAG_PLANAR)) != 0u ||
+        flags != kSupportedStorageFlags ||
+        stride != 0u) {
+        return IWI_STATUS_UNSUPPORTED_STORAGE;
+    }
+
+    /* Payload codec: full-field compare.  "lz4" and "zstd" are valid container
+     * values this build cannot decode, and a name that merely starts with
+     * "raw" is not "raw". */
+    if (!iwi_payload_encoding_is_raw(f)) {
+        return IWI_STATUS_UNSUPPORTED_ENCODING;
+    }
+
+    const uint16_t n = f->componentCount;
+    const IwiFileComponent* comps = iwi_file_components(f);
+
+    for (uint16_t i = 0; i < n; ++i) {
+        if (comps[i].bitWidth != 8u) {
+            return IWI_STATUS_UNSUPPORTED_BIT_DEPTH;
+        }
+    }
+    for (uint16_t i = 0; i < n; ++i) {
+        if (comps[i].componentClass != static_cast<uint8_t>(IW_COMPONENT_CLASS_UINT) &&
+            comps[i].componentClass != static_cast<uint8_t>(IW_COMPONENT_CLASS_UNORM)) {
+            return IWI_STATUS_UNSUPPORTED_COMPONENT_CLASS;
+        }
+    }
+
+    /* Only 3 and 4 components have an RGBA form. */
+    if (n != 3u && n != 4u) {
+        return IWI_STATUS_UNSUPPORTED_COMPONENT_COUNT;
+    }
+
+    static const uint8_t kRequiredSemantics[4] = {
+        static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_R),
+        static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_G),
+        static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_B),
+        static_cast<uint8_t>(IW_COMPONENT_SEMANTIC_A)
+    };
+
+    for (uint16_t i = 0; i < n; ++i) {
+        if (comps[i].semantic != kRequiredSemantics[i]) {
+            return IWI_STATUS_UNEXPECTED_SEMANTIC;
+        }
+        if (comps[i].bitOffset != static_cast<uint16_t>(i * 8u)) {
+            return IWI_STATUS_COMPONENT_LAYOUT;
+        }
+    }
+
+    return IWI_STATUS_OK;
+}
+
+
 } // namespace detail
 
 /*
@@ -227,7 +312,7 @@ inline IwiParseResult ParseHeader(const uint8_t* bytes,
     int rc = iwi_parse_prefix(parsed, blob.size(), bytes, available,
                               static_cast<std::size_t>(containerSize));
     if (rc == IWI_STATUS_OK) {
-        rc = iwi_check_viewer_capabilities(parsed);
+        rc = detail::ApplyViewerPolicy(parsed);
     }
 
     result.nativeStatus = rc;

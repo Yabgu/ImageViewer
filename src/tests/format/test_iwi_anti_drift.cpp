@@ -37,6 +37,7 @@
 #include "IwiFile.h"
 
 import IWImageIO;
+import IwiFormat;
 
 namespace {
 
@@ -149,8 +150,8 @@ CApiResult ReadViaCApi(const std::vector<uint8_t>& bytes)
     CApiResult r;
     const std::size_t need = iwi_file_required_size(bytes.data(), bytes.size());
     r.blob.assign(need == 0 ? IWI_FILE_BASE_HEADER_BYTES : need, 0);
-    r.rc = iwi_parse(reinterpret_cast<IwiFileHeader*>(r.blob.data()),
-                     r.blob.size(), bytes.data(), bytes.size());
+    r.rc = iwi_parse_structural(reinterpret_cast<IwiFileHeader*>(r.blob.data()),
+                                r.blob.size(), bytes.data(), bytes.size());
     return r;
 }
 
@@ -388,8 +389,13 @@ void CheckCapabilityDivergence(const char* name,
                   << std::string(iwi_status_message(structural.rc)));
 
     /* 2. the viewer refuses it, as a capability rather than as corruption */
-    const int policy = iwi_parse(reinterpret_cast<IwiFileHeader*>(structural.blob.data()),
-                                 structural.blob.size(), bytes.data(), bytes.size());
+    /* 2. the viewer refuses it, as a capability rather than as corruption.
+     *    The policy is the viewer's and lives in IwiFormat, which is exactly
+     *    why this test can still assert it: the C library owns the grammar, the
+     *    viewer owns the answer to "can we display this". */
+    const iwi::IwiParseResult viewer =
+        iwi::ParseHeader(bytes.data(), bytes.size());
+    const int policy = viewer.nativeStatus;
     INFO("policy status: " << std::string(iwi_status_message(policy)));
     CHECK_MESSAGE(policy == expectedStatus,
                   "policy must refuse '" << name << "' with the specific code");
@@ -481,8 +487,8 @@ TEST_CASE("anti-drift: a codec neither reader decodes is refused by both policie
                   "grammar does not judge the codec: "
                   << std::string(iwi_status_message(structural.rc)));
 
-    const int policy = iwi_parse(reinterpret_cast<IwiFileHeader*>(structural.blob.data()),
-                                 structural.blob.size(), bytes.data(), bytes.size());
+    const iwi::IwiParseResult viewer = iwi::ParseHeader(bytes.data(), bytes.size());
+    const int policy = viewer.nativeStatus;
     CHECK(policy == IWI_STATUS_UNSUPPORTED_ENCODING);
     CHECK(iwi_status_is_unsupported(policy) != 0);
 

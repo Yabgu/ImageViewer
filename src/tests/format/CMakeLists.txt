@@ -14,6 +14,7 @@ set_property(TARGET iview_format_tests PROPERTY CXX_STANDARD 23)
 target_link_libraries(iview_format_tests PRIVATE
     iw_format
     iw_iwi_file
+    iw_iwi_format
     PNG::PNG
     doctest::doctest
 )

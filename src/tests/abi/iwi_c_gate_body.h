@@ -132,13 +132,9 @@ static int (*const gate_peek)(const uint8_t*, size_t, uint16_t*) =
 static int (*const gate_parse_structural)(IwiFileHeader*, size_t,
                                           const uint8_t*, size_t) =
     &iwi_parse_structural;
-static int (*const gate_parse)(IwiFileHeader*, size_t, const uint8_t*, size_t) =
-    &iwi_parse;
 static int (*const gate_parse_prefix)(IwiFileHeader*, size_t,
                                       const uint8_t*, size_t, size_t) =
     &iwi_parse_prefix;
-static int (*const gate_capabilities)(const IwiFileHeader*) =
-    &iwi_check_viewer_capabilities;
 static int (*const gate_encoding)(const IwiFileHeader*) =
     &iwi_payload_encoding_is_raw;
 static int (*const gate_decode)(const IwiFileHeader*, const uint8_t*, size_t,
@@ -156,8 +152,7 @@ int iwi_c_gate_touch(void)
         &iwi_file_components;
 
     return (int)(gate_required_size != 0) + (gate_peek != 0)
-         + (gate_parse_structural != 0) + (gate_parse != 0)
-         + (gate_parse_prefix != 0) + (gate_capabilities != 0)
+         + (gate_parse_structural != 0) + (gate_parse_prefix != 0)
          + (gate_encoding != 0) + (gate_decode != 0)
          + (gate_metadata != 0) + (gate_free != 0)
          + (gate_message != 0) + (gate_is_unsupported != 0)

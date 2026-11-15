@@ -52,7 +52,7 @@
  *
  *   size_t need = iwi_file_required_size(bytes, size);   // 36 + 6N, or 0
  *   IwiFileHeader* f = malloc(need);
- *   iwi_parse(f, need, bytes, size);                     // 0 on success
+ *   iwi_parse_structural(f, need, bytes, size);          // 0 on success
  *   const IwiFileComponent* c = iwi_file_components(f);  // walk the blob
  *   iwi_file_free(f);
  *
@@ -267,12 +267,12 @@ int iwi_status_is_unsupported(int status);
 /* -- API ------------------------------------------------------------------ */
 
 /*
- * Bytes the caller must allocate for iwi_parse to fill: the base header plus
+ * Bytes the caller must allocate for a parse to fill: the base header plus
  * one record per component, i.e. 36 + 6 * componentCount.
  *
  * Returns 0 when the base header is not readable (null, shorter than 36 bytes,
  * bad magic, or componentCount == 0).  That is enough to size the allocation;
- * full validation is iwi_parse's job.
+ * full validation is iwi_parse_structural's job.
  *
  * N is not capped.  A file declaring 200 components asks for 36 + 1200 bytes.
  */
@@ -290,16 +290,16 @@ size_t iwi_file_required_size(const uint8_t* bytes, size_t size);
  *                          can be rendered.  A 16-bit planar 700-component
  *                          file passes if its bytes are consistent.
  *
- *   iwi_parse              the grammar, then this build's capability policy:
- *                          3- or 4-component RGB(A), 8-bit, interleaved,
- *                          tightly packed, "raw" payload.  Fails with a
- *                          member of the unsupported family, never with a
- *                          malformed code.
+ * There is deliberately no policy function in this header.  A capability
+ * answer depends on what the consumer can do with the pixels, so it belongs to
+ * the consumer: ImageViewer's policy is in src/imageviewer/IwiFormat.ixx (3- or
+ * 4-component RGB(A), 8-bit, interleaved, raw), and the converter's is in
+ * src/format/IWImageIO.ixx, which additionally accepts grayscale, 16-bit and
+ * planar data because it carries the payload through rather than displaying it.
  *
- * A consumer that converts rather than displays wants the structural form and
- * its own policy - that is what iwconv does.  A consumer that renders wants
- * iwi_parse.  Collapsing the two is how the repository ended up with two
- * parsers that disagreed.
+ * This library is the format authority: one grammar, and every consumer
+ * applies its own policy on top.  Collapsing those into one function is how
+ * the repository ended up with two parsers that disagreed.
  * ------------------------------------------------------------------------- */
 
 /*
@@ -321,15 +321,6 @@ size_t iwi_file_required_size(const uint8_t* bytes, size_t size);
  */
 int iwi_parse_structural(IwiFileHeader* out, size_t out_size,
                          const uint8_t* bytes, size_t size);
-
-/*
- * The grammar, then this build's capability policy.
- *
- * Returns IWI_STATUS_OK, a malformed code, or a code for which
- * iwi_status_is_unsupported() is true.  This is what a viewer calls.
- */
-int iwi_parse(IwiFileHeader* out, size_t out_size,
-              const uint8_t* bytes, size_t size);
 
 /*
  * Sniff a buffer without parsing it: does it start with the IWI magic, and if
@@ -358,18 +349,6 @@ int iwi_file_peek_components(const uint8_t* bytes, size_t len, uint16_t* out_cou
 int iwi_payload_encoding_is_raw(const IwiFileHeader* f);
 
 /*
- * Apply this build's capability policy to a header already filled by a parse.
- *
- * Exists so a reader that had to use the prefix form - it holds a head rather
- * than the file - can apply the same policy without a second copy of the rules.
- * Reads the blob, including its component table.
- *
- * Returns IWI_STATUS_OK when the header is displayable, otherwise a member of
- * the unsupported family.
- */
-int iwi_check_viewer_capabilities(const IwiFileHeader* f);
-
-/*
  * The grammar over a head, where the bytes the caller actually holds are
  * separate from the size of the file they came from.
  *
@@ -380,8 +359,8 @@ int iwi_check_viewer_capabilities(const IwiFileHeader* f);
  * length would invite the validator to read past the buffer; passing the head
  * length as the container size would reject every file for having no payload.
  *
- * Grammar only: apply iwi_check_viewer_capabilities to the result if the
- * caller renders rather than converts.
+ * Grammar only.  A caller that renders must apply its own capability policy to
+ * the result - the viewer's lives in IwiFormat.ixx.
  *
  * The component table must be fully present in `head`, since it is read from
  * there.
