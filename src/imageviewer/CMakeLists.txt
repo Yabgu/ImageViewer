@@ -344,7 +344,16 @@ target_include_directories(ImageLoaderIWI PRIVATE
 # The loader and the shell thumbnail provider must accept exactly the same
 # files, and they do: both import IwiFormat, which is the viewer policy over the
 # grammar in src/format/IwiFile.cpp.  There is one implementation of each.
-target_link_libraries(ImageLoaderIWI PRIVATE iw_iwi_format)
+# PUBLIC, not PRIVATE, and an explicit ordering edge.
+#
+# ImageLoaderIWI imports IwiFormat, which iw_iwi_format provides.  A PRIVATE link
+# was enough for MSVC, which resolves an imported module through a /reference to
+# the .ifc, but GCC on Linux failed with "unknown compiled module interface: no
+# such module" - it needs the provider's BMI on the module path, which travels
+# with the interface of the linked target.  The explicit dependency removes the
+# question of whether the link alone implies the ordering.
+target_link_libraries(ImageLoaderIWI PUBLIC iw_iwi_format)
+add_dependencies(ImageLoaderIWI iw_iwi_format)
 
 # WebP Plugin DLL — only when libwebp is available
 if(WebP_FOUND)
