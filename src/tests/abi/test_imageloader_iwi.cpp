@@ -14,7 +14,7 @@
  * image.
  *
  * The fixtures are rgba_4x4.iwi and rgb_4x4.iwi, emitted by
- * fixtures/generate_format_fixtures.c with the same sample values as every
+ * fixtures/generate_format_fixtures.cpp with the same sample values as every
  * other format fixture:
  *
  *   R = 16 + 16*x,  G = 32 + 16*y,  B = 200 - 16*(x + y),  A = 240 + x

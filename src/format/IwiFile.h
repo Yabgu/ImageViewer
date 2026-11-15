@@ -96,6 +96,10 @@ extern "C" {
 #define IWI_PAYLOAD_ZSTD            "zstd"
 
 /*
+ * Format extension points: defined by the on-disk spec, consumed by no reader
+ * yet.  Do not delete; the tags and IwiMetaHeader are part of the container
+ * format.
+ *
  * Extensible metadata entry wire format.  An .iwi file may carry an optional
  * metadata blob of `metaBytes` bytes; when it does, the blob is a sequence of
  * (IwiMetaHeader, payload) records addressed by a four-character tag.
@@ -103,7 +107,13 @@ extern "C" {
  * These tags and the record header document the on-disk format for consumers
  * that want to read the blob.  This build parses `metaBytes` and exposes the
  * blob through iwi_file_metadata, but no loader consumes the contents yet -
- * they are format extension points, defined now so the tag values are stable.
+ * they are format extension points, defined now so the tag values are stable,
+ * and pinning them is what lets a writer emit one and a future reader agree on
+ * what it is.
+ *
+ * Both halves are pinned from both languages: test_abi_constants.cpp
+ * static_asserts each tag and sizeof(IwiMetaHeader), and the C11 gate body
+ * _Static_asserts the same values, so a value edited on one side fails a build.
  *
  * IWCameraMeta was removed: it is one specific payload shape rather than part
  * of the container grammar, and nothing ever read it.
@@ -147,12 +157,17 @@ typedef struct IwiFileComponent {
  * an aligned local of this type is neither UB nor an unaligned access.
  *
  * SIZE, and the one rule that follows from it: the last field ends at byte 36,
- * but sizeof(IwiFileHeader) is 40 because the structure's alignment is 8 and
- * it is padded to a multiple of that.  The trailing four bytes are padding,
- * not data.  Every copy of this header in IwiFile.cpp and IwiFormat.ixx is
- * therefore `memcpy(x, y, IWI_FILE_BASE_HEADER_BYTES)` and never
- * `memcpy(x, y, sizeof(IwiFileHeader))` - the latter would write four bytes
- * into the first component record, because the blob is exactly 36 + 6N bytes.
+ * but sizeof(IwiFileHeader) is 40 because the structure's alignment is 8 - the
+ * 64-bit layout descriptor's - and it is padded to a multiple of that.  The
+ * trailing four bytes are padding, not data.
+ *
+ * So: for any on-disk operation use IWI_FILE_BASE_HEADER_BYTES (36), never
+ * sizeof(IwiFileHeader) (40).  Every copy of this header in IwiFile.cpp and
+ * IwiFormat.ixx is therefore `memcpy(x, y, IWI_FILE_BASE_HEADER_BYTES)` and
+ * never `memcpy(x, y, sizeof(IwiFileHeader))` - the latter would write four
+ * bytes into the first component record, because the blob is exactly 36 + 6N
+ * bytes.  The struct is only 40 bytes wide so that a stack local of this type
+ * is naturally aligned; it is never the unit of I/O.
  * test_abi_constants.cpp pins every offset and asserts that the last field
  * ends at 36.
  */

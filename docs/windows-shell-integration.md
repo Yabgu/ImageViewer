@@ -82,16 +82,19 @@ already declares both and a module unit cannot redefine them).
 
 ## What the thumbnail does
 
-- Reads the 74-byte header first, then only the source rows the output grid
-  samples. A 4096×4096 RGBA `.iwi` is never fully allocated in `dllhost.exe`.
+- Reads the 36-byte base header plus 6 bytes per component (36 + 6N header
+  bytes), then `metaBytes` of metadata, then only the source rows the output
+  grid samples. A 4096×4096 RGBA `.iwi` is never fully allocated in
+  `dllhost.exe`.
 - Never upscales: a 4×4 `.iwi` stays 4×4.
 - Averages in linear light and encodes back to sRGB, so fine patterns do not
   come out too dark.
 - Output is 32bpp premultiplied BGRA; alpha type is `WTSAT_ARGB` for
   four-component files and `WTSAT_RGB` for three-component ones.
 - Accepts exactly what the viewer accepts: interleaved RGB8/RGBA8. Both read
-  the same header code (`IwiFormat.ixx`), and the ABI suite pins the viewer's
-  refusals independently.
+  the same header code — the C API in `src/format/IwiFile.cpp` — applied
+  through the viewer policy in `IwiFormat.ixx`, and the ABI suite pins the
+  viewer's refusals independently.
 
 Deliberately refused, so the icon is shown instead of a wrong picture:
 

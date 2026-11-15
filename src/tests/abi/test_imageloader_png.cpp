@@ -12,7 +12,7 @@
  * is easy; a memory path that is byte-for-byte the file path is the property
  * hosts that read assets out of a container actually depend on.
  *
- * The fixture is rgba_4x4.png, emitted by fixtures/generate_format_fixtures.c
+ * The fixture is rgba_4x4.png, emitted by fixtures/generate_format_fixtures.cpp
  * and checked in.  Its 4x4 pattern is
  *
  *   R = 16 + 16*x,  G = 32 + 16*y,  B = 200 - 16*(x + y),  A = 240 + x

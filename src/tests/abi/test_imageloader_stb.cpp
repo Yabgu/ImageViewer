@@ -3,7 +3,7 @@
  *
  * The stb plugin covers the formats libjpeg/libpng/libwebp do not: BMP, TGA,
  * GIF, PSD, HDR and PNM.  The fixture is a 24-bit BMP
- * (rgb_4x4.bmp, emitted by fixtures/generate_format_fixtures.c) because it is
+ * (rgb_4x4.bmp, emitted by fixtures/generate_format_fixtures.cpp) because it is
  * the format a mod or an editor asset is most likely to be:
  *
  *   R = 16 + 16*x,  G = 32 + 16*y,  B = 200 - 16*(x + y)

@@ -1,5 +1,5 @@
 /*
- * generate_format_fixtures.c — regenerates the non-JPEG fixtures in this
+ * generate_format_fixtures.cpp — regenerates the non-JPEG fixtures in this
  * directory.
  *
  * These are the inputs for the per-format ABI tests (test_imageloader_png.cpp,
@@ -8,12 +8,21 @@
  * known-property file whose decoded bytes can be compared between the file
  * path and the memory path, and against the numbers asserted below.
  *
- *   cc -O2 -o /tmp/gen_formats generate_format_fixtures.c \
+ *   c++ -O2 -I../../../imageviewer -o /tmp/gen_formats \
+ *       generate_format_fixtures.cpp \
  *       $(pkg-config --cflags --libs libpng libwebp libtiff-4)
  *   mkdir -p /tmp/fx && /tmp/gen_formats /tmp/fx
  *   for f in rgba_4x4.png lossless_4x4.webp rgb_4x4.tif rgb_4x4.bmp gif_4x4.gif; do
  *     cmp /tmp/fx/$f $f && echo "ok $f"
  *   done
+ *
+ * The -I is not optional: the IWI fixture stamps IMAGE_COLOR_SPACE_SRGB into the
+ * colour-space byte, and that enumerator lives in ImagePluginDef.h rather than
+ * being spelled as a literal here.  The generator used to reference it without
+ * including the header, which only compiled because nothing ever built this
+ * file -- it is a hand-run tool, not a CMake target.  Renaming it to .cpp and
+ * adding the include is what makes `c++ generate_format_fixtures.cpp` a real
+ * check instead of an assumption.
  *
  * All four fixtures encode the same 4x4 RGB pattern, so the RGB numbers the
  * tests assert are the same numbers for every format:
@@ -55,6 +64,11 @@
 #include <png.h>
 #include <tiffio.h>
 #include <webp/encode.h>
+
+/* IMAGE_COLOR_SPACE_SRGB, stamped into the IWI fixture's colour-space byte.
+ * Included rather than written as the literal 0 so the fixture follows the ABI
+ * enum instead of duplicating its value. */
+#include "ImagePluginDef.h"
 
 #define W 4
 #define H 4
@@ -105,7 +119,13 @@ static void put_u64le(uint8_t *p, uint64_t v)
 }
 
 /*
- * IWI: the 64-byte header ImageLoaderIWI parses, written field by field.
+ * IWI: the header ImageLoaderIWI parses, written field by field.
+ *
+ * The header is 36 bytes of base fields followed by 6 bytes per component, so
+ * 42 for a single component, 54 here for three and 60 for four -- not the fixed
+ * 64 this comment used to claim.  `headerBytes` below is derived from
+ * `components` for that reason, and the metadata that would follow the table is
+ * zero here (metaBytes = 0), so the payload starts at 36 + 6N.
  *
  * `components` is 3 (RGB, opaque) or 4 (RGBA, with the alpha ramp).  Both
  * fixtures carry exactly the same RGB samples as the other formats' fixtures,

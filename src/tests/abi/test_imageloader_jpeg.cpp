@@ -7,7 +7,7 @@
  * plugin, which is where the component-count policy lives.
  *
  * Fixtures are checked in under src/tests/abi/fixtures/ and generated once by
- * fixtures/generate_fixtures.c:
+ * fixtures/generate_fixtures.cpp:
  *
  *   gray_1comp.jpg    1 component  — 16x16 flat grayscale JPEG
  *   ycbcr_3comp.jpg   3 components — 16x16 flat YCbCr JPEG (RGB after conversion)

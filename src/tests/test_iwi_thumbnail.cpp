@@ -651,7 +651,7 @@ TEST_SUITE("IWI thumbnail: real files on disk")
      * readers: if ImageLoaderIWI and the thumbnail provider ever disagree about
      * a file, one of the two suites fails.
      *
-     * Their sample values (generate_format_fixtures.c):
+     * Their sample values (generate_format_fixtures.cpp):
      *   R = 16 + 16x, G = 32 + 16y, B = 200 - 16(x + y), A = 240 + x
      *
      * A 4x4 source is not scaled, and the sRGB round trip is exact, so the only

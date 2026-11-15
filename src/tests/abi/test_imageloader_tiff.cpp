@@ -13,7 +13,7 @@
  *   - the successful decode must still be byte-identical to the file path.
  *
  * The fixture is rgb_4x4.tif (uncompressed RGB, emitted by
- * fixtures/generate_format_fixtures.c):
+ * fixtures/generate_format_fixtures.cpp):
  *
  *   R = 16 + 16*x,  G = 32 + 16*y,  B = 200 - 16*(x + y)
  */

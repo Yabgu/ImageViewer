@@ -120,8 +120,9 @@ private:
 			return PluginFileName("ImageLoaderJpeg");
 		if (std::regex_match(extension, std::regex("\\.png|\\.apng", std::regex::icase)))
 			return PluginFileName("ImageLoaderPng");
-		/* Tension's texture container: a 74-byte header Tension writes and
-		 * ImageLoaderIWI reads. */
+		/* Tension's texture container: 36 bytes of base header plus 6 per
+		 * component, then the payload.  Tension writes it; ImageLoaderIWI reads
+		 * it through the C API in src/format/IwiFile.cpp. */
 		if (std::regex_match(extension, std::regex("\\.iwi", std::regex::icase)))
 			return PluginFileName("ImageLoaderIWI");
 		if (std::regex_match(extension, std::regex("\\.webp", std::regex::icase)))
