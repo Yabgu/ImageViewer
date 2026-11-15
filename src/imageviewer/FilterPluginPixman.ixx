@@ -416,7 +416,14 @@ IWFilterImageSet* FilterImage(const ImagePluginData*  src,
         return nullptr;
     }
 
-    const IWImageFormat targetFmt = FilterCore::MakeTargetFormat(*screen);
+    /*
+     * The target table only has to live for this call: AllocFrame gives every
+     * frame its own copy (FilterCore::AdoptFormat), so the frames that outlive
+     * FilterImage do not point at this stack array.
+     */
+    IWComponentDef targetComps[4];
+    const IWImageFormat targetFmt =
+        FilterCore::MakeTargetFormat(*screen, targetComps, 4);
 
     /* Read named arguments (all optional; defaults shown in comments). */
     const uint32_t mode    = GetArgU32(options, "mode",     kModeNone);

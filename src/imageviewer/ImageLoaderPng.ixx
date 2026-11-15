@@ -252,15 +252,16 @@ ImagePluginResult DecodePng(const Source& src)
     ImagePluginData* data = nullptr;
     try
     {
-        data = new ImagePluginData{
-            .width             = width,
-            .height            = height,
-            .stride            = strideBytes,
-            .colorSpace        = colorSpace,
-            .size              = dataSize,
-            .data              = pixels,
-            .format            = fmt
-        };
+        data = new ImagePluginData{};
+        data->width             = width;
+        data->height            = height;
+        data->stride            = strideBytes;
+        data->colorSpace        = colorSpace;
+        data->size              = dataSize;
+        data->data              = pixels;
+        data->format            = fmt;
+        /* The table is one of the constexpr sets fmt already points at. */
+        iw_plugin_data_bind(*data, fmt.components, fmt.componentCount);
     }
     catch (const std::bad_alloc&)
     {

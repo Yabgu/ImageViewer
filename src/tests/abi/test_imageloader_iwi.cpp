@@ -172,6 +172,17 @@ TEST_SUITE("IWI loader ABI: file path")
         CHECK(iwabi::PixelComponent(d, 1, 3, 2) == static_cast<uint32_t>(G(2)));
         CHECK(iwabi::PixelComponent(d, 3, 3, 3) == static_cast<uint32_t>(A(3)));
 
+        /*
+         * Ownership: the component table is the tail of the parsed blob the
+         * loader owns, not a static table and not a translated copy.  A
+         * translation loop would show up here as a table outside the blob.
+         */
+        CHECK(d.ownedBlob     != nullptr);
+        CHECK(d.freeOwnedBlob != nullptr);
+        CHECK(d.components == reinterpret_cast<const IWComponentDef*>(
+                  static_cast<const uint8_t*>(d.ownedBlob) + 36));
+        CHECK(d.components != iw::kRgba8Components);
+
         plugin.free(r.data);
     }
 
@@ -196,9 +207,22 @@ TEST_SUITE("IWI loader ABI: file path")
         INFO("descriptor problem: " << problem);
         CHECK(problem.empty());
 
-        /* No fourth component is invented: the container is opaque RGB and the
-         * descriptor says so. */
-        CHECK(d.format.components[3].semantic == IW_COMPONENT_SEMANTIC_NONE);
+        /* No fourth component is invented: the component table is exactly
+         * componentCount records, taken from the tail of the parsed blob, so
+         * index 3 of a 3-component file is past its end and must not be read.
+         * What can be asserted is that both views of the table agree, which is
+         * the invariant the descriptor carries. */
+        CHECK(d.format.componentCount == 3);
+        CHECK(d.componentCount        == 3);
+        CHECK(d.components            == d.format.components);
+
+        /* Same ownership shape as the 4-component case: the table is the blob's
+         * tail, so a 3-component file carries exactly three records. */
+        CHECK(d.ownedBlob     != nullptr);
+        CHECK(d.freeOwnedBlob != nullptr);
+        CHECK(d.components == reinterpret_cast<const IWComponentDef*>(
+                  static_cast<const uint8_t*>(d.ownedBlob) + 36));
+        CHECK(d.components != iw::kRgb8Components);
 
         CHECK(iwabi::PixelComponent(d, 0, 0, 0) == static_cast<uint32_t>(R(0)));
         CHECK(iwabi::PixelComponent(d, 1, 0, 0) == static_cast<uint32_t>(G(0)));
@@ -346,6 +370,24 @@ TEST_SUITE("IWI loader ABI: header refusals")
 
         const std::string reason = RefusedReason(plugin, bytes);
         CHECK(reason.find("addressable") != std::string::npos);
+    }
+
+    TEST_CASE("A 200-component file is a valid container this viewer cannot display")
+    {
+        iwabi::ImageLoaderPlugin& plugin = Plugin();
+        /*
+         * The container has no component cap, and neither does the plugin ABI:
+         * iwi_parse_structural accepts this file and test_iwi_c_api.cpp proves
+         * it walks 200 records.  What this loader refuses is the *display*, and
+         * the wording has to say so - calling a well-formed file corrupt sends
+         * the user looking for a re-download that will not help.
+         */
+        std::vector<uint8_t> bytes = MakeIwi(1, 1, 200);
+
+        const std::string reason = RefusedReason(plugin, bytes);
+        CHECK(reason.find("valid IWI file, but this viewer cannot display") != std::string::npos);
+        CHECK(reason.find("component count") != std::string::npos);
+        CHECK(reason.find("corrupt") == std::string::npos);
     }
 
     TEST_CASE("An unsupported payload encoding is refused")

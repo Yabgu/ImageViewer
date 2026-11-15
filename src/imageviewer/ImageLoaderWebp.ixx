@@ -79,15 +79,15 @@ ImagePluginData* MakeRgba(const uint8_t* decoded, int width, int height)
     fmt.components     = iw::kRgba8Components;
 
     const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * components;
-    ImagePluginData* data = new ImagePluginData{
-        .width      = width,
-        .height     = height,
-        .stride     = width * components,
-        .colorSpace = IMAGE_COLOR_SPACE_SRGB,
-        .size       = bytes,
-        .data       = new uint8_t[bytes],
-        .format     = fmt
-    };
+    auto* data = new ImagePluginData{};
+    data->width      = width;
+    data->height     = height;
+    data->stride     = width * components;
+    data->colorSpace = IMAGE_COLOR_SPACE_SRGB;
+    data->size       = bytes;
+    data->data       = new uint8_t[bytes];
+    data->format     = fmt;
+    iw_plugin_data_bind(*data, fmt.components, fmt.componentCount);
     std::memcpy(data->data, decoded, bytes);
     return data;
 }
@@ -101,15 +101,15 @@ ImagePluginData* MakeRgb(const uint8_t* decoded, int width, int height)
     fmt.components     = iw::kRgb8Components;
 
     const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * components;
-    ImagePluginData* data = new ImagePluginData{
-        .width      = width,
-        .height     = height,
-        .stride     = width * components,
-        .colorSpace = IMAGE_COLOR_SPACE_SRGB,
-        .size       = bytes,
-        .data       = new uint8_t[bytes],
-        .format     = fmt
-    };
+    auto* data = new ImagePluginData{};
+    data->width      = width;
+    data->height     = height;
+    data->stride     = width * components;
+    data->colorSpace = IMAGE_COLOR_SPACE_SRGB;
+    data->size       = bytes;
+    data->data       = new uint8_t[bytes];
+    data->format     = fmt;
+    iw_plugin_data_bind(*data, fmt.components, fmt.componentCount);
     std::memcpy(data->data, decoded, bytes);
     return data;
 }

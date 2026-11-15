@@ -395,15 +395,19 @@ static ImagePluginResult DecodeJpeg(const jpeg_detail::Source& src,
 		owned->pixels = std::move(upright);
 	}
 
-	owned->info = std::make_unique<ImagePluginData>(ImagePluginData{
-		.width      = finalWidth,
-		.height     = finalHeight,
-		.stride     = finalStride,
-		.colorSpace = IMAGE_COLOR_SPACE_SRGB,
-		.size       = finalSize,
-		.data       = owned->pixels.get(),
-		.format     = fmt
-	});
+	/* Default-construct, then assign: ImagePluginData has a real constructor
+	 * now (move-only, version-stamped), so aggregate designated initialisation
+	 * no longer applies to it. */
+	auto info = std::make_unique<ImagePluginData>();
+	info->width      = finalWidth;
+	info->height     = finalHeight;
+	info->stride     = finalStride;
+	info->colorSpace = IMAGE_COLOR_SPACE_SRGB;
+	info->size       = finalSize;
+	info->data       = owned->pixels.get();
+	info->format     = fmt;
+	iw_plugin_data_bind(*info, fmt.components, fmt.componentCount);
+	owned->info = std::move(info);
 
 	/* Success: transfer ownership of the descriptor and its pixel buffer to
 	 * the caller, which releases them through FreeImageData(). */

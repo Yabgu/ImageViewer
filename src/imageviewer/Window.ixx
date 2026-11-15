@@ -988,6 +988,10 @@ private:
 		pd.size       = image.size;
 		pd.data       = image.data;
 		pd.format     = image.format;
+		/* This is a view: the components belong to the Image, not to `pd`, so
+		 * no ownedBlob is attached and both views are pointed at the same
+		 * table. */
+		iw_plugin_data_bind(pd, image.format.components, image.format.componentCount);
 		return pd;
 	}
 

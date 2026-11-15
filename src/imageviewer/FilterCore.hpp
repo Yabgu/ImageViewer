@@ -86,56 +86,51 @@ static inline float SpatialThreshold(SpatialKind kind, int x, int y, uint64_t se
  * Build a packed interleaved UNORM IWImageFormat that matches the screen's
  * bit depth and uses RGBA (or fewer channels) semantics.
  *
- * `storage` is the caller's, and it must outlive the returned descriptor: the
- * format points into it.  It used to be a `static thread_local` array inside
+ * `storage` is the caller's and must outlive the returned descriptor, because
+ * the format points into it.  That was a `static thread_local` array inside
  * this function, which meant every target format on a thread shared one table
- * and a second call silently rewrote the first.  Bit capacity is arbitrary
- * (10-bit panels are real), so there is no static table to point at instead -
- * the storage has to belong to whoever asks.
+ * and a second call silently rewrote the first - a defect that only showed up
+ * when two formats were alive at once.  Bit capacity is arbitrary (10-bit
+ * panels are real), so there is no static table to point at instead: the
+ * storage has to belong to whoever asks.
+ *
+ * Frames that outlive the call do not use the caller's array at all: AllocFrame
+ * gives each of them its own copy (see AdoptFormat) and owns it through the
+ * plugin layer's ownedBlob.  So a caller can pass a stack array and return.
  */
-inline IWImageFormat MakeTargetFormat(const IWScreenInfo& screen) noexcept
+inline IWImageFormat MakeTargetFormat(const IWScreenInfo& screen,
+                                      IWComponentDef* storage,
+                                      uint16_t capacity) noexcept
 {
     IWImageFormat fmt = {};
     const uint16_t bw = screen.bitsPerChannel ? screen.bitsPerChannel : 8u;
-    const uint16_t nc = (screen.channelCount >= 4u) ? 4u
-                      : (screen.channelCount  > 0u) ? screen.channelCount
-                      : 4u;
+    uint16_t nc = (screen.channelCount >= 4u) ? 4u
+                : (screen.channelCount  > 0u) ? screen.channelCount
+                : 4u;
+
+    /* Never write past the caller's storage.  A zero-capacity call yields an
+     * empty format, which every consumer here already rejects or skips. */
+    if (nc > capacity) nc = capacity;
+
     fmt.componentCount = nc;
     fmt.bitsPerPixel   = static_cast<uint16_t>(nc * bw);
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
 
-    /*
-     * KNOWN DEFECT, deferred to the plugin-layer work.
-     *
-     * This table must outlive the descriptor, and the descriptor outlives this
-     * call: FilterImage returns image frames whose format points here, and the
-     * host reads them after the plugin function has returned.  A local array
-     * therefore dangles - tried, and the filter suite caught it immediately
-     * with mid-grey reading back as the wrong value.
-     *
-     * A static-storage constexpr table is not an option either: bit depth is
-     * arbitrary (10-bit panels are real), so there is no finite set to
-     * enumerate.
-     *
-     * The correct fix is per-result ownership, which is what the plugin layer's
-     * ownedBlob/freeOwnedBlob is for.  Until that lands this stays a shared
-     * per-thread table, which means two FilterImage calls on one thread
-     * describing different formats will have the second rewrite the first.
-     */
-    static thread_local IWComponentDef s_comps[4];
+    if (nc == 0u) return fmt;
+
     static const IWComponentSemantic kSemantics[4] = {
         IW_COMPONENT_SEMANTIC_R, IW_COMPONENT_SEMANTIC_G,
         IW_COMPONENT_SEMANTIC_B, IW_COMPONENT_SEMANTIC_A
     };
     for (uint16_t i = 0; i < nc; ++i) {
-        s_comps[i] = {
+        storage[i] = {
             kSemantics[i],
             IW_COMPONENT_CLASS_UNORM,
             static_cast<uint16_t>(i * bw),
             bw
         };
     }
-    fmt.components = s_comps;
+    fmt.components = storage;
     return fmt;
 }
 
@@ -287,6 +282,35 @@ static inline uint32_t QuantizeBayer(float v, uint32_t maxVal,
     return std::min(q, maxVal);
 }
 
+/*
+ * Give `frame` its own copy of the component table its format points at.
+ *
+ * FilterImage hands back frames that outlive the call, so a format pointing at
+ * the caller's storage - or at any table shared between calls - dangles the
+ * moment FilterImage returns.  The copy becomes the frame's ownedBlob, and
+ * FreeFrame() releases it.  This is why MakeTargetFormat can take a stack array:
+ * only the frames keep a table.
+ *
+ * Returns false on allocation failure, leaving the frame untouched.
+ */
+static inline bool AdoptFormat(ImagePluginData* frame) noexcept
+{
+    if (!frame) return false;
+
+    const IWComponentDef* const src = frame->format.components;
+    const size_t count = static_cast<size_t>(frame->format.componentCount);
+    if (!src || count == 0u) return true;   /* nothing to own */
+
+    IWComponentDef* table = static_cast<IWComponentDef*>(
+        std::malloc(sizeof(IWComponentDef) * count));
+    if (!table) return false;
+    std::memcpy(table, src, sizeof(IWComponentDef) * count);
+
+    iw_plugin_data_bind(*frame, table, count);
+    iw_plugin_data_own(*frame, table, std::free);
+    return true;
+}
+
 /* Allocate and initialise an output ImagePluginData frame (no pixel data). */
 static inline ImagePluginData* AllocFrame(const ImagePluginData& src,
                                            const IWImageFormat& targetFmt)
@@ -298,9 +322,11 @@ static inline ImagePluginData* AllocFrame(const ImagePluginData& src,
     uint8_t* buf = static_cast<uint8_t*>(std::malloc(sz));
     if (!buf) return nullptr;
 
-    ImagePluginData* out = static_cast<ImagePluginData*>(
-        std::malloc(sizeof(ImagePluginData)));
-    if (!out) { std::free(buf); return nullptr; }
+    void* slot = std::malloc(sizeof(ImagePluginData));
+    if (!slot) { std::free(buf); return nullptr; }
+    /* Constructed, not memset: the default constructor zeroes ownedBlob and
+     * freeOwnedBlob and stamps the ABI version. */
+    ImagePluginData* out = new (slot) ImagePluginData();
 
     out->width      = src.width;
     out->height     = src.height;
@@ -309,6 +335,12 @@ static inline ImagePluginData* AllocFrame(const ImagePluginData& src,
     out->size       = sz;
     out->data       = buf;
     out->format     = targetFmt;
+
+    if (!AdoptFormat(out)) {
+        std::free(buf);
+        std::free(out);
+        return nullptr;
+    }
     return out;
 }
 
@@ -318,6 +350,11 @@ static inline ImagePluginData* AllocFrame(const ImagePluginData& src,
 inline void FreeFrame(ImagePluginData* frame) noexcept
 {
     if (frame) {
+        /* The component table is the frame's, not a shared constant; releasing
+         * it here is what lets FilterImage return a format that outlives the
+         * call that built it. */
+        if (frame->freeOwnedBlob)
+            frame->freeOwnedBlob(frame->ownedBlob);
         std::free(frame->data);
         std::free(frame);
     }
@@ -587,19 +624,10 @@ inline IWFilterImageSet* ApplySpatialTemporal(const ImagePluginData& src,
     set->frames[1] = nullptr;
 
     for (uint32_t f = 0; f < 2u; ++f) {
-        uint8_t* buf = static_cast<uint8_t*>(std::malloc(fsz));
-        if (!buf) { FreeImageSet(set); return nullptr; }
-        ImagePluginData* pd = static_cast<ImagePluginData*>(
-            std::malloc(sizeof(ImagePluginData)));
-        if (!pd) { std::free(buf); FreeImageSet(set); return nullptr; }
-        pd->width      = src.width;
-        pd->height     = src.height;
-        pd->stride     = stride;
-        pd->colorSpace = src.colorSpace;
-        pd->size       = fsz;
-        pd->data       = buf;
-        pd->format     = targetFmt;
-        set->frames[f] = pd;
+        /* One allocator for frames, so the format-adoption rule has a single
+         * implementation instead of one per Apply* function. */
+        set->frames[f] = AllocFrame(src, targetFmt);
+        if (!set->frames[f]) { FreeImageSet(set); return nullptr; }
     }
 
     uint8_t* const out0 = set->frames[0]->data;
@@ -680,21 +708,8 @@ inline IWFilterImageSet* ApplyPWM(const ImagePluginData& src,
 
     /* Allocate per-frame buffers. */
     for (uint32_t f = 0; f < frameCount; ++f) {
-        uint8_t* buf = static_cast<uint8_t*>(std::malloc(fsz));
-        if (!buf) { FreeImageSet(set); return nullptr; }
-
-        ImagePluginData* pd = static_cast<ImagePluginData*>(
-            std::malloc(sizeof(ImagePluginData)));
-        if (!pd) { std::free(buf); FreeImageSet(set); return nullptr; }
-
-        pd->width      = src.width;
-        pd->height     = src.height;
-        pd->stride     = stride;
-        pd->colorSpace = src.colorSpace;
-        pd->size       = fsz;
-        pd->data       = buf;
-        pd->format     = targetFmt;
-        set->frames[f] = pd;
+        set->frames[f] = AllocFrame(src, targetFmt);
+        if (!set->frames[f]) { FreeImageSet(set); return nullptr; }
     }
 
     /* Fill per-pixel values across frames. */

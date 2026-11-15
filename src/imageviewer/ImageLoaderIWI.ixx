@@ -1,6 +1,7 @@
 module;
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <cstddef>
@@ -8,6 +9,7 @@ module;
 #include <vector>
 
 #include "ImagePluginDef.h"
+#include "IwiFile.h"
 
 export module ImageLoaderIWI;
 
@@ -19,12 +21,14 @@ import IwiFormat;
  * already models, serialized verbatim, so this loader has no decoder library to
  * wrap: it parses a fixed header and hands the pixel bytes through.
  *
- * The 74-byte header layout and the acceptance rules live in IwiFormat.hpp,
- * shared with the Windows shell thumbnail provider.  That is deliberate:
- * Explorer and iview must not disagree about which files are valid, and a
- * second copy of those rules would be a second thing to keep correct.  The
- * refusals below are ParseHeader's, reported through
- * ImagePluginGetLastError() with the wording the ABI tests assert.
+ * The container is 36 bytes of base header followed by 6 bytes per component,
+ * then any metadata, then the payload; the acceptance rules live behind the C
+ * API in IwiFile.h (src/format/IwiFile.cpp), shared with the Windows shell
+ * thumbnail provider.  That is deliberate: Explorer and iview must not disagree
+ * about which files are valid, and a second copy of those rules would be a
+ * second thing to keep correct.  The refusals below are that parser's statuses,
+ * reported through ImagePluginGetLastError() with the wording the ABI tests
+ * assert.
  *
  * # What this loader does not export
  *
@@ -114,6 +118,38 @@ ImagePluginResult Fail(ImagePluginResultCode code, const char* reason)
     return ImagePluginResult{ .code = code, .data = nullptr };
 }
 
+/*
+ * Report a container status in the wording the ABI tests read.
+ *
+ * Two sentences, because they call for two different actions: a corrupt file is
+ * the user's problem to re-obtain, while a valid file this build cannot display
+ * is not, and calling it corrupt sends them looking for a re-download that will
+ * not help.  The status says which case it is; iwi_status_message() supplies the
+ * reason, which is where the "magic", "planar", "offset" and "header"
+ * substrings come from.
+ */
+ImagePluginResult FailForStatus(int rc)
+{
+    char message[512];
+    if (iwi_status_is_unsupported(rc))
+    {
+        std::snprintf(message, sizeof(message),
+                      "valid IWI file, but this viewer cannot display it: "
+                      "%s (try iwconv for conversion)", iwi_status_message(rc));
+    }
+    else
+    {
+        std::snprintf(message, sizeof(message), "corrupt file: %s",
+                      iwi_status_message(rc));
+    }
+
+    const ImagePluginResultCode code =
+        (rc == IWI_STATUS_GEOMETRY_TOO_LARGE)
+            ? IMAGE_PLUGIN_ALLOC_ERROR
+            : IMAGE_PLUGIN_DECODE_ERROR;
+    return Fail(code, message);
+}
+
 ImagePluginResult DecodeIwi(const Source& src)
 {
     lastError[0] = '\0';
@@ -135,100 +171,130 @@ ImagePluginResult DecodeIwi(const Source& src)
         return Fail(IMAGE_PLUGIN_FILE_ERROR, "Empty input");
     }
 
-    /* Every header decision — magic, storage layout, component shape, the
-     * addressable range, and the declared payload against the bytes actually
-     * present — is ParseHeader's, so this loader and the shell thumbnail
-     * provider accept exactly the same files. */
-    const iwi::IwiParseResult parsed = iwi::ParseHeader(bytes, size);
-    if (!parsed.ok())
+    /*
+     * Container grammar, into a blob this loader owns.
+     *
+     * One allocation holds the 36-byte base header and the component table, so
+     * the descriptor can point straight at iwi_file_components(blob): no
+     * translation loop, no second table, and no fixed-size array for a
+     * many-component file to overrun.  The blob is handed to the caller as
+     * ownedBlob and released through FreeImageData().
+     *
+     * iwi_file_required_size() returns 0 when the base header cannot be read at
+     * all - bad magic, shorter than the header, or zero components.
+     */
+    const std::size_t blobBytes = iwi_file_required_size(bytes, size);
+    if (blobBytes == 0)
     {
-        const ImagePluginResultCode code =
-            parsed.status == iwi::IwiStatus::GeometryTooLarge
-                ? IMAGE_PLUGIN_ALLOC_ERROR
-                : IMAGE_PLUGIN_DECODE_ERROR;
-
         /*
-         * Two different sentences, because they call for two different actions.
-         *
-         * A corrupt file is the user's problem to re-obtain; a valid file this
-         * build cannot display is not, and telling them it is corrupt sends
-         * them looking for a re-download that will not help.  The parser says
-         * which case it is; the wording is the front end's job, so it is
-         * composed here rather than in the library.
+         * The parser decides those cases before it looks at the output buffer,
+         * so a base-sized scratch buffer gets the real status - and therefore
+         * the real reason string - out of it.
          */
-        char message[512];
-        if (parsed.unsupported())
-        {
-            std::snprintf(message, sizeof(message),
-                          "valid IWI file, but this viewer cannot display it: "
-                          "%s (try iwconv for conversion)", parsed.reason);
-        }
-        else
-        {
-            std::snprintf(message, sizeof(message),
-                          "corrupt file: %s", parsed.reason);
-        }
-        return Fail(code, message);
+        IwiFileHeader probe{};
+        return FailForStatus(iwi_parse_structural(&probe, IWI_FILE_BASE_HEADER_BYTES,
+                                                  bytes, size));
     }
 
-    const iwi::IwiHeader& header = parsed.header;
+    IwiFileHeader* const blob =
+        static_cast<IwiFileHeader*>(std::malloc(blobBytes));
+    if (blob == nullptr)
+        return Fail(IMAGE_PLUGIN_ALLOC_ERROR, "Out of memory");
+
+    int rc = iwi_parse_structural(blob, blobBytes, bytes, size);
+    if (rc == IWI_STATUS_OK)
+    {
+        /*
+         * Renderability, which is this loader's opinion rather than a container
+         * rule.  The grammar accepts far more than this viewer displays -
+         * planar layouts, 16-bit samples, any component count - and each of
+         * those would render wrong or not at all.  The policy is therefore
+         * applied here, and the refusal is reported as "valid, cannot display"
+         * rather than as corruption.
+         *
+         * iw::ViewerPolicyStatus is the same policy the thumbnail provider and
+         * iwi::ParseHeader use, so all three accept one set of files.  It is
+         * applied to the blob rather than re-parsed, so there is still exactly
+         * one parse.
+         */
+        rc = iwi::ViewerPolicyStatus(blob);
+    }
+    if (rc != IWI_STATUS_OK)
+    {
+        iwi_file_free(blob);
+        return FailForStatus(rc);
+    }
+
+    const std::uint16_t components = blob->componentCount;
+    const IwiFileComponent* const comps = iwi_file_components(blob);
 
     /*
-     * Renderability, which is this loader's opinion rather than a container
-     * rule.  iwi_parse accepts any component count - a 200-band spectral file
-     * is a valid IWI - but this loader and the renderer behind it only have a
-     * meaning for RGB8 and RGBA8.  Checking here rather than in the parser is
-     * what keeps the container uncapped.
+     * Every width is 8 bits after the policy, so a pixel is `components` bytes.
+     * The sum is accumulated in 32 bits and narrowed deliberately: a uint16
+     * accumulator would wrap on a file with many narrow components, and the
+     * 3-or-4 policy above should not be what keeps the arithmetic correct.
      */
-    if (header.components != 3u && header.components != 4u)
-    {
-        return Fail(IMAGE_PLUGIN_DECODE_ERROR,
-                    "IWI has an unsupported component count for display");
-    }
+    std::uint32_t bitsPerPixel = 0;
+    for (std::uint16_t i = 0; i < components; ++i)
+        bitsPerPixel += comps[i].bitWidth;
+    if (bitsPerPixel > 0xFFFFu) bitsPerPixel = 0xFFFFu;
 
     IWImageFormat format = {};
-    format.componentCount = header.components;
+    format.componentCount = components;
+    format.bitsPerPixel   = static_cast<std::uint16_t>(bitsPerPixel);
+    format.storageLayout  = blob->storageLayout;
     /*
-     * Saturate rather than truncate: bitsPerPixel is uint32_t in the header (no
-     * component cap, so a uint16 accumulator could wrap) and uint16_t in the
-     * ABI.  With 3 or 4 8-bit components the value is 24 or 32 and this is a
-     * no-op; the guard is here so the narrowing is deliberate.
+     * IwiFileComponent and IWComponentDef are the same six bytes in the same
+     * order, which test_abi_constants.cpp pins with static_asserts.  That is
+     * what makes this a view of the blob's tail rather than a reinterpretation
+     * of unrelated data - and it is why no translation loop exists here.
      */
-    format.bitsPerPixel   = header.bitsPerPixel > 0xFFFFu
-                                ? 0xFFFFu
-                                : static_cast<uint16_t>(header.bitsPerPixel);
-    format.storageLayout  = header.storageLayout;
-    format.components     = (header.components == 4) ? iw::kRgba8Components : iw::kRgb8Components;
+    format.components = reinterpret_cast<const IWComponentDef*>(comps);
 
-    /* Tightly packed rows: the container has no stride field, so the only
-     * layout it defines is one row of (width x components) bytes after the
-     * next.  Any bytes declared beyond that are trailing slack and are not
-     * copied. */
-    const std::size_t stride = static_cast<std::size_t>(header.width) *
-                               header.components;
-    const std::size_t total  = static_cast<std::size_t>(header.packedBytes);
+    /* Tightly packed rows: the container defines one row of (width x
+     * components) bytes after the next, and the policy has already refused any
+     * declared stride.  The payload starts after the component table and any
+     * metadata, which is what iwi_parse_structural validated. */
+    const std::size_t headerBytes = IWI_FILE_BASE_HEADER_BYTES +
+        static_cast<std::size_t>(components) * IWI_FILE_COMPONENT_BYTES +
+        blob->metaBytes;
+    const std::size_t stride = static_cast<std::size_t>(blob->width) * components;
+    const std::size_t total  = stride * blob->height;
 
-    uint8_t* pixelData = new uint8_t[total];
-    std::memcpy(pixelData, bytes + header.headerBytes, total);
+    uint8_t* pixelData = nullptr;
+    try
+    {
+        pixelData = new uint8_t[total];
+    }
+    catch (...)
+    {
+        iwi_file_free(blob);   /* owned from here on; the caller never sees it */
+        throw;
+    }
+    std::memcpy(pixelData, bytes + headerBytes, total);
 
-    /* The descriptor is a second allocation, so it can fail after the pixels
-     * exist; release them rather than leaking on the throw path. */
+    /* The descriptor is a third allocation, so it can fail after the pixels
+     * exist; release both rather than leaking on the throw path. */
     ImagePluginData* data = nullptr;
     try
     {
-        data = new ImagePluginData{
-            .width      = static_cast<int>(header.width),
-            .height     = static_cast<int>(header.height),
-            .stride     = static_cast<int>(stride),
-            .colorSpace = DecodeColorSpace(header.colorSpace),
-            .size       = total,
-            .data       = pixelData,
-            .format     = format,
-        };
+        data = new ImagePluginData{};
+        data->width      = static_cast<int>(blob->width);
+        data->height     = static_cast<int>(blob->height);
+        data->stride     = static_cast<int>(stride);
+        data->colorSpace = DecodeColorSpace(blob->colorSpace);
+        data->size       = total;
+        data->data       = pixelData;
+        data->format     = format;
+        /* The table is the tail of `blob`, so the descriptor owns the blob and
+         * releases it through FreeImageData().  No copy of the table exists. */
+        iw_plugin_data_bind(*data, format.components, format.componentCount);
+        iw_plugin_data_own(*data, blob, iwi_file_free);
     }
     catch (...)
     {
         delete[] pixelData;
+        iwi_file_free(blob);
         throw;
     }
 
@@ -296,6 +362,11 @@ export extern "C" IMAGEPLUGIN_API void FreeImageData(ImagePluginData* imageData)
 {
     if (imageData)
     {
+        /* The component table lives inside ownedBlob when the loader produced
+         * one; releasing it is the only thing that keeps the descriptor's two
+         * views from outliving their storage. */
+        if (imageData->freeOwnedBlob)
+            imageData->freeOwnedBlob(imageData->ownedBlob);
         delete[] imageData->data;
         delete imageData;
     }

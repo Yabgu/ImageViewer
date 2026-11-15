@@ -223,22 +223,25 @@ ImagePluginResult DecodeTiff(TIFF* handle)
             tiledFmt.bitsPerPixel   = components * 8;
             tiledFmt.components     = iw::kRgba8Components;
 
-            ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
-            if (!data)
+            void* slot = std::malloc(sizeof(ImagePluginData));
+            if (!slot)
             {
                 std::free(pixelData);
                 throw std::runtime_error("Failed to allocate ImagePluginData for TIFF raster decode");
             }
-            std::memset(data, 0, sizeof(ImagePluginData));
-            *data = ImagePluginData{
-                .width      = static_cast<int>(width),
-                .height     = static_cast<int>(height),
-                .stride     = static_cast<int>(width) * components,
-                .colorSpace = IMAGE_COLOR_SPACE_SRGB,
-                .size       = dataSize,
-                .data       = pixelData,
-                .format     = tiledFmt
-            };
+            /* Constructed, not memset: the default constructor zeroes the
+             * ownership fields and stamps the ABI version, which a plain
+             * memset of a struct with a constructor would leave to chance. */
+            ImagePluginData* data = new (slot) ImagePluginData();
+            data->width      = static_cast<int>(width);
+            data->height     = static_cast<int>(height);
+            data->stride     = static_cast<int>(width) * components;
+            data->colorSpace = IMAGE_COLOR_SPACE_SRGB;
+            data->size       = dataSize;
+            data->data       = pixelData;
+            data->format     = tiledFmt;
+            /* RGBA8 is a static table: this descriptor owns no component blob. */
+            iw_plugin_data_bind(*data, tiledFmt.components, tiledFmt.componentCount);
             result.code = IMAGE_PLUGIN_OK;
             result.data = data;
             return result;
@@ -286,22 +289,23 @@ ImagePluginResult DecodeTiff(TIFF* handle)
         }
         std::free(rowBuf);
 
-        ImagePluginData* data = static_cast<ImagePluginData*>(std::malloc(sizeof(ImagePluginData)));
-        if (!data)
+        void* slot = std::malloc(sizeof(ImagePluginData));
+        if (!slot)
         {
             std::free(pixelData);
             throw std::runtime_error("Failed to allocate ImagePluginData for TIFF scanline decode");
         }
-        std::memset(data, 0, sizeof(ImagePluginData));
-        *data = ImagePluginData{
-            .width      = static_cast<int>(width),
-            .height     = static_cast<int>(height),
-            .stride     = static_cast<int>(packRowBytes),
-            .colorSpace = colorSpace,
-            .size       = dataSize,
-            .data       = pixelData,
-            .format     = BuildNativeFormat(static_cast<int>(samplesPerPixel), hasAlpha)
-        };
+        ImagePluginData* data = new (slot) ImagePluginData();
+        data->width      = static_cast<int>(width);
+        data->height     = static_cast<int>(height);
+        data->stride     = static_cast<int>(packRowBytes);
+        data->colorSpace = colorSpace;
+        data->size       = dataSize;
+        data->data       = pixelData;
+        data->format     = BuildNativeFormat(static_cast<int>(samplesPerPixel), hasAlpha);
+        /* The native-format table is one of the static constexpr sets, so
+         * nothing here owns component storage. */
+        iw_plugin_data_bind(*data, data->format.components, data->format.componentCount);
         result.code = IMAGE_PLUGIN_OK;
         result.data = data;
     }

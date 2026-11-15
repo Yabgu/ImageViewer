@@ -155,6 +155,26 @@ private:
 		return result;
 	}
 
+	/*
+	 * Admission check on what a plugin handed back.
+	 *
+	 * The descriptor carries the ABI version it was built against and two views
+	 * of one component table; both have to agree before any field is read.  The
+	 * alternative is reading a stale DLL's struct at this build's offsets, which
+	 * is a silent misread rather than an error the user can act on.
+	 *
+	 * Throws inside the caller's try block so the plugin's own FreeImageData
+	 * still releases its buffers.
+	 */
+	static void RequireCompatible(const ImagePluginData& d)
+	{
+		if (iw_plugin_data_is_compatible(d)) return;
+		throw std::runtime_error(
+			"Plugin returned an incompatible image descriptor: struct version " +
+			std::to_string(d.structVersion) + ", expected " +
+			std::to_string(IW_PLUGIN_STRUCT_VERSION));
+	}
+
 	static void FreeImageResultViaPlugin(PluginManager& manager,
 	                                      const std::filesystem::path& pluginPath,
 	                                      ImagePluginResult& result)
@@ -255,6 +275,7 @@ public:
 		 * at upload time. */
 		try
 		{
+			RequireCompatible(*pluginResult.data);
 			Image result = CopyFromPluginData(*pluginResult.data);
 			FreeImageResultViaPlugin(manager, pluginPath, pluginResult);
 			return result;
@@ -388,6 +409,7 @@ inline ImagePreview Image::PreviewFromFile(const std::filesystem::path& path,
 		{
 			try
 			{
+				RequireCompatible(*previewResult.data);
 				Image preview = CopyFromPluginData(*previewResult.data);
 				const int previewWidth  = preview.width;
 				const int previewHeight = preview.height;

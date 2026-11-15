@@ -375,6 +375,15 @@ inline uint32_t PixelComponent(const ImagePluginData& d, int ch, int x, int y)
  */
 inline std::string DescriptorProblem(const ImagePluginData& d)
 {
+    /*
+     * Admission first: every descriptor a plugin hands back must carry the
+     * struct version this test binary was built against, and its two views of
+     * the component table must agree.  A stale DLL or a producer that set only
+     * one of them fails here, before any field is interpreted.
+     */
+    if (!iw_plugin_data_is_compatible(d))
+        return "descriptor failed the version/ownership admission check";
+
     const char* fmtError = nullptr;
     if (!ValidateImageFormat(d.format, &fmtError)) {
         return std::string("ValidateImageFormat rejected the descriptor: ") +

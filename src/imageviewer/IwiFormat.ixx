@@ -377,4 +377,21 @@ inline IwiParseResult ParseHeader(const uint8_t* bytes, std::size_t size)
     return ParseHeader(bytes, size, static_cast<std::uint64_t>(size));
 }
 
+/*
+ * This viewer's capability policy over an already-parsed blob.
+ *
+ * Exported for the IWI loader, which keeps the blob the C API filled instead of
+ * copying the component table into a fixed-size array. The policy itself lives
+ * in detail::ApplyViewerPolicy and is not duplicated: the loader and
+ * ParseHeader() therefore accept exactly the same files, which is the property
+ * that makes Explorer thumbnails and iview agree.
+ *
+ * Returns an IWI_STATUS_* code, IWI_STATUS_OK when the file is displayable.
+ * Grammar is not re-checked here; pass a blob iwi_parse_structural() accepted.
+ */
+inline int ViewerPolicyStatus(const IwiFileHeader* f) noexcept
+{
+    return detail::ApplyViewerPolicy(f);
+}
+
 } // export namespace iwi

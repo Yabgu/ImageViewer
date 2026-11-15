@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <cstdlib>
+#include <new>
 #include <cstring>
 #include <initializer_list>
 #include <string>
@@ -615,8 +616,7 @@ static ImagePluginData* MakeRGBA16Pixel(uint16_t rgbVal, uint16_t aVal = 0xFFFFu
     uint16_t* p  = reinterpret_cast<uint16_t*>(buf);
     p[0] = rgbVal; p[1] = rgbVal; p[2] = rgbVal; p[3] = aVal;
 
-    ImagePluginData* pd = static_cast<ImagePluginData*>(
-        std::malloc(sizeof(ImagePluginData)));
+    ImagePluginData* pd = new (std::malloc(sizeof(ImagePluginData))) ImagePluginData();
     pd->width = 1; pd->height = 1; pd->stride = 8;
     pd->colorSpace = IMAGE_COLOR_SPACE_LINEAR;
     pd->size = 8; pd->data = buf; pd->format = fmt;
@@ -639,8 +639,7 @@ static ImagePluginData* MakeRGBA16Row(int w, uint16_t rgbVal)
         p[0] = rgbVal; p[1] = rgbVal; p[2] = rgbVal; p[3] = 0xFFFFu;
     }
 
-    ImagePluginData* pd = static_cast<ImagePluginData*>(
-        std::malloc(sizeof(ImagePluginData)));
+    ImagePluginData* pd = new (std::malloc(sizeof(ImagePluginData))) ImagePluginData();
     pd->width = w; pd->height = 1; pd->stride = stride;
     pd->colorSpace = IMAGE_COLOR_SPACE_LINEAR;
     pd->size = static_cast<size_t>(stride); pd->data = buf; pd->format = fmt;
@@ -668,8 +667,7 @@ static ImagePluginData* MakePngStyleRGB8Row(int w, uint8_t r, uint8_t g, uint8_t
         buf[x * 3 + 2] = b;
     }
 
-    ImagePluginData* pd = static_cast<ImagePluginData*>(
-        std::malloc(sizeof(ImagePluginData)));
+    ImagePluginData* pd = new (std::malloc(sizeof(ImagePluginData))) ImagePluginData();
     pd->width = w; pd->height = 1; pd->stride = stride;
     pd->colorSpace = IMAGE_COLOR_SPACE_SRGB;
     pd->size = static_cast<size_t>(stride); pd->data = buf; pd->format = fmt;
@@ -696,8 +694,7 @@ static ImagePluginData* MakeRGBA16Grid(int w, int h, uint16_t rgbVal)
         }
     }
 
-    ImagePluginData* pd = static_cast<ImagePluginData*>(
-        std::malloc(sizeof(ImagePluginData)));
+    ImagePluginData* pd = new (std::malloc(sizeof(ImagePluginData))) ImagePluginData();
     pd->width = w; pd->height = h; pd->stride = stride;
     pd->colorSpace = IMAGE_COLOR_SPACE_LINEAR;
     pd->size = static_cast<size_t>(stride) * static_cast<size_t>(h);
@@ -721,8 +718,7 @@ static ImagePluginData* MakeGrey16Row(const uint16_t* vals, int w)
         p[0] = vals[x]; p[1] = vals[x]; p[2] = vals[x]; p[3] = 0xFFFFu;
     }
 
-    ImagePluginData* pd = static_cast<ImagePluginData*>(
-        std::malloc(sizeof(ImagePluginData)));
+    ImagePluginData* pd = new (std::malloc(sizeof(ImagePluginData))) ImagePluginData();
     pd->width = w; pd->height = 1; pd->stride = stride;
     pd->colorSpace = IMAGE_COLOR_SPACE_LINEAR;
     pd->size = static_cast<size_t>(stride); pd->data = buf; pd->format = fmt;
@@ -736,7 +732,8 @@ TEST_SUITE("FilterCore::MakeTargetFormat")
     TEST_CASE("8-bit screen → RGBA8 UNORM interleaved")
     {
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef fmtComps[4];
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen, fmtComps, 4);
         CHECK(fmt.componentCount == 4);
         CHECK(fmt.bitsPerPixel   == 32);
         CHECK(fmt.storageLayout  == IW_STORAGE_INTERLEAVED);
@@ -750,7 +747,8 @@ TEST_SUITE("FilterCore::MakeTargetFormat")
     TEST_CASE("10-bit screen → RGBA10 UNORM interleaved")
     {
         IWScreenInfo screen{ 10, 4 };
-        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef fmtComps[4];
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen, fmtComps, 4);
         CHECK(fmt.componentCount  == 4);
         CHECK(fmt.bitsPerPixel    == 40);
         CHECK(fmt.components[0].bitWidth == 10);
@@ -759,7 +757,8 @@ TEST_SUITE("FilterCore::MakeTargetFormat")
     TEST_CASE("zero bitsPerChannel defaults to 8")
     {
         IWScreenInfo screen{ 0, 4 };
-        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef fmtComps[4];
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen, fmtComps, 4);
         CHECK(fmt.components[0].bitWidth == 8);
     }
 }
@@ -775,7 +774,8 @@ TEST_SUITE("FilterCore::ApplyNone")
          * 8-bit quantised (round): round(0.50007 * 255) = round(127.52) = 128. */
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyNone(*src, target);
         REQUIRE(out != nullptr);
@@ -793,7 +793,8 @@ TEST_SUITE("FilterCore::ApplyNone")
     {
         ImagePluginData* src = MakeRGBA16Pixel(0x0000u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyNone(*src, target);
         REQUIRE(out != nullptr);
@@ -808,7 +809,8 @@ TEST_SUITE("FilterCore::ApplyNone")
     {
         ImagePluginData* src = MakeRGBA16Pixel(0xFFFFu);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyNone(*src, target);
         REQUIRE(out != nullptr);
@@ -827,7 +829,8 @@ TEST_SUITE("FilterCore::ApplyPWM")
     {
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 1u);
         REQUIRE(set != nullptr);
@@ -851,7 +854,8 @@ TEST_SUITE("FilterCore::ApplyPWM")
          * PWM average (128.5) is closer to the true value (128.49). */
         ImagePluginData* src = MakeRGBA16Pixel(0x80FFu);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 1u);
         REQUIRE(set != nullptr);
@@ -875,7 +879,8 @@ TEST_SUITE("FilterCore::ApplyPWM")
     {
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 0u);
         REQUIRE(set != nullptr);
@@ -889,7 +894,8 @@ TEST_SUITE("FilterCore::ApplyPWM")
     {
         ImagePluginData* src = MakeRGBA16Pixel(0xAAAAu);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 2u);
         REQUIRE(set != nullptr);
@@ -904,7 +910,8 @@ TEST_SUITE("FilterCore::ApplyPWM")
         /* Alpha value 0x8000 → normalised ≈ 0.5 → rounded to 8-bit = 128. */
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u, 0x8000u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 2u);
         REQUIRE(set != nullptr);
@@ -940,7 +947,8 @@ TEST_SUITE("dithering mid-grey regression")
     {
         ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
                                                    IW_COMPONENT_CLASS_UNORM);
-        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 }, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyNone(*src, target);
         REQUIRE(out != nullptr);
@@ -963,7 +971,8 @@ TEST_SUITE("dithering mid-grey regression")
     {
         ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
                                                    IW_COMPONENT_CLASS_UNORM);
-        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 }, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -986,7 +995,8 @@ TEST_SUITE("dithering mid-grey regression")
     {
         ImagePluginData* src = MakePngStyleRGB8Row(4, kMid, kMid, kMid,
                                                    IW_COMPONENT_CLASS_UNORM);
-        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 }, targetComps, 4);
 
         IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 1u);
         REQUIRE(set != nullptr);
@@ -1023,7 +1033,8 @@ TEST_SUITE("dithering mid-grey regression")
         CHECK(rgba[2] == doctest::Approx(128.0f / 255.0f));
         CHECK(rgba[3] == doctest::Approx(1.0f));
 
-        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 }, targetComps, 4);
 
         ImagePluginData* none = FilterCore::ApplyNone(*src, target);
         REQUIRE(none != nullptr);
@@ -1068,7 +1079,8 @@ TEST_SUITE("ordered dither zero-mean invariant")
          * splits this into 128s and 129s; anything that biases the tile (like
          * the old PIXMAN_OP_ADD of a 0..239 tile) shifts the mean badly. */
         ImagePluginData* src = MakeRGBA16Grid(4, 4, 0x80FFu);
-        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 }, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -1103,7 +1115,8 @@ TEST_SUITE("ordered dither zero-mean invariant")
         for (int i = 0; i < kN; ++i) vals[i] = static_cast<uint16_t>(i * 4096);
 
         ImagePluginData* src = MakeGrey16Row(vals, kN);
-        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 }, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -1125,7 +1138,8 @@ TEST_SUITE("ordered dither zero-mean invariant")
     {
         /* 8-bit source → 8-bit destination has no fractional bits to dither, so
          * black, mid-grey and white must all come back byte-identical. */
-        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 });
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(IWScreenInfo{ 8, 4 }, targetComps, 4);
         const uint8_t samples[] = { 0u, 1u, 128u, 254u, 255u };
 
         for (uint8_t s : samples) {
@@ -1161,7 +1175,8 @@ TEST_SUITE("FilterCore::ApplyOrdered")
          * Pixel (3, 0) should be 1; pixel (0, 0) with Bayer=0 stays at 0. */
         ImagePluginData* src = MakeRGBA16Row(4, 103u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -1181,7 +1196,8 @@ TEST_SUITE("FilterCore::ApplyOrdered")
          * Pixel (0, 0) stays at 0. */
         ImagePluginData* src = MakeRGBA16Row(1, 103u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -1200,7 +1216,8 @@ TEST_SUITE("FilterCore::ApplyFloydSteinberg")
     {
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyFloydSteinberg(*src, target);
         REQUIRE(out != nullptr);
@@ -1217,7 +1234,8 @@ TEST_SUITE("FilterCore::ApplyFloydSteinberg")
     {
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* outNone = FilterCore::ApplyNone(*src, target);
         ImagePluginData* outFS   = FilterCore::ApplyFloydSteinberg(*src, target);
@@ -1238,7 +1256,8 @@ TEST_SUITE("FilterCore::BytesPerPixel (via MakeTargetFormat)")
     TEST_CASE("4-channel 8-bit → 4 bytes per pixel (stride = width * 4)")
     {
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef fmtComps[4];
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen, fmtComps, 4);
         CHECK(fmt.bitsPerPixel == 32);
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
         ImagePluginData* out = FilterCore::ApplyNone(*src, fmt);
@@ -1251,7 +1270,8 @@ TEST_SUITE("FilterCore::BytesPerPixel (via MakeTargetFormat)")
     TEST_CASE("4-channel 16-bit → 8 bytes per pixel (stride = width * 8)")
     {
         IWScreenInfo screen{ 16, 4 };
-        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef fmtComps[4];
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen, fmtComps, 4);
         CHECK(fmt.bitsPerPixel == 64);
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
         ImagePluginData* out = FilterCore::ApplyNone(*src, fmt);
@@ -1264,7 +1284,8 @@ TEST_SUITE("FilterCore::BytesPerPixel (via MakeTargetFormat)")
     TEST_CASE("4-channel 10-bit → 5 bytes per pixel (ceiling of 40/8)")
     {
         IWScreenInfo screen{ 10, 4 };
-        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef fmtComps[4];
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen, fmtComps, 4);
         CHECK(fmt.bitsPerPixel == 40);
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
         ImagePluginData* out = FilterCore::ApplyNone(*src, fmt);
@@ -1282,7 +1303,8 @@ TEST_SUITE("FilterCore::MakeTargetFormat 10-bit writability")
     TEST_CASE("10-bit screen produces correct packed bitOffsets (0, 10, 20, 30)")
     {
         IWScreenInfo screen{ 10, 4 };
-        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef fmtComps[4];
+        const IWImageFormat fmt = FilterCore::MakeTargetFormat(screen, fmtComps, 4);
         CHECK(fmt.components[0].bitOffset == 0);
         CHECK(fmt.components[1].bitOffset == 10);
         CHECK(fmt.components[2].bitOffset == 20);
@@ -1294,7 +1316,8 @@ TEST_SUITE("FilterCore::MakeTargetFormat 10-bit writability")
     {
         ImagePluginData* src = MakeRGBA16Pixel(0x0000u, 0x0000u);
         IWScreenInfo screen{ 10, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyNone(*src, target);
         REQUIRE(out != nullptr);
@@ -1310,7 +1333,8 @@ TEST_SUITE("FilterCore::MakeTargetFormat 10-bit writability")
     {
         ImagePluginData* src = MakeRGBA16Pixel(0xFFFFu, 0xFFFFu);
         IWScreenInfo screen{ 10, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyNone(*src, target);
         REQUIRE(out != nullptr);
@@ -1328,7 +1352,8 @@ TEST_SUITE("FilterCore::MakeTargetFormat 10-bit writability")
          * returns the normalised value: 512 / 1023 ≈ 0.500. */
         ImagePluginData* src = MakeRGBA16Pixel(0x8000u, 0xFFFFu);
         IWScreenInfo screen{ 10, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyNone(*src, target);
         REQUIRE(out != nullptr);
@@ -1627,7 +1652,8 @@ TEST_SUITE("FilterCore::ApplyOrdered no-brightening invariant")
         /* 4-pixel row so all Bayer columns (0-3) are exercised. */
         ImagePluginData* src = MakeRGBA16Row(4, 0x8000u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -1653,7 +1679,8 @@ TEST_SUITE("FilterCore::ApplyOrdered no-brightening invariant")
     {
         ImagePluginData* src = MakeRGBA16Row(4, 0xFFFFu);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -1672,7 +1699,8 @@ TEST_SUITE("FilterCore::ApplyOrdered no-brightening invariant")
     {
         ImagePluginData* src = MakeRGBA16Row(4, 0x0000u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -1692,7 +1720,8 @@ TEST_SUITE("FilterCore::ApplyOrdered no-brightening invariant")
         /* 16-bit value 256 ≈ 0.003906. Scaled to 8-bit ≈ 0.996. floor=0, hi=1. */
         ImagePluginData* src = MakeRGBA16Row(4, 256u);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -1711,7 +1740,8 @@ TEST_SUITE("FilterCore::ApplyOrdered no-brightening invariant")
         const uint16_t raw16 = static_cast<uint16_t>(0.25f * 65535.f);
         ImagePluginData* src = MakeRGBA16Row(4, raw16);
         IWScreenInfo screen{ 8, 4 };
-        const IWImageFormat target = FilterCore::MakeTargetFormat(screen);
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
 
         ImagePluginData* out = FilterCore::ApplyOrdered(*src, target);
         REQUIRE(out != nullptr);
@@ -2234,5 +2264,107 @@ TEST_SUITE("EXIF orientation: pixel transform")
             exif::OrientPixels(stored.data(), 3, 2, 1, orientation, out.data());
             CHECK(out == stored);
         }
+    }
+}
+
+// ─── FilterCore::FreeFrame ownership ─────────────────────────────────────────
+//
+// The frame structs are malloc'd, so nothing destroys them implicitly: FreeFrame
+// is the only place an output frame's owned component table is released.  These
+// cases exercise that line directly, including the no-op path for frames over a
+// static table.
+
+namespace {
+int  g_blobFrees = 0;
+void CountingBlobFree(void* p) { ++g_blobFrees; std::free(p); }
+}
+
+TEST_SUITE("FilterCore::FreeFrame ownership")
+{
+    TEST_CASE("a frame's own component table is released exactly once")
+    {
+        g_blobFrees = 0;
+
+        ImagePluginData* frame =
+            new (std::malloc(sizeof(ImagePluginData))) ImagePluginData();
+        frame->width  = 1;
+        frame->height = 1;
+        frame->stride = 4;
+        frame->size   = 4;
+        frame->data   = static_cast<uint8_t*>(std::malloc(4));
+
+        auto* table = static_cast<IWComponentDef*>(
+            std::malloc(sizeof(IWComponentDef) * 4u));
+        REQUIRE(table != nullptr);
+        for (int i = 0; i < 4; ++i) {
+            table[i] = IWComponentDef{ IW_COMPONENT_SEMANTIC_R,
+                                       IW_COMPONENT_CLASS_UNORM,
+                                       static_cast<uint16_t>(i * 8), 8u };
+        }
+        iw_plugin_data_bind(*frame, table, 4u);
+        iw_plugin_data_own(*frame, table, CountingBlobFree);
+
+        FilterCore::FreeFrame(frame);
+        CHECK(g_blobFrees == 1);
+    }
+
+    TEST_CASE("a frame over a static table frees no component blob")
+    {
+        g_blobFrees = 0;
+
+        ImagePluginData* frame =
+            new (std::malloc(sizeof(ImagePluginData))) ImagePluginData();
+        frame->data = static_cast<uint8_t*>(std::malloc(3));
+        iw_plugin_data_bind(*frame, iw::kRgb8Components, 3u);
+
+        CHECK(frame->freeOwnedBlob == nullptr);
+        FilterCore::FreeFrame(frame);
+        CHECK(g_blobFrees == 0);
+    }
+
+    TEST_CASE("an output frame owns a table instead of borrowing the caller's")
+    {
+        ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
+
+        IWScreenInfo screen{ 8, 4 };
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
+
+        ImagePluginData* out = FilterCore::ApplyNone(*src, target);
+        REQUIRE(out != nullptr);
+
+        /* `targetComps` dies with this function while `out` may outlive it, so
+         * the frame must hold its own copy. */
+        CHECK(out->format.components != targetComps);
+        CHECK(out->components        != nullptr);
+        CHECK(out->ownedBlob         != nullptr);
+        CHECK(out->freeOwnedBlob     != nullptr);
+        CHECK(out->components        == out->format.components);
+        CHECK(out->format.components[0].bitWidth == 8u);
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("two frames from one call own distinct tables")
+    {
+        ImagePluginData* src = MakeRGBA16Pixel(0x8000u);
+
+        IWScreenInfo screen{ 10, 4 };
+        IWComponentDef targetComps[4];
+        const IWImageFormat target = FilterCore::MakeTargetFormat(screen, targetComps, 4);
+
+        IWFilterImageSet* set = FilterCore::ApplyPWM(*src, target, 1u);
+        REQUIRE(set != nullptr);
+        REQUIRE(set->frameCount == 2u);
+        REQUIRE(set->frames[0] != nullptr);
+        REQUIRE(set->frames[1] != nullptr);
+
+        CHECK(set->frames[0]->format.components != set->frames[1]->format.components);
+        CHECK(set->frames[0]->ownedBlob         != set->frames[1]->ownedBlob);
+        CHECK(set->frames[0]->format.components != targetComps);
+
+        FilterCore::FreeImageSet(set);
+        FilterCore::FreeFrame(src);
     }
 }

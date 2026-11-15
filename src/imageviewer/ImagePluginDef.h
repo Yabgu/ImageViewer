@@ -300,11 +300,64 @@ struct IWImageFormat {
 };
 
 /*
+ * Version of the ImagePluginData layout below.
+ *
+ * Every producer stamps this into the struct, and the host refuses a value it
+ * did not build against rather than reading fields that are not there.  A
+ * plugin DLL and the host are separately-built binaries; without this field a
+ * stale DLL is read with the current struct definition, which is how the
+ * "mystery failure after a rebuild" class of bug starts.
+ *
+ * Bump it whenever a field is added to, removed from, or reordered in
+ * ImagePluginData.  C callers set it by hand; C++ producers get it from the
+ * default constructor and from iw_plugin_data_bind().
+ */
+#define IW_PLUGIN_STRUCT_VERSION 1u
+
+/*
  * Data block returned by a loader plugin.
  *
  * The `format` field fully describes the pixel layout.  The renderer
  * normalises this into a canonical internal format after load, so the
  * pipeline never has to handle arbitrary packed layouts at draw time.
+ *
+ * # Component table ownership
+ *
+ * `components` (and the `format.components` view of the same bytes) points
+ * either
+ *
+ *   (a) at a static-storage table that outlives this struct - the `iw::
+ *       kRgba8Components` family, or a table iw::ComponentTable() selected.
+ *       Such a producer leaves ownedBlob and freeOwnedBlob NULL, and the host
+ *       does nothing on destruction; or
+ *
+ *   (b) into `ownedBlob`, a block the producer allocated and whose size
+ *       `componentCount` describes.  The host MUST call
+ *       freeOwnedBlob(ownedBlob) exactly once before destroying the data, and
+ *       the plugin's own FreeImageData does the same for its exports.
+ *
+ * ImagePluginData is move-only.  Copying is deleted in C++ because a copy has
+ * to decide who owns `ownedBlob`, and every answer to that question other than
+ * "exactly one of them" is a double free or a leak.  Moving transfers
+ * ownedBlob and nulls the source.  In C there are no constructors, so a C
+ * producer sets every field itself - use iw_plugin_data_bind() as the model.
+ *
+ * # Decoding is a separate capability
+ *
+ * This struct describes pixels; it does not promise the consumer can render
+ * them.  The plugin layer accepts every component count the container format
+ * accepts (there is no cap), so a valid 200-component spectral file loads with
+ * componentCount == 200 and a valid table.  Consumers must check
+ * componentCount against their own decoder's supported set before attempting
+ * to decode: a file that loads is not necessarily a file that renders.
+ *
+ * # The invariant between the two views
+ *
+ * `components`/`componentCount` and `format.components`/`format.componentCount`
+ * are the same table seen from two sides - ownership and rendering.  They are
+ * kept equal by iw_plugin_data_bind(), and iw_plugin_data_is_compatible()
+ * rejects a descriptor where they disagree, so a producer that sets only one of
+ * them fails at the host boundary instead of rendering from a stale pointer.
  */
 struct ImagePluginData {
     int             width;          /* image width in pixels              */
@@ -314,7 +367,141 @@ struct ImagePluginData {
     size_t          size;           /* total buffer size in bytes         */
     uint8_t*        data;           /* raw pixel buffer                   */
     IWImageFormat   format;         /* per-component pixel layout         */
+
+    const IWComponentDef* components;    /* componentCount descriptors       */
+    size_t                componentCount;
+    void*                 ownedBlob;     /* NULL when `components` is static */
+    void                (*freeOwnedBlob)(void*); /* NULL when ownedBlob == NULL */
+    uint16_t              structVersion; /* IW_PLUGIN_STRUCT_VERSION         */
+#ifdef __cplusplus
+    /*
+     * Zero everything and stamp the version.  Deliberately a constructor rather
+     * than a factory function: a default-constructed ImagePluginData is a valid
+     * empty descriptor, so `auto d = ImagePluginData{};` followed by field
+     * assignment cannot leave ownedBlob or structVersion uninitialised.
+     */
+    ImagePluginData()
+        : width(0), height(0), stride(0), colorSpace(IMAGE_COLOR_SPACE_UNKNOWN),
+          size(0), data(nullptr), format(), components(nullptr),
+          componentCount(0), ownedBlob(nullptr), freeOwnedBlob(nullptr),
+          structVersion(IW_PLUGIN_STRUCT_VERSION)
+    {}
+
+    ImagePluginData(const ImagePluginData&) = delete;
+    ImagePluginData& operator=(const ImagePluginData&) = delete;
+
+    /*
+     * Move transfers ownership and nulls the source.  Written out rather than
+     * defaulted, because `= default` would leave both objects holding the same
+     * ownedBlob - a raw pointer is trivially copied, not transferred - and the
+     * second release would be a double free.  No member points into another
+     * member, so the pointers that are copied stay valid in the destination.
+     */
+    ImagePluginData(ImagePluginData&& o) noexcept
+        : width(o.width), height(o.height), stride(o.stride),
+          colorSpace(o.colorSpace), size(o.size), data(o.data),
+          format(o.format), components(o.components),
+          componentCount(o.componentCount), ownedBlob(o.ownedBlob),
+          freeOwnedBlob(o.freeOwnedBlob), structVersion(o.structVersion)
+    {
+        o.data           = nullptr;
+        o.ownedBlob      = nullptr;
+        o.freeOwnedBlob  = nullptr;
+        o.components     = nullptr;
+        o.componentCount = 0;
+        o.format         = IWImageFormat{};
+        o.width = o.height = o.stride = 0;
+        o.size  = 0;
+    }
+
+    ImagePluginData& operator=(ImagePluginData&& o) noexcept
+    {
+        if (this != &o) {
+            /* Releasing the destination's blob first is the whole difference
+             * between assignment and leaking the previous frame. */
+            if (freeOwnedBlob) freeOwnedBlob(ownedBlob);
+
+            width           = o.width;
+            height          = o.height;
+            stride          = o.stride;
+            colorSpace      = o.colorSpace;
+            size            = o.size;
+            data            = o.data;
+            format          = o.format;
+            components      = o.components;
+            componentCount  = o.componentCount;
+            ownedBlob       = o.ownedBlob;
+            freeOwnedBlob   = o.freeOwnedBlob;
+            structVersion   = o.structVersion;
+
+            o.data           = nullptr;
+            o.ownedBlob      = nullptr;
+            o.freeOwnedBlob  = nullptr;
+            o.components     = nullptr;
+            o.componentCount = 0;
+            o.format         = IWImageFormat{};
+            o.width = o.height = o.stride = 0;
+            o.size  = 0;
+        }
+        return *this;
+    }
+#endif
 };
+
+/*
+ * Point the descriptor at a component table, keeping the two views in step.
+ *
+ * Every producer calls this instead of assigning `format.components` by hand:
+ * the two fields must agree, and iw_plugin_data_is_compatible() rejects a
+ * descriptor where they do not.  `count` must not exceed what appears in
+ * format.componentCount either, which is why it is passed rather than derived.
+ *
+ * C callers use it as a template for field-by-field assignment; it is declared
+ * here so the invariant has one spelling on both sides of the ABI.
+ */
+#ifdef __cplusplus
+inline void iw_plugin_data_bind(ImagePluginData& d,
+                                const IWComponentDef* components,
+                                size_t count) noexcept
+{
+    d.components            = components;
+    d.componentCount        = count;
+    d.format.components     = components;
+    d.format.componentCount = static_cast<uint16_t>(count);
+}
+
+/*
+ * Record that this descriptor owns `blob`, to be released through `release`.
+ *
+ * Separate from the bind because the two are independent: a producer can own a
+ * pixel blob that is not a component table, and the PNG/JPEG/GIF/WebP loaders
+ * own their pixel bytes but never their component table.
+ */
+inline void iw_plugin_data_own(ImagePluginData& d, void* blob,
+                               void (*release)(void*)) noexcept
+{
+    d.ownedBlob     = blob;
+    d.freeOwnedBlob = blob ? release : nullptr;
+}
+
+/*
+ * The host's admission check: is this descriptor the layout this build was
+ * compiled against, and internally consistent?
+ *
+ * A stale plugin DLL fails here with a diagnosable reason instead of having its
+ * fields read at the wrong offsets.  A producer that populated only one of the
+ * two component views fails here too - which is the point: the alternative is
+ * rendering from a table nobody owns.
+ */
+inline bool iw_plugin_data_is_compatible(const ImagePluginData& d) noexcept
+{
+    if (d.structVersion != IW_PLUGIN_STRUCT_VERSION)      return false;
+    if (d.components != d.format.components)              return false;
+    if (d.componentCount != static_cast<size_t>(d.format.componentCount)) return false;
+    if ((d.ownedBlob == nullptr) != (d.freeOwnedBlob == nullptr))         return false;
+    return true;
+}
+#endif
 
 struct ImagePluginResult {
     ImagePluginResultCode code;

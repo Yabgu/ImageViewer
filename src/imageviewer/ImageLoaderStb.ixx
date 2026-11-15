@@ -182,6 +182,12 @@ ImagePluginResult DecodeStb(const Source& src)
         throw std::runtime_error("Failed to allocate image buffer");
     }
 
+    /* Construct in place: this loader keeps the descriptor and the pixels in
+     * one allocation, so the block must be initialised rather than memset -
+     * the default constructor zeroes ownedBlob/freeOwnedBlob and stamps the
+     * ABI version, and it must not be allowed to touch the pixels that follow. */
+    new (block) ImagePluginData();
+
     block->width      = width;
     block->height     = height;
     block->stride     = static_cast<int>(static_cast<size_t>(width) * componentsPerPixel * bytesPerChannel);
@@ -189,6 +195,9 @@ ImagePluginResult DecodeStb(const Source& src)
     block->size       = dataSize;
     block->data       = static_cast<uint8_t*>(static_cast<void*>(block)) + sizeof(ImagePluginData);
     block->format     = fmt;
+    /* The component table is one of the constexpr sets; the pixels live in this
+     * allocation but the table does not, so nothing is owned through the blob. */
+    iw_plugin_data_bind(*block, fmt.components, fmt.componentCount);
 
     std::memcpy(block->data, pixels, dataSize);
     stbi_image_free(pixels);

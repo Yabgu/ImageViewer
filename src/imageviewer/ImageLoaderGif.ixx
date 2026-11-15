@@ -233,15 +233,24 @@ ImagePluginData* CompositeFirstFrame(GifFileType* gif)
     fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
     fmt.components     = iw::kRgba8Components;
 
-    ImagePluginData* data = new ImagePluginData{
-        .width      = canvasW,
-        .height     = canvasH,
-        .stride     = canvasW * 4,
-        .colorSpace = IMAGE_COLOR_SPACE_SRGB,
-        .size       = canvasBytes,
-        .data       = rgbaGuard.release(),   /* ownership moves to the descriptor */
-        .format     = fmt
-    };
+    /*
+     * Default-construct, then assign.  Designated initialisation cannot be
+     * used any more: ImagePluginData is move-only with a real constructor
+     * (so that ownedBlob and structVersion can never be left uninitialised),
+     * and a type with a user-declared constructor is no longer an aggregate in
+     * C++.  The default constructor already zeroes the ownership fields and
+     * stamps the ABI version.
+     */
+    auto* data = new ImagePluginData{};
+    data->width      = canvasW;
+    data->height     = canvasH;
+    data->stride     = canvasW * 4;
+    data->colorSpace = IMAGE_COLOR_SPACE_SRGB;
+    data->size       = canvasBytes;
+    data->data       = rgbaGuard.release();   /* ownership moves to the descriptor */
+    data->format     = fmt;
+    /* RGBA8 is a constexpr table owned by the program, not by this descriptor. */
+    iw_plugin_data_bind(*data, fmt.components, fmt.componentCount);
     return data;
 }
 

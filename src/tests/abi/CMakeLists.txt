@@ -40,7 +40,7 @@
 # The memory-span TU compiles against whatever subset of loaders exists: each
 # of its cases is behind the same IW_<FMT>_PLUGIN_PATH define as the per-format
 # file, so a build with two loaders still links and still tests those two.
-set(_abi_sources main.cpp test_imageloader_memory.cpp)
+set(_abi_sources main.cpp test_imageloader_memory.cpp test_plugin_ownership.cpp)
 set(_abi_plugin_targets "")
 
 macro(_abi_add_loader TARGET_ID SOURCE EXTRA_MESSAGE)
