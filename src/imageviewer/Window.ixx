@@ -339,14 +339,60 @@ private:
 	int      chromeFrames_      = 0;
 
 	/* ── GL resources ──────────────────────────────────────────────────────── */
-	struct Texture
+
+	/* GL_MAX_TEXTURE_SIZE is a hard limit, and panoramas and stitched
+	 * screenshots routinely exceed it (17277 x 8176 is one PNG in the wild, and
+	 * 16384 is a typical limit).  The raster is therefore cut into a grid of
+	 * tiles that each fit, and every tile carries a one-texel gutter on all four
+	 * sides holding the neighbouring source pixels:
+	 *
+	 *     +-+-------+--+     the gutter makes GL_LINEAR interpolate across a tile
+	 *     | |       |  |     boundary with the real neighbour instead of clamping
+	 *     +-+-------+--+     to the tile's own edge texel.  Without it every seam
+	 *     | |  tile |  |     shows as a faint line, which is the artifact that
+	 *     +-+-------+--+     makes naive tiling look broken when minified.
+	 *     | |       |  |
+	 *     +-+-------+--+     The gutter is never drawn: each quad's texture
+	 *                       coordinates start and end on the body's outer texel
+	 *                       edges, so neighbouring quads meet exactly.
+	 *
+	 * Gutters also make GL_NEAREST exact at a fractional sub-pixel offset: a
+	 * fragment that rounds across a tile boundary lands on the gutter texel,
+	 * which holds precisely the pixel the adjacent tile would have shown.
+	 */
+	static constexpr int kTextureBorder = 1;
+
+	/* Preferred upper bound on a single texture's extent.  GL_MAX_TEXTURE_SIZE
+	 * wins whenever it is smaller; above this, splitting into a few more tiles
+	 * costs a handful of draw calls but keeps every allocation at a size desktop
+	 * drivers hand out reliably. */
+	static constexpr int kPreferredTileExtent = 16384;
+
+	struct TextureTile
 	{
-		GLuint id = 0;
-		int    width = 0;
-		int    height = 0;
+		GLuint id   = 0;
+		int    texW = 0;   /* texture size in texels, gutters included */
+		int    texH = 0;
+		int    x0   = 0;   /* source-raster pixel rect this tile covers, */
+		int    y0   = 0;   /* measured without the gutters              */
+		int    w    = 0;
+		int    h    = 0;
 	};
-	Texture textures_[2];      /* phase A / phase B (identical when single-frame) */
-	int     textureCount_ = 0;
+
+	/* One frame's worth of tiles, i.e. the whole picture.  Two passes exist when
+	 * the filter produced two phase frames; they are drawn alternately. */
+	struct TexturePass
+	{
+		std::vector<TextureTile> tiles;
+	};
+
+	TexturePass passes_[2];    /* phase A / phase B (identical when single-frame) */
+	int         passCount_ = 0;
+
+	int rasterWidth_    = 0;   /* dims of the raster actually uploaded; a preview */
+	int rasterHeight_   = 0;   /* raster is smaller than imageWidth_/imageHeight_  */
+	int maxTextureSize_ = 0;   /* GL_MAX_TEXTURE_SIZE, read after context init    */
+	int tileExtent_     = 0;   /* tile body size that fits, gutters excluded      */
 
 	GLuint shaderProgram_  = 0;
 	GLuint vao_            = 0;
@@ -355,6 +401,7 @@ private:
 	GLint  uniformProjection_ = -1;
 	GLint  uniformModel_      = -1;
 	GLint  uniformTexture_    = -1;
+	GLint  uniformUvRect_     = -1;
 
 	double getZoom() const {
 		return zoom_;
@@ -703,6 +750,7 @@ public:
 
 		glEnable(GL_TEXTURE_2D);
 
+		ApplyTextureLimits();
 		CreateQuadResources();
 		InitImGui();
 		imgui_->chromeEnabled = settings.chromeVisible;
@@ -807,10 +855,7 @@ public:
 		ShutdownImGui();
 		IviewTrace("ImGui shutdown done");
 
-		for (Texture& t : textures_)
-		{
-			if (t.id != 0) { glDeleteTextures(1, &t.id); t.id = 0; }
-		}
+		DeletePasses();
 		if (vboTexCoords_ != 0) glDeleteBuffers(1, &vboTexCoords_);
 		if (vboPositions_ != 0) glDeleteBuffers(1, &vboPositions_);
 		if (vao_ != 0)          glDeleteVertexArrays(1, &vao_);
@@ -856,10 +901,14 @@ private:
 			out vec2 TexCoord;
 			uniform mat4 projection;
 			uniform mat4 model;
+			/* xy = top-left texel edge of this tile's body, zw = bottom-right
+			 * one.  Every tile draws the same unit quad, so the sub-rectangle of
+			 * its texture is a uniform instead of a per-tile vertex buffer. */
+			uniform vec4 uvRect;
 			void main()
 			{
 				gl_Position = projection * model * vec4(aPos.x, aPos.y, 0.0, 1.0);
-				TexCoord = aTexCoord;
+				TexCoord = mix(uvRect.xy, uvRect.zw, aTexCoord);
 			}
 		)";
 
@@ -898,10 +947,12 @@ private:
 		uniformProjection_ = glGetUniformLocation(shaderProgram_, "projection");
 		uniformModel_      = glGetUniformLocation(shaderProgram_, "model");
 		uniformTexture_    = glGetUniformLocation(shaderProgram_, "ourTexture");
+		uniformUvRect_     = glGetUniformLocation(shaderProgram_, "uvRect");
 
 		/* Unit quad, triangle strip.  Texture coordinate v = 0 is the first row
 		 * of the uploaded image, which DrawImage() places at the top of the
-		 * screen by using a negative y scale. */
+		 * screen by using a negative y scale.  The uvRect uniform rescales this
+		 * 0..1 range onto one tile's body inside its gutter-padded texture. */
 		const float positions[]  = { 0.0f, 0.0f,  1.0f, 0.0f,  0.0f, 1.0f,  1.0f, 1.0f };
 		const float texCoords[]  = { 0.0f, 0.0f,  1.0f, 0.0f,  0.0f, 1.0f,  1.0f, 1.0f };
 
@@ -1102,94 +1153,229 @@ private:
 		}
 	}
 
-	/* One texture per phase frame.  A single-frame source uploads once: the
-	 * second phase keeps pointing at the same texture through DrawImage(), and
-	 * the previous second-phase texture (from a PWM run) simply stays unused. */
+	/* A raster ready for upload: already in a 8-bit layout GL can take verbatim.
+	 * Both upload paths — an Image's own packed pixels and the filter's RGBA8
+	 * frames — reduce to this, so tiling has exactly one implementation. */
+	struct RasterSource
+	{
+		const uint8_t* data   = nullptr;
+		int    width  = 0;
+		int    height = 0;
+		int    stride = 0;            /* bytes per row           */
+		int    bpp    = 0;            /* bytes per pixel         */
+		GLenum format = GL_RGBA;      /* GL_RGB / GL_RGBA        */
+		GLint  internalFormat = GL_RGBA8;
+	};
+
+	static RasterSource Rgba8Raster(const uint8_t* data, int width, int height)
+	{
+		RasterSource src;
+		src.data           = data;
+		src.width          = width;
+		src.height         = height;
+		src.bpp            = 4;
+		src.stride         = width * 4;
+		src.format         = GL_RGBA;
+		src.internalFormat = GL_RGBA8;
+		return src;
+	}
+
+	/* Reads GL_MAX_TEXTURE_SIZE once the context is current and derives the tile
+	 * body size from it.  Called from the constructor; the limits never change
+	 * for the life of the window. */
+	void ApplyTextureLimits()
+	{
+		GLint maxSize = 0;
+		glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxSize);
+		maxTextureSize_ = (maxSize > 0) ? static_cast<int>(maxSize) : 2048;
+		const int ceiling = std::min(maxTextureSize_, kPreferredTileExtent);
+		tileExtent_ = std::max(1, ceiling - 2 * kTextureBorder);
+		if (IviewTraceEnabled())
+		{
+			char line[128];
+			std::snprintf(line, sizeof(line),
+			              "texture limits: max_size=%d tile_extent=%d border=%d",
+			              maxTextureSize_, tileExtent_, kTextureBorder);
+			IviewTrace(line);
+		}
+	}
+
+	void DeletePass(TexturePass& pass)
+	{
+		for (TextureTile& tile : pass.tiles)
+			if (tile.id != 0) glDeleteTextures(1, &tile.id);
+		pass.tiles.clear();
+	}
+
+	void DeletePasses()
+	{
+		DeletePass(passes_[0]);
+		DeletePass(passes_[1]);
+		passCount_ = 0;
+	}
+
+	/* Texel index -> source index along one axis, as a few straight copies.
+	 * Inside the raster the mapping is the identity shifted by the gutter; the
+	 * two gutter bands outside it repeat the nearest edge pixel, which is what
+	 * GL_CLAMP_TO_EDGE gives an untiled upload. */
+	struct UploadSpan { int dst; int src; int count; };
+
+	static int BuildSpans(int origin, int extent, int limit, UploadSpan out[3]) noexcept
+	{
+		int n = 0;
+		out[n++] = { 0, std::max(origin - kTextureBorder, 0), kTextureBorder };
+		out[n++] = { kTextureBorder, origin, extent };
+		out[n++] = { kTextureBorder + extent,
+		             std::min(origin + extent, limit - 1), kTextureBorder };
+		return n;
+	}
+
+	/* Allocates one tile texture and fills it from the source raster.  Every fill
+	 * is a glTexSubImage2D straight out of the source buffer: the unpack skip and
+	 * row-length state selects the sub-rectangle, so no pixel is copied on the
+	 * CPU and no staging buffer exists at any point — the property that made the
+	 * old single-texture fast path worth having. */
+	void UploadTile(TextureTile& tile, const RasterSource& src)
+	{
+		tile.texW = tile.w + 2 * kTextureBorder;
+		tile.texH = tile.h + 2 * kTextureBorder;
+
+		glGenTextures(1, &tile.id);
+		glBindTexture(GL_TEXTURE_2D, tile.id);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexImage2D(GL_TEXTURE_2D, 0, src.internalFormat, tile.texW, tile.texH, 0,
+		             src.format, GL_UNSIGNED_BYTE, nullptr);
+
+		UploadSpan xs[3];
+		UploadSpan ys[3];
+		const int nx = BuildSpans(tile.x0, tile.w, src.width,  xs);
+		const int ny = BuildSpans(tile.y0, tile.h, src.height, ys);
+
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		glPixelStorei(GL_UNPACK_ROW_LENGTH, src.stride / src.bpp);
+		for (int j = 0; j < ny; ++j)
+		{
+			for (int i = 0; i < nx; ++i)
+			{
+				glPixelStorei(GL_UNPACK_SKIP_ROWS,   ys[j].src);
+				glPixelStorei(GL_UNPACK_SKIP_PIXELS, xs[i].src);
+				glTexSubImage2D(GL_TEXTURE_2D, 0, xs[i].dst, ys[j].dst,
+				                xs[i].count, ys[j].count,
+				                src.format, GL_UNSIGNED_BYTE, src.data);
+			}
+		}
+		glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+		glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+	}
+
+	/* Cuts one raster into tiles and uploads them.  Tile boundaries are source
+	 * pixel boundaries, so at 1:1 the texel grid still lands on the screen pixel
+	 * grid. */
+	void BuildPass(TexturePass& pass, const RasterSource& src)
+	{
+		const int extent = std::max(1, tileExtent_);
+		const int cols   = (src.width  + extent - 1) / extent;
+		const int rows   = (src.height + extent - 1) / extent;
+		pass.tiles.reserve(static_cast<size_t>(cols) * static_cast<size_t>(rows));
+		for (int row = 0; row < rows; ++row)
+		{
+			for (int col = 0; col < cols; ++col)
+			{
+				/* Register the tile before it owns a texture, so the failure path
+				 * below can never leak one. */
+				pass.tiles.push_back(TextureTile{});
+				TextureTile& tile = pass.tiles.back();
+				tile.x0 = col * extent;
+				tile.y0 = row * extent;
+				tile.w  = std::min(extent, src.width  - tile.x0);
+				tile.h  = std::min(extent, src.height - tile.y0);
+				UploadTile(tile, src);
+			}
+		}
+	}
+
+	/* Replaces the on-screen textures.  The new set is built in full before the
+	 * old one is deleted, so a failure leaves the previous picture intact. */
+	void UploadRasters(const RasterSource* srcs, int count)
+	{
+		TexturePass built[2];
+		try
+		{
+			for (int p = 0; p < count; ++p) BuildPass(built[p], srcs[p]);
+		}
+		catch (...)
+		{
+			DeletePass(built[0]);
+			DeletePass(built[1]);
+			throw;
+		}
+
+		DeletePasses();
+		passes_[0] = std::move(built[0]);
+		passes_[1] = std::move(built[1]);
+		passCount_   = count;
+		rasterWidth_  = srcs[0].width;
+		rasterHeight_ = srcs[0].height;
+		glBindTexture(GL_TEXTURE_2D, 0);
+
+		if (IviewTraceEnabled())
+		{
+			char line[192];
+			std::snprintf(line, sizeof(line),
+			              "texture upload done (%dx%d, passes=%d, tiles=%d+%d, extent=%d)",
+			              rasterWidth_, rasterHeight_, passCount_,
+			              static_cast<int>(passes_[0].tiles.size()),
+			              static_cast<int>(passes_[1].tiles.size()), tileExtent_);
+			IviewTrace(line);
+		}
+	}
+
+	/* One pass per phase frame.  A single-frame source uploads once: the second
+	 * phase keeps drawing the same pass, and the previous second-phase textures
+	 * (from a PWM run) are simply gone. */
 	void UploadTextures(const std::vector<uint8_t>& phaseA,
 	                    const std::vector<uint8_t>& phaseB,
 	                    int width, int height)
 	{
 		IviewTrace("texture upload start");
-		const uint8_t* sources[2] = {
-			phaseA.data(),
-			phaseB.empty() ? phaseA.data() : phaseB.data()
-		};
-
-		const int uploadCount = phaseB.empty() ? 1 : 2;
-		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-		for (int i = 0; i < uploadCount; ++i)
-		{
-			if (textures_[i].id == 0)
-				glGenTextures(1, &textures_[i].id);
-
-			glBindTexture(GL_TEXTURE_2D, textures_[i].id);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
-			             GL_RGBA, GL_UNSIGNED_BYTE, sources[i]);
-
-			textures_[i].width  = width;
-			textures_[i].height = height;
-		}
-		glBindTexture(GL_TEXTURE_2D, 0);
-		textureCount_ = uploadCount;
-		if (IviewTraceEnabled())
-		{
-			char line[192];
-			if (textureCount_ > 1)
-				std::snprintf(line, sizeof(line),
-				              "texture upload done (%dx%d, phases=%d, ids=%u,%u)",
-				              width, height, textureCount_, textures_[0].id, textures_[1].id);
-			else
-				std::snprintf(line, sizeof(line),
-				              "texture upload done (%dx%d, phases=1, id=%u)",
-				              width, height, textures_[0].id);
-			IviewTrace(line);
-		}
+		RasterSource srcs[2];
+		srcs[0] = Rgba8Raster(phaseA.data(), width, height);
+		const int count = phaseB.empty() ? 1 : 2;
+		if (count == 2) srcs[1] = Rgba8Raster(phaseB.data(), width, height);
+		UploadRasters(srcs, count);
 	}
 
-	/* Fast path for the common 8-bit layouts: upload the Image's own pixels with
-	 * glTexImage2D instead of converting to a separate RGBA8 frame.  A 24 MP RGB
-	 * image is 72 MB; converting it to RGBA8 costs a 96 MB allocation plus a full
-	 * pass over both buffers, which this avoids for the mode=none display path.
+	/* Fast path for the common 8-bit layouts: upload the Image's own pixels
+	 * instead of converting to a separate RGBA8 frame.  A 24 MP RGB image is
+	 * 72 MB; converting it to RGBA8 costs a 96 MB allocation plus a full pass
+	 * over both buffers, which this avoids for the mode=none display path.
 	 * Returns false for layouts this path does not handle (the caller converts). */
 	bool TryUploadPackedSource(const Image& image)
 	{
-		GLint  internalFormat = 0;
-		GLenum sourceFormat   = 0;
+		RasterSource src;
 		if (IsPackedRgba8(image.format)) {
-			internalFormat = GL_RGBA8;
-			sourceFormat   = GL_RGBA;
+			src.internalFormat = GL_RGBA8;
+			src.format         = GL_RGBA;
 		} else if (IsPackedRgb8(image.format)) {
-			internalFormat = GL_RGB8;
-			sourceFormat   = GL_RGB;
+			src.internalFormat = GL_RGB8;
+			src.format         = GL_RGB;
 		} else {
 			return false;
 		}
 
+		src.data   = image.data;
+		src.width  = image.width;
+		src.height = image.height;
+		src.stride = image.stride;
+		src.bpp    = image.BytesPerPixel();
+		if (src.bpp <= 0) return false;
+
 		IviewTrace("direct texture upload start");
-		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-		const int bytesPerPixel = image.BytesPerPixel();
-		if (bytesPerPixel > 0 && image.stride != image.width * bytesPerPixel)
-			glPixelStorei(GL_UNPACK_ROW_LENGTH, image.stride / bytesPerPixel);
-
-		if (textures_[0].id == 0)
-			glGenTextures(1, &textures_[0].id);
-		glBindTexture(GL_TEXTURE_2D, textures_[0].id);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, image.width, image.height, 0,
-		             sourceFormat, GL_UNSIGNED_BYTE, image.data);
-
-		textures_[0].width  = image.width;
-		textures_[0].height = image.height;
-		textureCount_ = 1;
-		glBindTexture(GL_TEXTURE_2D, 0);
-		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+		UploadRasters(&src, 1);
 		IviewTrace("direct texture upload done");
 		return true;
 	}
@@ -1634,9 +1820,6 @@ public:
 	 * screen — used when a progressive preview is replaced by the full image. */
 	bool LoadTextures(
 		const Image& image,
-		const int /*segmentWidth*/,
-		const int /*segmentHeight*/,
-		const int /*redundantBorderSize*/,
 		const IWFilterOptions& opts = IWFilterOptions{
 			IW_FILTER_OPTIONS_VERSION, 0u, nullptr },
 		const bool preserveView = false)
@@ -1746,9 +1929,9 @@ public:
 
 	/* ── Main loop ─────────────────────────────────────────────────────────── */
 
-	/* Draws the image quad for one phase.  The transform is built in NDC on the
-	 * CPU, so the shader keeps the same projection*model pipeline as the OpenGL
-	 * branch while needing no per-frame buffer updates. */
+	/* Draws the image, one quad per texture tile, for one phase.  The transform is
+	 * built in NDC on the CPU, so the shader keeps the same projection*model
+	 * pipeline while needing no per-frame buffer updates. */
 	void DrawImage(uint32_t phase) const
 	{
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1758,40 +1941,32 @@ public:
 
 		if (!HasImage()) return;
 
-		const Texture& tex = (textureCount_ <= 1) ? textures_[0]
-		                                            : textures_[phase & 1u];
-		if (tex.id == 0) return;
+		const int pass = (passCount_ <= 1) ? 0 : static_cast<int>(phase & 1u);
+		const std::vector<TextureTile>& tiles = passes_[pass].tiles;
+		if (tiles.empty()) return;
 
 		/* At 100 % or more show exact pixels, below that filter them.  A preview
-		 * texture can be smaller than the image dimensions it is stretched over;
+		 * raster can be smaller than the image dimensions it is stretched over;
 		 * it must stay linearly filtered even at 100 % so it does not look like a
 		 * mosaic while the full decode finishes. */
 		const double zoom = getZoom();
 		const bool exactPixels = zoom >= 1.0 &&
-		                         tex.width  == imageWidth_ &&
-		                         tex.height == imageHeight_;
-		glBindTexture(GL_TEXTURE_2D, tex.id);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-		                exactPixels ? GL_NEAREST : GL_LINEAR);
+		                         rasterWidth_  == imageWidth_ &&
+		                         rasterHeight_ == imageHeight_;
+		const GLint magFilter = exactPixels ? GL_NEAREST : GL_LINEAR;
 
 		const double imgW = imageWidth_ * zoom;
 		const double imgH = imageHeight_ * zoom;
 		const double imgX = (width - imgW) * 0.5 + panX;
 		const double imgY = (height - imgH) * 0.5 + panY;
 
-		/* Unit quad -> NDC.  y is negated so image row 0 lands at the top. */
-		const float sx = (float)(2.0 * imgW / width);
-		const float sy = (float)(-2.0 * imgH / height);
-		const float tx = (float)(2.0 * imgX / width - 1.0);
-		const float ty = (float)(1.0 - 2.0 * imgY / height);
+		/* Destination pixels per source-raster pixel.  The tiles partition the
+		 * raster and the quads partition the image rectangle along the same
+		 * boundaries, so they abut exactly: no gap, and no overlap that would
+		 * blend the seam twice. */
+		const double sx = imgW / rasterWidth_;
+		const double sy = imgH / rasterHeight_;
 
-		/* Column-major model matrix; the projection stays identity. */
-		const float model[16] = {
-			sx,   0.0f, 0.0f, 0.0f,
-			0.0f, sy,   0.0f, 0.0f,
-			0.0f, 0.0f, 1.0f, 0.0f,
-			tx,   ty,   0.0f, 1.0f
-		};
 		const float identity[16] = {
 			1.0f, 0.0f, 0.0f, 0.0f,
 			0.0f, 1.0f, 0.0f, 0.0f,
@@ -1801,13 +1976,51 @@ public:
 
 		glUseProgram(shaderProgram_);
 		glUniformMatrix4fv(uniformProjection_, 1, GL_FALSE, identity);
-		glUniformMatrix4fv(uniformModel_, 1, GL_FALSE, model);
 		glUniform1i(uniformTexture_, 0);
 
 		glActiveTexture(GL_TEXTURE0);
 		glBindVertexArray(vao_);
-		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		for (const TextureTile& tile : tiles)
+		{
+			const double left   = imgX + tile.x0 * sx;
+			const double top    = imgY + tile.y0 * sy;
+			const double right  = imgX + (tile.x0 + tile.w) * sx;
+			const double bottom = imgY + (tile.y0 + tile.h) * sy;
+
+			/* Column-major model matrix, y negated so image row 0 lands at the
+			 * top; the projection stays identity. */
+			const float model[16] = {
+				(float)(2.0 * (right - left) / width),  0.0f, 0.0f, 0.0f,
+				0.0f, (float)(-2.0 * (bottom - top) / height), 0.0f, 0.0f,
+				0.0f, 0.0f, 1.0f, 0.0f,
+				(float)(2.0 * left / width - 1.0),
+				(float)(1.0 - 2.0 * top / height), 0.0f, 1.0f
+			};
+
+			/* The body's outer texel edges: the gutter sits outside this range
+			 * and is only ever read by the filter, never mapped to a pixel. */
+			const float uv[4] = {
+				kTextureBorder / (float)tile.texW,
+				kTextureBorder / (float)tile.texH,
+				(kTextureBorder + tile.w) / (float)tile.texW,
+				(kTextureBorder + tile.h) / (float)tile.texH
+			};
+
+			glBindTexture(GL_TEXTURE_2D, tile.id);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+			glUniformMatrix4fv(uniformModel_, 1, GL_FALSE, model);
+			glUniform4fv(uniformUvRect_, 1, uv);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
 		glBindVertexArray(0);
+	}
+
+	/* First tile of the pass a phase draws from; the frame trace uses it to prove
+	 * the A/B alternation.  0 when nothing is uploaded. */
+	GLuint PhaseTextureId(uint32_t phase) const noexcept
+	{
+		const int pass = (passCount_ <= 1) ? 0 : static_cast<int>(phase & 1u);
+		return passes_[pass].tiles.empty() ? 0u : passes_[pass].tiles[0].id;
 	}
 
 	void Main(ProgressiveImageLoad&& imageLoad, std::filesystem::path imagePath)
@@ -1970,7 +2183,7 @@ public:
 						{
 							IWFilterArg noneArgs[1];
 							const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
-							if (!LoadTextures(*fullImage, 0, 0, 0, noneOpts))
+							if (!LoadTextures(*fullImage, noneOpts))
 								throw std::runtime_error("the full image could not be uploaded");
 
 							SetWindowTitle(imagePath);
@@ -2025,7 +2238,7 @@ public:
 								const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
 								/* The preview already sized the quad like the full image,
 								 * so the view (zoom and pan) survives the swap. */
-								if (!LoadTextures(*fullImage, 0, 0, 0, noneOpts, /*preserveView=*/true))
+								if (!LoadTextures(*fullImage, noneOpts, /*preserveView=*/true))
 									throw std::runtime_error("the full image could not be uploaded");
 
 								source_image_ = std::make_shared<Image>(std::move(*fullImage));
@@ -2094,7 +2307,7 @@ public:
 					{
 						IWFilterArg noneArgs[1];
 						const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
-						if (!LoadTextures(r.image, 0, 0, 0, noneOpts))
+						if (!LoadTextures(r.image, noneOpts))
 							throw std::runtime_error("the filter produced an unsupported frame count");
 
 						const std::filesystem::path& shownPath = folder_images_[r.index];
@@ -2244,8 +2457,7 @@ public:
 				/* First ten frames: prove the A/B alternation (0,1,0,1,…). */
 				if (framesAfterUpload < 10)
 				{
-					const unsigned textureId =
-						textures_[(textureCount_ <= 1) ? 0 : (phase & 1u)].id;
+					const unsigned textureId = PhaseTextureId(phase);
 					std::fprintf(stderr, "IVIEW_FRAME %d phase=%u texture=%u\n",
 					             framesAfterUpload, phase & 1u, textureId);
 					std::fflush(stderr);
@@ -3024,7 +3236,7 @@ private:
 				auto image = std::make_shared<Image>(Image::FromFile(path));
 				IWFilterArg noneArgs[1];
 				const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
-				if (!LoadTextures(*image, 0, 0, 0, noneOpts))
+				if (!LoadTextures(*image, noneOpts))
 					continue;
 				SetWindowTitle(path);
 				ComputeReadout(*image, path);
