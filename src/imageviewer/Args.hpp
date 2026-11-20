@@ -56,6 +56,10 @@ struct ViewerArgs
 {
     std::string  imagePath;        /* empty only when helpRequested          */
     IWFilterMode mode        = kModeNone;
+    /* Where the dither runs.  "gpu" asks for the shader backend; the viewer
+     * still falls back to the plugin for modes the shader cannot express
+     * (Floyd-Steinberg) and for sources it cannot upload natively. */
+    std::string  filterBackend;    /* "cpu" / "gpu"; empty = use the config */
     uint32_t     pwmBits     = 0u; /* 0 = do not send pwm_bits, use plugin default */
     uint32_t     spatialBits = 0u; /* 0 = matrix maximum (plugin default)     */
     uint64_t     seed        = 0u; /* blue-noise tile offset                  */
@@ -76,6 +80,11 @@ inline const char* UsageText() noexcept
         "Options:\n"
         "  --filter=MODE   none (default), ordered, floyd, pwm, bayer4x4, bayer8x8,\n"
         "                  bluenoise, spatial_temporal\n"
+        "  --filter-backend=WHERE  cpu (default) or gpu.  gpu dithers in the\n"
+        "                  fragment shader from the source at native precision,\n"
+        "                  so opening a file never waits for a CPU pass.\n"
+        "                  Floyd-Steinberg and non-uploadable formats fall back\n"
+        "                  to cpu automatically.\n"
         "  --pwm-bits=N    Extra virtual bits for --filter=pwm; N in [1, 8]\n"
         "                  only N=1 (9-bit, two phases) is implemented in this build\n"
         "  --spatial-bits=N  Bits the spatial stage may spend (0 = matrix maximum)\n"
@@ -212,6 +221,17 @@ inline ViewerArgs ParseViewerArgs(int argc, const char* const* argv)
                 return out;
             }
             out.filterSpecified = true;
+            continue;
+        }
+
+        if (arg.rfind("--filter-backend=", 0) == 0) {
+            const std::string value = arg.substr(17);
+            if (value != "cpu" && value != "gpu") {
+                out.parseError = "unknown filter backend: '" + value +
+                                 "' (expected cpu or gpu)";
+                return out;
+            }
+            out.filterBackend = value;
             continue;
         }
 
