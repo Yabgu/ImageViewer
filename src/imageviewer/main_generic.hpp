@@ -172,6 +172,9 @@ IVIEW_FORCEINLINE int real_main(int argc, T* argv[])
     /* Merge order: builtin defaults < config file < CLI flags. */
     if (parsed.filterSpecified) settings.filterMode = static_cast<uint32_t>(parsed.mode);
     if (parsed.pwmBits != 0u)   settings.pwmBits    = parsed.pwmBits;
+    if (!parsed.filterBackend.empty())
+        settings.filterBackend = (parsed.filterBackend == "gpu") ? Config::FilterBackend::Gpu
+                                                                : Config::FilterBackend::Cpu;
 
     /* The same refusal as above, now covering a pwm_bits that came from the
      * config file. */

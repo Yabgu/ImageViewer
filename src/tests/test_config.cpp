@@ -176,6 +176,7 @@ canvas_bg = 10,20,30
 fade_delay_ms = 4200
 fade_min_alpha = 0.35
 filter_mode = bluenoise
+filter_backend = gpu
 pwm_bits = 1
 window_width = 1024
 window_height = 768
@@ -206,6 +207,7 @@ hdr_tone_map = false
         CHECK(s.fadeDelayMs == 4200);
         CHECK(s.fadeMinAlpha == doctest::Approx(0.35f));
         CHECK(s.filterMode == Config::kFilterModeBlueNoise);
+        CHECK(s.filterBackend == Config::FilterBackend::Gpu);
         CHECK(s.pwmBits == 1u);
         CHECK(s.windowWidth == 1024);
         CHECK(s.windowHeight == 768);
@@ -358,6 +360,41 @@ hdr_peak_nits = nope
             const std::string text = ReadFile(path);
             CHECK(text.find("filter_mode = " + std::string(c.name)) != std::string::npos);
         }
+    }
+
+    TEST_CASE("filter backend round-trips by name")
+    {
+        TempDir dir;
+        const std::filesystem::path path = dir.path / "iview.conf";
+
+        for (const auto& c : { std::pair{ Config::FilterBackend::Cpu, "cpu" },
+                               std::pair{ Config::FilterBackend::Gpu, "gpu" } })
+        {
+            Config::Settings s;
+            s.savePath      = path.string();
+            s.filterBackend = c.first;
+            REQUIRE(Config::Save(s));
+
+            const std::string text = ReadFile(path);
+            CHECK(text.find("filter_backend = " + std::string(c.second)) != std::string::npos);
+
+            const Config::Settings loaded = Config::Load(path.string(), false);
+            CHECK(loaded.filterBackend == c.first);
+        }
+    }
+
+    TEST_CASE("an unknown filter backend keeps the default")
+    {
+        /* Parse returns false; Load() then leaves the default in place rather
+         * than inventing a backend. */
+        Config::FilterBackend parsed = Config::FilterBackend::Gpu;
+        CHECK_FALSE(Config::ParseFilterBackend("vulkan", parsed));
+
+        TempDir dir;
+        const std::filesystem::path path = dir.path / "iview.conf";
+        WriteFile(path, "filter_backend = voodoo\n");
+        const Config::Settings s = Config::Load(path.string(), false);
+        CHECK(s.filterBackend == Config::FilterBackend::Cpu);
     }
 
     TEST_CASE("filter mode constants match Args.hpp")

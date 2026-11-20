@@ -105,10 +105,43 @@ re-deriving it from chat history.
 - `hdr_sdr_white_nits = 0` (0 = auto; otherwise 80..1000)
 - `hdr_peak_nits = 0` (0 = auto; otherwise 100..10000)
 - `hdr_tone_map = true`
+- `filter_backend = cpu` (`cpu`, `gpu`)
 
 `pwm_bits` is capped at 1 until N-phase output exists.  Raise that cap only
 together with the renderer support and the startup check in
 `src/imageviewer/main_generic.hpp`.
+
+### `filter_backend`
+
+Where the dither is computed.  `cpu` runs the filter plugin on a worker thread
+and uploads finished 8-bit frames; `gpu` uploads the source at its native
+precision and quantises in the fragment shader, so no CPU pass exists at all.
+
+Measured on an 8 MP 16-bit RGB source with `--filter=bayer8x8` (Debug build):
+
+- `cpu`: first swap 3973 ms, dithered frame on screen at 8504 ms (the plugin
+  result arrives after the undithered image)
+- `gpu`: first swap 775 ms, dither already applied
+
+What the shader reproduces, exactly as `FilterCore` computes it: `none`,
+`ordered`, `bayer4x4`, `bayer8x8`, `bluenoise`, `spatial_temporal` and `pwm`
+(2-phase).  Against the CPU backend the output is byte-identical for those modes
+on a constant field; on a 16-bit gradient it differs by at most one code on
+about a third of pixels (float arithmetic versus the plugin's integer path, at
+values sitting on a rounding boundary), with the mean identical to four
+decimals.
+
+Two limitations are deliberate:
+
+- `floyd` always runs on the CPU.  Error diffusion crosses rows, which a
+  per-fragment shader cannot express, so choosing it falls back automatically.
+- Formats GL cannot take verbatim (planar, mixed precision, float16, signed,
+  16-bit BGR) fall back to the CPU backend for that image.  The setting is not
+  changed; the next image may take the shader path again.
+
+Switching to `gpu` re-uploads the current image at native precision (a GL
+upload, no CPU pass).  Switching back to `cpu` keeps the picture on screen and
+queues the plugin run on a worker.
 
 ## Testing
 

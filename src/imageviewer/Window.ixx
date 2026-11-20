@@ -361,7 +361,6 @@ private:
 	 * which holds precisely the pixel the adjacent tile would have shown.
 	 */
 	static constexpr int kTextureBorder = 1;
-
 	/* Preferred upper bound on a single texture's extent.  GL_MAX_TEXTURE_SIZE
 	 * wins whenever it is smaller; above this, splitting into a few more tiles
 	 * costs a handful of draw calls but keeps every allocation at a size desktop
@@ -402,6 +401,42 @@ private:
 	GLint  uniformModel_      = -1;
 	GLint  uniformTexture_    = -1;
 	GLint  uniformUvRect_     = -1;
+
+	/* ── GPU dither backend ────────────────────────────────────────────────── */
+	/*
+	 * Instead of running the filter plugin on the CPU and uploading finished
+	 * 8-bit frames, the GPU backend uploads the source at its NATIVE precision
+	 * and quantises in the fragment shader.  Two consequences:
+	 *
+	 *  - Opening a file never waits for a dither pass.  On a 51 MP 16-bit
+	 *    source the CPU pass is ~27 s serial / ~3 s on 16 cores; the shader
+	 *    version costs one extra ALU chain per fragment and nothing else.
+	 *  - Changing filter mode is free.  The mode is a uniform, so switching
+	 *    Bayer/blue-noise/spatial-temporal no longer re-runs anything.
+	 *
+	 * The price is precision, and it is real: this is float arithmetic in the
+	 * shader rather than the plugin's integer path, so the result is visually
+	 * equivalent but NOT byte-identical to the CPU backend.  That is why the
+	 * backend is a choice and why cpu stays the default.
+	 */
+	Config::FilterBackend filterBackend_ = Config::FilterBackend::Cpu;
+	bool ditherReady_ = false;     /* shader compiled and blue-noise uploaded   */
+	bool sourceIsNative_ = false;  /* current tiles hold source, not RGBA8      */
+	int  nativeComponents_ = 4;    /* channels the dither shader sees           */
+
+	GLuint ditherProgram_    = 0;
+	GLuint blueNoiseTex_     = 0;  /* 64x64 R16, ranks normalised to 0..1       */
+	GLint  ditherProjection_ = -1;
+	GLint  ditherModel_      = -1;
+	GLint  ditherUvRect_     = -1;
+	GLint  ditherTileRect_   = -1;
+	GLint  ditherSource_     = -1;
+	GLint  ditherNoise_      = -1;
+	GLint  ditherMode_       = -1;
+	GLint  ditherPhase_      = -1;
+	GLint  ditherComponents_ = -1;
+	GLint  ditherSpace_      = -1;
+	GLint  ditherSeed_       = -1;
 
 	double getZoom() const {
 		return zoom_;
@@ -705,6 +740,7 @@ public:
 		canvasBg_[1]  = settings.canvasBg[1] / 255.0f;
 		canvasBg_[2]  = settings.canvasBg[2] / 255.0f;
 		filterMode_   = settings.filterMode;
+		filterBackend_ = settings.filterBackend;
 		pwmBits_      = settings.pwmBits;
 		{
 			char line[192];
@@ -752,6 +788,11 @@ public:
 
 		ApplyTextureLimits();
 		CreateQuadResources();
+		/* Built unconditionally: an unusable shader is detected here and simply
+		 * leaves the CPU backend as the only option, so choosing "gpu" in the
+		 * settings file on a machine that cannot run it degrades instead of
+		 * failing to start. */
+		CreateDitherResources();
 		InitImGui();
 		imgui_->chromeEnabled = settings.chromeVisible;
 		IviewTrace("ImGui initialized (opengl3 backend)");
@@ -856,6 +897,8 @@ public:
 		IviewTrace("ImGui shutdown done");
 
 		DeletePasses();
+		if (blueNoiseTex_ != 0) { glDeleteTextures(1, &blueNoiseTex_); blueNoiseTex_ = 0; }
+		if (ditherProgram_ != 0) { glDeleteProgram(ditherProgram_); ditherProgram_ = 0; }
 		if (vboTexCoords_ != 0) glDeleteBuffers(1, &vboTexCoords_);
 		if (vboPositions_ != 0) glDeleteBuffers(1, &vboPositions_);
 		if (vao_ != 0)          glDeleteVertexArrays(1, &vao_);
@@ -972,6 +1015,225 @@ private:
 		glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 
 		glBindVertexArray(0);
+	}
+
+	/* ── GPU dither: shader resources ──────────────────────────────────────── */
+
+	/*
+	 * The fragment shader reproduces FilterCore's quantisers, mode for mode, so
+	 * the two backends look the same on screen:
+	 *
+	 *   0 none             floor(v*255 + 0.5)
+	 *   1 ordered          floor(v*255 + rank/16)          (Bayer4x4, no half-step)
+	 *   4 bayer4x4         floor(v*255 + (rank+0.5)/16)
+	 *   5 bayer8x8         floor(v*255 + (rank+0.5)/64)
+	 *   6 bluenoise        floor(v*255 + (rank+0.5)/4096)
+	 *   7 spatial_temporal two phases trading a half-code, selected by rank<0.5
+	 *   3 pwm              hi/lo chosen by frame index, 2 phases at pwm_bits=1
+	 *
+	 * Alpha is rounded in every mode, as on the CPU.
+	 *
+	 * The pattern is indexed by absolute position, exactly like FilterCore: the
+	 * vertex shader passes a vImagePos varying carrying image-pixel coordinates
+	 * for the tile, so a fragment knows where it sits in the whole picture and a
+	 * tile boundary cannot shift the matrix phase.  When the image is minified
+	 * the pattern switches to screen coordinates instead -- dithering at image
+	 * resolution and then minifying would turn the pattern into aliasing noise.
+	 */
+	void CreateDitherResources()
+	{
+		const char* vertexSource = R"(
+			#version 330 core
+			layout (location = 0) in vec2 aPos;
+			layout (location = 1) in vec2 aTexCoord;
+			out vec2 TexCoord;
+			out vec2 vImagePos;
+			uniform mat4 projection;
+			uniform mat4 model;
+			uniform vec4 uvRect;     /* body top-left / bottom-right, per tile */
+			uniform vec4 uTileRect;  /* xy = tile origin px, zw = tile size px */
+			void main()
+			{
+				gl_Position = projection * model * vec4(aPos.x, aPos.y, 0.0, 1.0);
+				TexCoord  = mix(uvRect.xy, uvRect.zw, aTexCoord);
+				vImagePos = uTileRect.xy + aTexCoord * uTileRect.zw;
+			}
+		)";
+
+		const char* fragmentSource = R"(
+			#version 330 core
+			in vec2 TexCoord;
+			in vec2 vImagePos;
+			out vec4 FragColor;
+
+			uniform sampler2D uSource;
+			uniform sampler2D uBlueNoise;   /* 64x64 R16, rank normalised to 0..1 */
+			uniform int  uMode;
+			uniform int  uPhase;
+			uniform int  uComponents;
+			uniform int  uDitherSpace;      /* 0 = image pixels, 1 = screen pixels */
+			uniform uint uSeed;
+
+			/* Ranks, not thresholds: the half-step is applied at the use site so
+			 * mode 1 (which has no half-step, matching FilterCore) and mode 4
+			 * (which has one) can share the same table. */
+			const float kBayer4[16] = float[16](
+				 0.0,  8.0,  2.0, 10.0,
+				12.0,  4.0, 14.0,  6.0,
+				 3.0, 11.0,  1.0,  9.0,
+				15.0,  7.0, 13.0,  5.0);
+
+			const float kBayer8[64] = float[64](
+				 0.0, 32.0,  8.0, 40.0,  2.0, 34.0, 10.0, 42.0,
+				48.0, 16.0, 56.0, 24.0, 50.0, 18.0, 58.0, 26.0,
+				12.0, 44.0,  4.0, 36.0, 14.0, 46.0,  6.0, 38.0,
+				60.0, 28.0, 52.0, 20.0, 62.0, 30.0, 54.0, 22.0,
+				 3.0, 35.0, 11.0, 43.0,  1.0, 33.0,  9.0, 41.0,
+				51.0, 19.0, 59.0, 27.0, 49.0, 17.0, 57.0, 25.0,
+				15.0, 47.0,  7.0, 39.0, 13.0, 45.0,  5.0, 37.0,
+				63.0, 31.0, 55.0, 23.0, 61.0, 29.0, 53.0, 21.0);
+
+			/* Threshold for pixel p in (0, 1), matching FilterCore::SpatialThreshold. */
+			float Threshold(ivec2 p)
+			{
+				if (uMode == 1)
+					return kBayer4[(p.y & 3) * 4 + (p.x & 3)] / 16.0;
+				if (uMode == 4)
+					return (kBayer4[(p.y & 3) * 4 + (p.x & 3)] + 0.5) / 16.0;
+				if (uMode == 5)
+					return (kBayer8[(p.y & 7) * 8 + (p.x & 7)] + 0.5) / 64.0;
+
+				ivec2 q = ivec2((p.x + int(uSeed & 63u)) & 63,
+				                (p.y + int((uSeed >> 6) & 63u)) & 63);
+				float rank = floor(texelFetch(uBlueNoise, q, 0).r * 65535.0 + 0.5);
+				return (rank + 0.5) / 4096.0;
+			}
+
+			float QuantizeBayer(float v, float s)
+			{
+				return min(255.0, floor(clamp(v, 0.0, 1.0) * 255.0 + s)) / 255.0;
+			}
+
+			float QuantizeRound(float v)
+			{
+				return floor(clamp(v, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+			}
+
+			/* FilterCore::ApplySpatialTemporal, per channel: the pair trades one
+			 * half-code, and the frame index decides which phase shows it. */
+			float QuantizeTemporal(float v, float s)
+			{
+				float q9     = floor(clamp(v, 0.0, 1.0) * 510.0 + 0.5);
+				float base   = floor(q9 * 0.5);
+				bool  odd    = mod(q9, 2.0) > 0.5;
+				bool  pHigh  = s < 0.5;
+				bool  showHi = (uPhase == 0) ? pHigh : !pHigh;
+				return (base + ((odd && showHi) ? 1.0 : 0.0)) / 255.0;
+			}
+
+			/* FilterCore::ApplyPWM at two phases. */
+			float QuantizePwm(float v)
+			{
+				float scaled  = clamp(v, 0.0, 1.0) * 255.0;
+				float lo      = floor(scaled);
+				float hi      = min(lo + 1.0, 255.0);
+				float hiCount = floor((scaled - lo) * 2.0 + 0.5);
+				return ((float(uPhase) < hiCount) ? hi : lo) / 255.0;
+			}
+
+			void main()
+			{
+				vec4 t = texture(uSource, TexCoord);
+				vec3 rgb;
+				float a;
+				if (uComponents == 1)      { rgb = t.rrr; a = 1.0; }
+				else if (uComponents == 2) { rgb = t.rrr; a = t.g; }
+				else if (uComponents == 3) { rgb = t.rgb; a = 1.0; }
+				else                       { rgb = t.rgb; a = t.a; }
+
+				ivec2 p = (uDitherSpace == 0) ? ivec2(floor(vImagePos))
+				                              : ivec2(floor(gl_FragCoord.xy));
+				float s = Threshold(p);
+
+				vec3 outc;
+				if (uMode == 0) {
+					outc = vec3(QuantizeRound(rgb.r), QuantizeRound(rgb.g), QuantizeRound(rgb.b));
+				} else if (uMode == 3) {
+					outc = vec3(QuantizePwm(rgb.r), QuantizePwm(rgb.g), QuantizePwm(rgb.b));
+				} else if (uMode == 7) {
+					outc = vec3(QuantizeTemporal(rgb.r, s), QuantizeTemporal(rgb.g, s),
+					            QuantizeTemporal(rgb.b, s));
+				} else {
+					outc = vec3(QuantizeBayer(rgb.r, s), QuantizeBayer(rgb.g, s),
+					            QuantizeBayer(rgb.b, s));
+				}
+				FragColor = vec4(outc, QuantizeRound(a));
+			}
+		)";
+
+		try
+		{
+			const GLuint vs = CompileShader(GL_VERTEX_SHADER, vertexSource);
+			GLuint fs = 0;
+			try { fs = CompileShader(GL_FRAGMENT_SHADER, fragmentSource); }
+			catch (...) { glDeleteShader(vs); throw; }
+
+			ditherProgram_ = glCreateProgram();
+			glAttachShader(ditherProgram_, vs);
+			glAttachShader(ditherProgram_, fs);
+			glLinkProgram(ditherProgram_);
+			glDeleteShader(vs);
+			glDeleteShader(fs);
+
+			GLint linked = 0;
+			glGetProgramiv(ditherProgram_, GL_LINK_STATUS, &linked);
+			if (!linked)
+			{
+				char log[1024] = {0};
+				glGetProgramInfoLog(ditherProgram_, sizeof(log) - 1, NULL, log);
+				glDeleteProgram(ditherProgram_);
+				ditherProgram_ = 0;
+				throw std::runtime_error(std::string("Dither shader link failed: ") + log);
+			}
+		}
+		catch (const std::exception& ex)
+		{
+			/* A driver that refuses the shader is not fatal: the CPU backend is
+			 * the default and still works, so report and leave ditherReady_ false. */
+			std::fprintf(stderr, "iview: GPU filter unavailable (%s); using cpu\n", ex.what());
+			IviewTrace("dither shader unavailable");
+			return;
+		}
+
+		ditherProjection_ = glGetUniformLocation(ditherProgram_, "projection");
+		ditherModel_      = glGetUniformLocation(ditherProgram_, "model");
+		ditherUvRect_     = glGetUniformLocation(ditherProgram_, "uvRect");
+		ditherTileRect_   = glGetUniformLocation(ditherProgram_, "uTileRect");
+		ditherSource_     = glGetUniformLocation(ditherProgram_, "uSource");
+		ditherNoise_      = glGetUniformLocation(ditherProgram_, "uBlueNoise");
+		ditherMode_       = glGetUniformLocation(ditherProgram_, "uMode");
+		ditherPhase_      = glGetUniformLocation(ditherProgram_, "uPhase");
+		ditherComponents_ = glGetUniformLocation(ditherProgram_, "uComponents");
+		ditherSpace_      = glGetUniformLocation(ditherProgram_, "uDitherSpace");
+		ditherSeed_       = glGetUniformLocation(ditherProgram_, "uSeed");
+
+		/* The 64x64 blue-noise tile, ranks 0..4095 stored as R16 normalised.
+		 * 8 KiB, built once: the pattern must not change between frames or the
+		 * dither would shimmer as it is re-uploaded. */
+		glGenTextures(1, &blueNoiseTex_);
+		glBindTexture(GL_TEXTURE_2D, blueNoiseTex_);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_R16, 64, 64, 0,
+		             GL_RED, GL_UNSIGNED_SHORT, kBlueNoise64);
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		glBindTexture(GL_TEXTURE_2D, 0);
+
+		ditherReady_ = true;
+		IviewTrace("dither shader ready");
 	}
 
 	/* Reset from the unscaled base on every change: ScaleAllSizes() is
@@ -1153,9 +1415,9 @@ private:
 		}
 	}
 
-	/* A raster ready for upload: already in a 8-bit layout GL can take verbatim.
-	 * Both upload paths — an Image's own packed pixels and the filter's RGBA8
-	 * frames — reduce to this, so tiling has exactly one implementation. */
+	/* A raster ready for upload: already in a layout GL can take verbatim.
+	 * Both upload paths -- an Image's own packed pixels and the filter's RGBA8
+	 * frames -- reduce to this, so tiling has exactly one implementation. */
 	struct RasterSource
 	{
 		const uint8_t* data   = nullptr;
@@ -1163,8 +1425,10 @@ private:
 		int    height = 0;
 		int    stride = 0;            /* bytes per row           */
 		int    bpp    = 0;            /* bytes per pixel         */
-		GLenum format = GL_RGBA;      /* GL_RGB / GL_RGBA        */
+		GLenum format = GL_RGBA;      /* GL_RED/RG/RGB/RGBA …    */
 		GLint  internalFormat = GL_RGBA8;
+		GLenum type   = GL_UNSIGNED_BYTE;
+		int    components = 4;        /* channels the shader sees */
 	};
 
 	static RasterSource Rgba8Raster(const uint8_t* data, int width, int height)
@@ -1177,6 +1441,8 @@ private:
 		src.stride         = width * 4;
 		src.format         = GL_RGBA;
 		src.internalFormat = GL_RGBA8;
+		src.type           = GL_UNSIGNED_BYTE;
+		src.components     = 4;
 		return src;
 	}
 
@@ -1247,7 +1513,7 @@ private:
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 		glTexImage2D(GL_TEXTURE_2D, 0, src.internalFormat, tile.texW, tile.texH, 0,
-		             src.format, GL_UNSIGNED_BYTE, nullptr);
+		             src.format, src.type, nullptr);
 
 		UploadSpan xs[3];
 		UploadSpan ys[3];
@@ -1264,7 +1530,7 @@ private:
 				glPixelStorei(GL_UNPACK_SKIP_PIXELS, xs[i].src);
 				glTexSubImage2D(GL_TEXTURE_2D, 0, xs[i].dst, ys[j].dst,
 				                xs[i].count, ys[j].count,
-				                src.format, GL_UNSIGNED_BYTE, src.data);
+				                src.format, src.type, src.data);
 			}
 		}
 		glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
@@ -1320,6 +1586,11 @@ private:
 		passCount_   = count;
 		rasterWidth_  = srcs[0].width;
 		rasterHeight_ = srcs[0].height;
+		/* Default: these tiles hold display-ready RGBA8, so the shader must not
+		 * dither them again.  TryUploadNativeSource() overrides this after the
+		 * upload succeeds. */
+		sourceIsNative_   = false;
+		nativeComponents_ = 4u;
 		glBindTexture(GL_TEXTURE_2D, 0);
 
 		if (IviewTraceEnabled())
@@ -1378,6 +1649,96 @@ private:
 		UploadRasters(&src, 1);
 		IviewTrace("direct texture upload done");
 		return true;
+	}
+
+	/* Native-precision upload for the shader dither path.
+	 *
+	 * The CPU backend uploads finished RGBA8 frames; the GPU backend uploads the
+	 * source as it was decoded, so the shader still has the sub-8-bit bits a
+	 * dither needs.  ClassifyGLUpload() already answers which formats GL can take
+	 * verbatim, so this maps its answer to concrete enumerators instead of
+	 * re-deriving the rules.
+	 *
+	 * Returns false when the format needs conversion (planar, mixed precision,
+	 * exotic semantics, float16, 16-bit BGR).  The caller then falls back to the
+	 * CPU backend, which handles every format the plugin does.
+	 *
+	 * SNORM/SINT are rejected even though ClassifyGLUpload() accepts them: GL's
+	 * normalised integer sampling is unsigned, so uploading signed data as
+	 * GL_R16 would rescale it through [0,1] and invert the negative half.  The
+	 * CPU path applies the signed mapping explicitly, so it is the correct
+	 * backend for those frames. */
+	bool TryUploadNativeSource(const Image& image)
+	{
+		const IWGLUploadHint hint = ClassifyGLUpload(image.format);
+		if (!hint.valid) return false;
+
+		for (uint16_t i = 0; i < image.format.componentCount; ++i)
+		{
+			const IWComponentClass cls = image.format.components[i].componentClass;
+			if (cls == IW_COMPONENT_CLASS_SNORM || cls == IW_COMPONENT_CLASS_SINT)
+				return false;
+		}
+
+		RasterSource src;
+		src.data       = image.data;
+		src.width      = image.width;
+		src.height     = image.height;
+		src.stride     = image.stride;
+		src.bpp        = image.BytesPerPixel();
+		src.components = hint.channels;
+		if (src.bpp <= 0) return false;
+
+		const bool wide = hint.isFloat || hint.bitWidth == 16u;
+		if (hint.isFloat)              src.type = GL_FLOAT;
+		else if (hint.bitWidth == 8u)  src.type = GL_UNSIGNED_BYTE;
+		else if (hint.bitWidth == 16u) src.type = GL_UNSIGNED_SHORT;
+		else return false;
+
+		switch (hint.channels)
+		{
+		case 1:
+			src.format         = GL_RED;
+			src.internalFormat = hint.isFloat ? GL_R32F : (wide ? GL_R16 : GL_R8);
+			break;
+		case 2:
+			src.format         = GL_RG;
+			src.internalFormat = hint.isFloat ? GL_RG32F : (wide ? GL_RG16 : GL_RG8);
+			break;
+		case 3:
+			src.internalFormat = hint.isFloat ? GL_RGB32F : (wide ? GL_RGB16 : GL_RGB8);
+			/* GL_BGR exists only for byte data; a 16-bit BGR frame would need a
+			 * channel swap on the CPU, which is exactly what the cpu backend
+			 * already does. */
+			if (hint.isBGR) { if (wide) return false; src.format = GL_BGR; }
+			else            { src.format = GL_RGB; }
+			break;
+		default:
+			src.internalFormat = hint.isFloat ? GL_RGBA32F : (wide ? GL_RGBA16 : GL_RGBA8);
+			if (hint.isBGR) { if (wide) return false; src.format = GL_BGRA; }
+			else            { src.format = GL_RGBA; }
+			break;
+		}
+
+		IviewTrace("native texture upload start");
+		UploadRasters(&src, 1);
+		sourceIsNative_   = true;
+		nativeComponents_ = src.components;
+		IviewTrace("native texture upload done");
+		return true;
+	}
+
+	/* True when the GPU backend is both asked for and able to draw this frame. */
+	bool GpuFilterActive() const noexcept
+	{
+		return filterBackend_ == Config::FilterBackend::Gpu && ditherReady_ && sourceIsNative_;
+	}
+
+	/* Modes the dither shader can express.  Floyd-Steinberg is the exception: its
+	 * error diffuses across rows, which a per-fragment shader cannot do. */
+	static bool ModeSupportedOnGpu(uint32_t mode) noexcept
+	{
+		return mode != 2u;
 	}
 
 	/* ── Filter pipeline: compute (any thread) / upload (main thread) ──────── */
@@ -1542,6 +1903,14 @@ private:
 	{
 		if (!source_image_ || filter_running_) return;
 		if (filterMode_ == 0u) return;                   /* nothing requested */
+		/* The shader backend has already been dithering since the upload: the
+		 * mode is a uniform, so there is nothing to compute and nothing to wait
+		 * for. */
+		if (GpuFilterActive() && ModeSupportedOnGpu(filterMode_)) {
+			appliedMode_ = filterMode_;
+			IviewTrace("deferred filter handled by the shader backend");
+			return;
+		}
 		if (SourceBits(*source_image_) < 9u) {
 			IviewTrace("deferred filter skipped (source has < 9 bits/channel)");
 			return;
@@ -1560,9 +1929,84 @@ private:
 		filter_failed_ = false;
 		filter_error_.clear();
 		RebuildFilterOptions();
+
+		/* Shader backend: the next frame already shows the new mode, so the
+		 * switch is free.  Two cases still need a compute: a mode the shader
+		 * cannot express (Floyd-Steinberg), and tiles that no longer hold the
+		 * source because an earlier CPU run replaced them -- that one is fixed by
+		 * re-uploading at native precision, not by computing. */
+		if (filterBackend_ == Config::FilterBackend::Gpu && ditherReady_ &&
+		    ModeSupportedOnGpu(mode))
+		{
+			if (!sourceIsNative_ && source_image_)
+			{
+				try { TryUploadNativeSource(*source_image_); }
+				catch (const std::exception& ex) { std::fprintf(stderr, "iview: %s\n", ex.what()); }
+			}
+			if (GpuFilterActive()) {
+				appliedMode_ = mode;
+				IviewTrace("filter mode switched in the shader");
+				return;
+			}
+		}
+
 		/* Before an image exists the choice is persisted/queued; the deferred
 		 * run starts from MaybeStartDeferredFilter() once an image is uploaded. */
 		if (source_image_) StartFilterCompute();
+	}
+
+	/* Switch where the dither is computed.
+	 *
+	 * Going to the GPU needs the tiles to hold the SOURCE again, so this
+	 * re-uploads at native precision.  That is a GL upload on the main thread
+	 * (~50 ms for 51 MP) and no CPU pass, which is the whole point of the
+	 * backend.
+	 *
+	 * Going back to the CPU keeps the current picture on screen and queues the
+	 * plugin run on a worker, so switching back never blocks the UI.  Until the
+	 * result lands the source tiles are drawn without dithering, which is the
+	 * same picture minus the pattern -- not a wrong image. */
+	void SetFilterBackend(Config::FilterBackend backend)
+	{
+		if (backend == filterBackend_) return;
+		if (filter_running_) return;   /* one plugin call at a time */
+
+		if (backend == Config::FilterBackend::Gpu)
+		{
+			if (!ditherReady_)
+			{
+				IviewTrace("gpu backend requested but the dither shader is unavailable");
+				return;
+			}
+			if (source_image_ && !sourceIsNative_)
+			{
+				try
+				{
+					if (!TryUploadNativeSource(*source_image_))
+					{
+						IviewTrace("gpu backend refused this format; staying on cpu");
+						return;
+					}
+				}
+				catch (const std::exception& ex)
+				{
+					std::fprintf(stderr, "iview: %s\n", ex.what());
+					return;
+				}
+			}
+			filterBackend_ = Config::FilterBackend::Gpu;
+			appliedMode_ = ModeSupportedOnGpu(filterMode_) ? filterMode_ : 0u;
+			if (!ModeSupportedOnGpu(filterMode_) && source_image_) StartFilterCompute();
+		}
+		else
+		{
+			filterBackend_ = Config::FilterBackend::Cpu;
+			appliedMode_ = 0u;
+			if (source_image_ && filterMode_ != 0u) StartFilterCompute();
+		}
+
+		IviewTrace(backend == Config::FilterBackend::Gpu ? "filter backend: gpu"
+		                                        : "filter backend: cpu");
 	}
 
 	/* ── Folder navigation ─────────────────────────────────────────────────── */
@@ -1829,18 +2273,50 @@ public:
 		const int previousHeight = imageHeight_;
 		try
 		{
-			/* mode=none with an 8-bit packed source goes straight to the GPU.
-			 * Filtered modes still run the plugin and upload its RGBA frames. */
-			if (IsNoFilterOptions(opts) && TryUploadPackedSource(image))
+			/* Backend choice, in the order that costs the least:
+			 *
+			 *   1. GPU backend and the source is natively uploadable: publish
+			 *      pixels only, and let the shader quantise.  No CPU pass at
+			 *      all, which is what makes opening a large 16-bit file fast.
+			 *   2. mode=none with an 8-bit packed source: existing fast path.
+			 *   3. otherwise: run the plugin and upload its RGBA8 frames.
+			 *
+			 * A GPU backend that cannot take this format falls through to 2/3
+			 * rather than failing, so the choice never costs the user a file. */
+			bool uploaded = false;
+			if (filterBackend_ == Config::FilterBackend::Gpu && ditherReady_)
 			{
-				imageWidth_  = image.width;
-				imageHeight_ = image.height;
+				/* A failure here must not poison the setting: the backend stays
+				 * "gpu", sourceIsNative_ stays false, and this file simply takes
+				 * the same route the cpu backend would.  The next file may well be
+				 * a format the shader can take. */
+				try { uploaded = TryUploadNativeSource(image); }
+				catch (const std::exception& ex) { std::fprintf(stderr, "iview: %s\n", ex.what()); }
+				if (!uploaded)
+					IviewTrace("native upload unsupported here; this image uses the cpu path");
+				else
+				{
+					imageWidth_  = image.width;
+					imageHeight_ = image.height;
+					/* The shader is already drawing the requested mode. */
+					appliedMode_ = ModeSupportedOnGpu(filterMode_) ? filterMode_ : 0u;
+				}
 			}
-			else
+
+			if (!uploaded)
 			{
-				UploadFrameSet(ComputeFilteredFrames(image, opts));
+				if (IsNoFilterOptions(opts) && TryUploadPackedSource(image))
+				{
+					imageWidth_  = image.width;
+					imageHeight_ = image.height;
+				}
+				else
+				{
+					UploadFrameSet(ComputeFilteredFrames(image, opts));
+				}
+				appliedMode_ = 0;      /* the CPU path uploads mode=none */
 			}
-			appliedMode_ = 0;          /* LoadTextures always uploads mode=none */
+
 			if (!(preserveView &&
 			      previousWidth  == imageWidth_ &&
 			      previousHeight == imageHeight_))
@@ -1866,7 +2342,13 @@ public:
 		{
 			IWFilterArg noneArgs[1];
 			const IWFilterOptions noneOpts = ModeOnlyOptions(0u, noneArgs);
-			if (!TryUploadPackedSource(image))
+			/* A preview has nothing below 8 bits worth dithering and is replaced
+			 * moments later, so it always takes the cheap path: native upload when
+			 * the format allows it, packed 8-bit upload otherwise. */
+			bool uploaded = false;
+			if (filterBackend_ == Config::FilterBackend::Gpu && ditherReady_)
+				uploaded = TryUploadNativeSource(image);
+			if (!uploaded && !TryUploadPackedSource(image))
 				UploadFrameSet(ComputeFilteredFrames(image, noneOpts));
 			imageWidth_  = displayWidth  > 0 ? displayWidth  : image.width;
 			imageHeight_ = displayHeight > 0 ? displayHeight : image.height;
@@ -1931,7 +2413,11 @@ public:
 
 	/* Draws the image, one quad per texture tile, for one phase.  The transform is
 	 * built in NDC on the CPU, so the shader keeps the same projection*model
-	 * pipeline while needing no per-frame buffer updates. */
+	 * pipeline while needing no per-frame buffer updates.
+	 *
+	 * Two programs share the quad: the plain sampler for the CPU backend, whose
+	 * tiles are already quantised, and the dither program for the GPU backend,
+	 * whose tiles are the source pixels at native precision. */
 	void DrawImage(uint32_t phase) const
 	{
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1941,7 +2427,10 @@ public:
 
 		if (!HasImage()) return;
 
-		const int pass = (passCount_ <= 1) ? 0 : static_cast<int>(phase & 1u);
+		const bool gpu = GpuFilterActive() && ModeSupportedOnGpu(filterMode_);
+		/* The shader backend has a single set of tiles (the source); only the CPU
+		 * backend can carry two phase frames. */
+		const int pass = gpu ? 0 : ((passCount_ <= 1) ? 0 : static_cast<int>(phase & 1u));
 		const std::vector<TextureTile>& tiles = passes_[pass].tiles;
 		if (tiles.empty()) return;
 
@@ -1954,6 +2443,12 @@ public:
 		                         rasterWidth_  == imageWidth_ &&
 		                         rasterHeight_ == imageHeight_;
 		const GLint magFilter = exactPixels ? GL_NEAREST : GL_LINEAR;
+
+		/* The dither pattern is tied to image pixels whenever a screen pixel is
+		 * no larger than an image pixel.  Below that it switches to screen pixels:
+		 * dithering at image resolution and then minifying would sample the
+		 * pattern away into noise. */
+		const int ditherSpace = (zoom >= 1.0) ? 0 : 1;
 
 		const double imgW = imageWidth_ * zoom;
 		const double imgH = imageHeight_ * zoom;
@@ -1974,9 +2469,27 @@ public:
 			0.0f, 0.0f, 0.0f, 1.0f
 		};
 
-		glUseProgram(shaderProgram_);
-		glUniformMatrix4fv(uniformProjection_, 1, GL_FALSE, identity);
-		glUniform1i(uniformTexture_, 0);
+		glUseProgram(gpu ? ditherProgram_ : shaderProgram_);
+		if (gpu)
+		{
+			glUniformMatrix4fv(ditherProjection_, 1, GL_FALSE, identity);
+			glUniform1i(ditherSource_, 0);
+			glUniform1i(ditherNoise_, 1);
+			glUniform1i(ditherMode_, static_cast<GLint>(gpu ? filterMode_ : 0u));
+			glUniform1i(ditherPhase_, static_cast<GLint>(phase & 1u));
+			glUniform1i(ditherComponents_, nativeComponents_);
+			glUniform1i(ditherSpace_, ditherSpace);
+			glUniform1ui(ditherSeed_, static_cast<GLuint>(seed_));
+
+			/* Unit 1 holds the blue-noise tile for the life of the window. */
+			glActiveTexture(GL_TEXTURE1);
+			glBindTexture(GL_TEXTURE_2D, blueNoiseTex_);
+		}
+		else
+		{
+			glUniformMatrix4fv(uniformProjection_, 1, GL_FALSE, identity);
+			glUniform1i(uniformTexture_, 0);
+		}
 
 		glActiveTexture(GL_TEXTURE0);
 		glBindVertexArray(vao_);
@@ -2008,8 +2521,23 @@ public:
 
 			glBindTexture(GL_TEXTURE_2D, tile.id);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
-			glUniformMatrix4fv(uniformModel_, 1, GL_FALSE, model);
-			glUniform4fv(uniformUvRect_, 1, uv);
+			if (gpu)
+			{
+				/* Absolute image-pixel rect of this tile's body, so the fragment
+				 * can index the dither field without a seam at the tile edge. */
+				const float tileRect[4] = {
+					(float)tile.x0, (float)tile.y0,
+					(float)tile.w,  (float)tile.h
+				};
+				glUniformMatrix4fv(ditherModel_, 1, GL_FALSE, model);
+				glUniform4fv(ditherUvRect_, 1, uv);
+				glUniform4fv(ditherTileRect_, 1, tileRect);
+			}
+			else
+			{
+				glUniformMatrix4fv(uniformModel_, 1, GL_FALSE, model);
+				glUniform4fv(uniformUvRect_, 1, uv);
+			}
 			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 		}
 		glBindVertexArray(0);
@@ -3073,6 +3601,26 @@ private:
 		}
 		ImGui::TextDisabled("PWM bits: 1 (N-phase output is not implemented)");
 
+		ImGui::Separator();
+		/* Backend choice.  Switching to GPU needs one re-upload: the tiles
+		 * currently hold finished RGBA8 frames rather than the source, so the
+		 * picture has to be published again at native precision. */
+		int backend = (filterBackend_ == Config::FilterBackend::Gpu) ? 1 : 0;
+		if (ImGui::Combo("Compute", &backend, "CPU (plugin)\0GPU (shader)\0"))
+		{
+			SetFilterBackend(backend == 1 ? Config::FilterBackend::Gpu : Config::FilterBackend::Cpu);
+			MarkSettingsDirty();
+		}
+		if (filterBackend_ == Config::FilterBackend::Gpu && !ditherReady_)
+			ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
+			                   "The dither shader did not compile; using CPU.");
+		else if (filterBackend_ == Config::FilterBackend::Gpu && !ModeSupportedOnGpu(filterMode_))
+			ImGui::TextDisabled("Floyd-Steinberg always runs on the CPU.");
+		else if (filterBackend_ == Config::FilterBackend::Gpu)
+			ImGui::TextDisabled("Dithering happens while drawing; mode changes are free.");
+		else
+			ImGui::TextDisabled("The plugin quantises once per image, on a worker thread.");
+
 		if (filter_running_) ImGui::EndDisabled();
 
 		if (filter_failed_ && !filter_error_.empty())
@@ -3147,6 +3695,7 @@ private:
 
 		filter_failed_ = false;
 		filter_error_.clear();
+		filterBackend_ = settings_.filterBackend;
 		if (!filter_running_)
 			RequestFilterChange(settings_.filterMode);
 		else
@@ -3160,6 +3709,7 @@ private:
 		settings_.fadeDelayMs  = fadeDelayMs_;
 		settings_.fadeMinAlpha = fadeMinAlpha_;
 		settings_.filterMode   = filterMode_;
+		settings_.filterBackend = filterBackend_;
 		settings_.pwmBits      = pwmBits_;
 		if (imgui_) settings_.chromeVisible = imgui_->chromeEnabled;
 		for (int i = 0; i < 3; ++i)

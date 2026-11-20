@@ -69,6 +69,24 @@ inline constexpr uint32_t kFilterModeBayer8x8        = 5u;
 inline constexpr uint32_t kFilterModeBlueNoise       = 6u;
 inline constexpr uint32_t kFilterModeSpatialTemporal = 7u;
 
+/* Where the dither is computed.  The CPU backend runs the filter plugin on a
+ * worker thread and uploads finished 8-bit frames; the GPU backend uploads the
+ * source at its native precision and dithers in the fragment shader, so opening
+ * a file never waits for a CPU pass. */
+enum class FilterBackend : uint32_t { Cpu = 0u, Gpu = 1u };
+
+inline const char* FilterBackendName(FilterBackend backend) noexcept
+{
+	return backend == FilterBackend::Gpu ? "gpu" : "cpu";
+}
+
+inline bool ParseFilterBackend(const std::string& text, FilterBackend& out) noexcept
+{
+	if (text == "cpu") { out = FilterBackend::Cpu; return true; }
+	if (text == "gpu") { out = FilterBackend::Gpu; return true; }
+	return false;
+}
+
 inline constexpr int   kDefaultFadeDelayMs       = 1500;
 inline constexpr float kDefaultFadeMinAlpha      = 0.15f;
 inline constexpr float kDefaultWheelNavThreshold = 1.0f;
@@ -94,6 +112,7 @@ struct Settings
 	int         fadeDelayMs   = kDefaultFadeDelayMs;
 	float       fadeMinAlpha  = kDefaultFadeMinAlpha;
 	uint32_t    filterMode    = kFilterModeNone; /* IWFilterMode: 0..7 */
+	FilterBackend filterBackend = FilterBackend::Cpu; /* cpu = plugin, gpu = shader */
 	uint32_t    pwmBits       = 1;               /* capped at 1 for now */
 	int         windowWidth   = 1280;
 	int         windowHeight  = 720;
@@ -376,6 +395,7 @@ inline std::string Serialize(const Settings& s)
 	out << "fade_min_alpha = " << s.fadeMinAlpha << "\n";
 	const char* const filterMode = FilterModeName(s.filterMode);
 	out << "filter_mode = " << (filterMode ? filterMode : "none") << "\n";
+	out << "filter_backend = " << FilterBackendName(s.filterBackend) << "\n";
 	out << "pwm_bits = " << s.pwmBits << "\n";
 	out << "window_width = " << s.windowWidth << "\n";
 	out << "window_height = " << s.windowHeight << "\n";
@@ -469,6 +489,13 @@ inline bool ApplyLine(Settings& s, const std::string& key, const std::string& va
 		uint32_t mode = kFilterModeNone;
 		if (!ParseFilterMode(value, mode)) return false;
 		s.filterMode = mode;
+		return true;
+	}
+	if (key == "filter_backend")
+	{
+		FilterBackend backend = FilterBackend::Cpu;
+		if (!ParseFilterBackend(value, backend)) return false;
+		s.filterBackend = backend;
 		return true;
 	}
 	if (key == "pwm_bits")
