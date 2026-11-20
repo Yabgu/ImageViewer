@@ -15,6 +15,8 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 #include "ImagePluginDef.h"
 #include "FilterPluginDef.h"
@@ -22,6 +24,135 @@
 #include "BlueNoiseTile.hpp"
 
 namespace FilterCore {
+
+/* ── Segmented parallelism ────────────────────────────────────────────────── */
+
+/*
+ * How many worker threads the pixel loops may use.
+ *
+ * IMAGEVIEWER_FILTER_THREADS forces a count.  Setting it to 1 selects the
+ * single-threaded loop, which is the reference the output must match bit for
+ * bit -- that is what makes the parallelism checkable rather than merely
+ * plausible: run a frame with 1 and with N, compare the buffers.
+ *
+ * Read once per process: the value cannot legitimately change mid-run, and a
+ * dither result must not depend on when it was read.
+ */
+inline unsigned FilterThreadCount() noexcept
+{
+    static const unsigned configured = []() -> unsigned {
+        const char* env = std::getenv("IMAGEVIEWER_FILTER_THREADS");
+        if (env != nullptr && env[0] != '\0') {
+            const long requested = std::strtol(env, nullptr, 10);
+            if (requested >= 1) return static_cast<unsigned>(requested);
+        }
+        const unsigned hardware = std::thread::hardware_concurrency();
+        return hardware == 0u ? 1u : hardware;
+    }();
+    return configured;
+}
+
+/*
+ * Tile extent for the segmented loops, in pixels.  512 x 512 at 8 bytes per
+ * pixel is a 2 MB working set, which fits a core's L2.  A full-width row band
+ * of a 17277-px-wide 16-bit image is 67 MB, i.e. 34x larger and past every
+ * cache level: every band re-reads its rows from DRAM.  Segmenting is what
+ * turns the extra threads into actual throughput instead of memory stalls.
+ *
+ * IMAGEVIEWER_FILTER_TILE overrides it, which is how the trade-off was measured.
+ */
+inline int FilterTileExtent() noexcept
+{
+    static const int configured = []() -> int {
+        const char* env = std::getenv("IMAGEVIEWER_FILTER_TILE");
+        if (env != nullptr && env[0] != '\0') {
+            const long requested = std::strtol(env, nullptr, 10);
+            if (requested >= 16) return static_cast<int>(requested);
+        }
+        return 512;
+    }();
+    return configured;
+}
+
+/*
+ * Run `body(x0, y0, x1, y1)` over disjoint rectangles covering the raster.
+ *
+ * The rectangles are absolute-coordinate, and that is the point.  The dither
+ * field is indexed by absolute position -- kBayer8x8Raw[y & 7][x & 7], the
+ * blue-noise tile at (x + seed) & 63 -- so a segment must know where it sits in
+ * the whole image.  Tiling here, inside FilterCore, is exact because the loops
+ * already iterate absolute x and y; a caller that sliced the image itself and
+ * handed each slice to FilterImage would restart the matrix at every seam.  For
+ * this image 16382 % 8 = 6, so that would put a 6-pixel phase jump in the Bayer
+ * field along the vertical seam, and 16382 % 64 = 62 in the blue-noise tile.
+ *
+ * Every caller below is per-pixel: a pixel's output depends only on the source
+ * raster (read-only here), on its own absolute (x, y) and on the mode's
+ * constants.  Rectangles therefore write disjoint output pixels and share
+ * nothing mutable, so the result is bit-identical to the serial loop -- not
+ * merely statistically equivalent.  That is what makes this safe to introduce
+ * into a dithering pipeline whose output the tests assert byte-exactly, and it
+ * is checked by the 1-thread vs N-thread hash comparison.
+ *
+ * Work is pulled from an atomic counter rather than partitioned up front: tiles
+ * near a flat sky finish faster than tiles full of detail, and a static split
+ * would leave threads idle at the end of the image.
+ *
+ * Floyd-Steinberg is deliberately NOT listed here: its error term diffuses from
+ * one pixel into its right and lower neighbours, and the next row starts from
+ * the errors this row wrote.  Slicing it would quantise every tile's first row
+ * against a zeroed error buffer.  It stays serial.
+ */
+template <typename Body>
+inline void ForEachTile(int width, int height, Body&& body)
+{
+    if (width <= 0 || height <= 0) return;
+
+    const int extent = FilterTileExtent();
+    const int cols   = (width  + extent - 1) / extent;
+    const int rows   = (height + extent - 1) / extent;
+    const int tiles  = cols * rows;
+
+    const unsigned wanted = FilterThreadCount();
+    if (wanted <= 1u || tiles <= 1) {
+        body(0, 0, width, height);
+        return;
+    }
+
+    const unsigned workers =
+        std::min<unsigned>(wanted, static_cast<unsigned>(tiles));
+    std::atomic<int> next{0};
+
+    auto run = [&]() {
+        for (;;) {
+            const int index = next.fetch_add(1, std::memory_order_relaxed);
+            if (index >= tiles) return;
+            const int col = index % cols;
+            const int row = index / cols;
+            const int x0  = col * extent;
+            const int y0  = row * extent;
+            body(x0, y0, std::min(x0 + extent, width),
+                           std::min(y0 + extent, height));
+        }
+    };
+
+    /* Spawn the extra workers first, then pull tiles on this thread too: the
+     * caller is one of the workers instead of waiting for them all. */
+    std::vector<std::thread> workers_;
+    workers_.reserve(static_cast<size_t>(workers) - 1u);
+    for (unsigned i = 1; i < workers; ++i) {
+        try {
+            workers_.emplace_back(run);
+        } catch (...) {
+            /* Thread creation failed (handle or memory exhaustion).  The
+             * shared counter means the remaining tiles are still picked up by
+             * the threads that did start and by this one below -- a partial
+             * frame is a corrupt frame, so the work must complete either way. */
+        }
+    }
+    run();
+    for (std::thread& worker : workers_) worker.join();
+}
 
 /* ── 4×4 Bayer threshold matrix (values in [0, 1)) ──────────────────────── */
 static constexpr float kBayer4x4[4][4] = {
@@ -390,19 +521,21 @@ inline ImagePluginData* ApplyNone(const ImagePluginData& src,
         ? ((1u << targetFmt.components[0].bitWidth) - 1u)
         : 0xFFFFFFFFu;
 
-    for (int y = 0; y < src.height; ++y) {
-        uint8_t* row = out->data + static_cast<ptrdiff_t>(y) * out->stride;
-        for (int x = 0; x < src.width; ++x) {
-            float rgba[4];
-            ExtractPixelF(src, x, y, rgba);
-            uint8_t* pix = row + x * bpp;
-            for (int c = 0; c < nc; ++c) {
-                const float v = GetComponentValue(rgba, targetFmt.components[c].semantic);
-                WriteQuantizedComponent(pix, targetFmt.components[c],
-                                        QuantizeRound(v, maxVal));
+    ForEachTile(src.width, src.height, [&](int x0, int y0, int x1, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            uint8_t* row = out->data + static_cast<ptrdiff_t>(y) * out->stride;
+            for (int x = x0; x < x1; ++x) {
+                float rgba[4];
+                ExtractPixelF(src, x, y, rgba);
+                uint8_t* pix = row + x * bpp;
+                for (int c = 0; c < nc; ++c) {
+                    const float v = GetComponentValue(rgba, targetFmt.components[c].semantic);
+                    WriteQuantizedComponent(pix, targetFmt.components[c],
+                                            QuantizeRound(v, maxVal));
+                }
             }
         }
-    }
+    });
     return out;
 }
 
@@ -424,30 +557,40 @@ inline ImagePluginData* ApplyOrdered(const ImagePluginData& src,
         ? ((1u << targetFmt.components[0].bitWidth) - 1u)
         : 0xFFFFFFFFu;
 
-    for (int y = 0; y < src.height; ++y) {
-        uint8_t* row = out->data + static_cast<ptrdiff_t>(y) * out->stride;
-        for (int x = 0; x < src.width; ++x) {
-            float rgba[4];
-            ExtractPixelF(src, x, y, rgba);
-            const float bayer = kBayer4x4[y & 3][x & 3];
-            uint8_t* pix = row + x * bpp;
-            for (int c = 0; c < nc; ++c) {
-                const IWComponentDef& cd = targetFmt.components[c];
-                const float v = GetComponentValue(rgba, cd.semantic);
-                const uint32_t q =
-                    (cd.semantic == IW_COMPONENT_SEMANTIC_A)
-                    ? QuantizeRound(v, maxVal)
-                    : QuantizeBayer(v, maxVal, bayer);
-                WriteQuantizedComponent(pix, cd, q);
+    ForEachTile(src.width, src.height, [&](int x0, int y0, int x1, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            uint8_t* row = out->data + static_cast<ptrdiff_t>(y) * out->stride;
+            for (int x = x0; x < x1; ++x) {
+                float rgba[4];
+                ExtractPixelF(src, x, y, rgba);
+                const float bayer = kBayer4x4[y & 3][x & 3];
+                uint8_t* pix = row + x * bpp;
+                for (int c = 0; c < nc; ++c) {
+                    const IWComponentDef& cd = targetFmt.components[c];
+                    const float v = GetComponentValue(rgba, cd.semantic);
+                    const uint32_t q =
+                        (cd.semantic == IW_COMPONENT_SEMANTIC_A)
+                        ? QuantizeRound(v, maxVal)
+                        : QuantizeBayer(v, maxVal, bayer);
+                    WriteQuantizedComponent(pix, cd, q);
+                }
             }
         }
-    }
+    });
     return out;
 }
 
 /*
  * ApplyFloydSteinberg — Floyd-Steinberg error diffusion.
  * Alpha channel is not dithered.
+ *
+ * Serial by construction, and the one Apply* that must stay that way: each
+ * pixel's quantisation error is added to its right and lower neighbours, and
+ * the next row starts from the errors this row wrote.  Slicing the raster into
+ * ForEachTile() rectangles would quantise every tile's first row against a
+ * zeroed error buffer, producing banding that the tests would catch as a
+ * changed image.  Do not put ForEachTile() around this loop.
+ *
  * Returns a heap-allocated ImagePluginData; free with FreeFrame().
  */
 inline ImagePluginData* ApplyFloydSteinberg(const ImagePluginData& src,
@@ -546,24 +689,26 @@ inline ImagePluginData* ApplySpatial(const ImagePluginData& src,
         ? ((1u << targetFmt.components[0].bitWidth) - 1u)
         : 0xFFFFFFFFu;
 
-    for (int y = 0; y < src.height; ++y) {
-        uint8_t* row = out->data + static_cast<ptrdiff_t>(y) * out->stride;
-        for (int x = 0; x < src.width; ++x) {
-            float rgba[4];
-            ExtractPixelF(src, x, y, rgba);
-            const float s = SpatialThreshold(kind, x, y, seed);
-            uint8_t* pix = row + x * bpp;
-            for (int c = 0; c < nc; ++c) {
-                const IWComponentDef& cd = targetFmt.components[c];
-                const float v = GetComponentValue(rgba, cd.semantic);
-                const uint32_t q =
-                    (cd.semantic == IW_COMPONENT_SEMANTIC_A)
-                    ? QuantizeRound(v, maxVal)
-                    : QuantizeBayer(v, maxVal, s);
-                WriteQuantizedComponent(pix, cd, q);
+    ForEachTile(src.width, src.height, [&](int x0, int y0, int x1, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            uint8_t* row = out->data + static_cast<ptrdiff_t>(y) * out->stride;
+            for (int x = x0; x < x1; ++x) {
+                float rgba[4];
+                ExtractPixelF(src, x, y, rgba);
+                const float s = SpatialThreshold(kind, x, y, seed);
+                uint8_t* pix = row + x * bpp;
+                for (int c = 0; c < nc; ++c) {
+                    const IWComponentDef& cd = targetFmt.components[c];
+                    const float v = GetComponentValue(rgba, cd.semantic);
+                    const uint32_t q =
+                        (cd.semantic == IW_COMPONENT_SEMANTIC_A)
+                        ? QuantizeRound(v, maxVal)
+                        : QuantizeBayer(v, maxVal, s);
+                    WriteQuantizedComponent(pix, cd, q);
+                }
             }
         }
-    }
+    });
     return out;
 }
 
@@ -633,34 +778,36 @@ inline IWFilterImageSet* ApplySpatialTemporal(const ImagePluginData& src,
     uint8_t* const out0 = set->frames[0]->data;
     uint8_t* const out1 = set->frames[1]->data;
 
-    for (int y = 0; y < src.height; ++y) {
-        for (int x = 0; x < src.width; ++x) {
-            float rgba[4];
-            ExtractPixelF(src, x, y, rgba);
-            const bool pHigh = (SpatialThreshold(kind, x, y, seed) < 0.5f);
+    ForEachTile(src.width, src.height, [&](int x0, int y0, int x1, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            for (int x = x0; x < x1; ++x) {
+                float rgba[4];
+                ExtractPixelF(src, x, y, rgba);
+                const bool pHigh = (SpatialThreshold(kind, x, y, seed) < 0.5f);
 
-            uint8_t* pix0 = out0 + static_cast<ptrdiff_t>(y) * stride + x * bpp;
-            uint8_t* pix1 = out1 + static_cast<ptrdiff_t>(y) * stride + x * bpp;
+                uint8_t* pix0 = out0 + static_cast<ptrdiff_t>(y) * stride + x * bpp;
+                uint8_t* pix1 = out1 + static_cast<ptrdiff_t>(y) * stride + x * bpp;
 
-            for (int c = 0; c < nc; ++c) {
-                const IWComponentDef& cd = targetFmt.components[c];
-                const float v = GetComponentValue(rgba, cd.semantic);
+                for (int c = 0; c < nc; ++c) {
+                    const IWComponentDef& cd = targetFmt.components[c];
+                    const float v = GetComponentValue(rgba, cd.semantic);
 
-                uint32_t a = 0, b = 0;
-                if (cd.semantic == IW_COMPONENT_SEMANTIC_A) {
-                    a = b = QuantizeRound(v, maxVal);
-                } else {
-                    const uint32_t q9   = QuantizeRound(v, level9);
-                    const uint32_t base = q9 >> 1;
-                    const uint32_t odd  = q9 & 1u;
-                    a = base + ((odd != 0u &&  pHigh) ? 1u : 0u);
-                    b = base + ((odd != 0u && !pHigh) ? 1u : 0u);
+                    uint32_t a = 0, b = 0;
+                    if (cd.semantic == IW_COMPONENT_SEMANTIC_A) {
+                        a = b = QuantizeRound(v, maxVal);
+                    } else {
+                        const uint32_t q9   = QuantizeRound(v, level9);
+                        const uint32_t base = q9 >> 1;
+                        const uint32_t odd  = q9 & 1u;
+                        a = base + ((odd != 0u &&  pHigh) ? 1u : 0u);
+                        b = base + ((odd != 0u && !pHigh) ? 1u : 0u);
+                    }
+                    WriteQuantizedComponent(pix0, cd, a);
+                    WriteQuantizedComponent(pix1, cd, b);
                 }
-                WriteQuantizedComponent(pix0, cd, a);
-                WriteQuantizedComponent(pix1, cd, b);
             }
         }
-    }
+    });
 
     return set;
 }
@@ -714,46 +861,48 @@ inline IWFilterImageSet* ApplyPWM(const ImagePluginData& src,
 
     /* Fill per-pixel values across frames. */
     const float fFrameCount = static_cast<float>(frameCount);
-    for (int y = 0; y < src.height; ++y) {
-        for (int x = 0; x < src.width; ++x) {
-            float rgba[4];
-            ExtractPixelF(src, x, y, rgba);
+    ForEachTile(src.width, src.height, [&](int x0, int y0, int x1, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            for (int x = x0; x < x1; ++x) {
+                float rgba[4];
+                ExtractPixelF(src, x, y, rgba);
 
-            for (int c = 0; c < nc; ++c) {
-                const IWComponentDef& cd = targetFmt.components[c];
-                float v = GetComponentValue(rgba, cd.semantic);
-                v = std::max(0.f, std::min(1.f, v));
+                for (int c = 0; c < nc; ++c) {
+                    const IWComponentDef& cd = targetFmt.components[c];
+                    float v = GetComponentValue(rgba, cd.semantic);
+                    v = std::max(0.f, std::min(1.f, v));
 
-                /* Alpha: just round, no temporal dither. */
-                if (cd.semantic == IW_COMPONENT_SEMANTIC_A) {
-                    const uint32_t q = QuantizeRound(v, maxVal);
+                    /* Alpha: just round, no temporal dither. */
+                    if (cd.semantic == IW_COMPONENT_SEMANTIC_A) {
+                        const uint32_t q = QuantizeRound(v, maxVal);
+                        for (uint32_t f = 0; f < frameCount; ++f) {
+                            uint8_t* pix = set->frames[f]->data
+                                         + static_cast<ptrdiff_t>(y) * stride
+                                         + x * bpp;
+                            WriteQuantizedComponent(pix, cd, q);
+                        }
+                        continue;
+                    }
+
+                    const float scaled  = v * static_cast<float>(maxVal);
+                    const uint32_t lo   = static_cast<uint32_t>(std::floor(scaled));
+                    const uint32_t hi   = std::min(lo + 1u, maxVal);
+                    const float frac    = scaled - static_cast<float>(lo);
+                    /* Number of frames that should show `hi`. */
+                    const uint32_t hiCount = static_cast<uint32_t>(
+                        frac * fFrameCount + 0.5f);
+
                     for (uint32_t f = 0; f < frameCount; ++f) {
+                        const uint32_t q = (f < hiCount) ? hi : lo;
                         uint8_t* pix = set->frames[f]->data
                                      + static_cast<ptrdiff_t>(y) * stride
                                      + x * bpp;
                         WriteQuantizedComponent(pix, cd, q);
                     }
-                    continue;
-                }
-
-                const float scaled  = v * static_cast<float>(maxVal);
-                const uint32_t lo   = static_cast<uint32_t>(std::floor(scaled));
-                const uint32_t hi   = std::min(lo + 1u, maxVal);
-                const float frac    = scaled - static_cast<float>(lo);
-                /* Number of frames that should show `hi`. */
-                const uint32_t hiCount = static_cast<uint32_t>(
-                    frac * fFrameCount + 0.5f);
-
-                for (uint32_t f = 0; f < frameCount; ++f) {
-                    const uint32_t q = (f < hiCount) ? hi : lo;
-                    uint8_t* pix = set->frames[f]->data
-                                 + static_cast<ptrdiff_t>(y) * stride
-                                 + x * bpp;
-                    WriteQuantizedComponent(pix, cd, q);
                 }
             }
         }
-    }
+    });
     return set;
 }
 

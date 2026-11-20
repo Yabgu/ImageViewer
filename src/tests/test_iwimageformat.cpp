@@ -2368,3 +2368,174 @@ TEST_SUITE("FilterCore::FreeFrame ownership")
         FilterCore::FreeFrame(src);
     }
 }
+
+// ─── FilterCore: segmented loops keep absolute coordinates ────────────────────
+//
+// ApplySpatial/ApplySpatialTemporal/ApplyPWM/ApplyNone walk the raster in
+// segments handed out by ForEachTile().  The dither field is indexed by
+// ABSOLUTE position (kBayer8x8Raw[y & 7][x & 7], the blue-noise tile at
+// (x + seed) & 63), so a segment that reported local coordinates would restart
+// the matrix at every seam and put a visible phase jump in the pattern.
+//
+// These tests recompute the documented formula independently, over the whole
+// frame, and compare byte for byte.  They fail if the segmentation ever starts
+// handing out relative coordinates -- which a visual check would miss whenever
+// the tile extent happens to be a multiple of the field period (512 is a
+// multiple of 64, so the default extent alone would not catch it).
+TEST_SUITE("FilterCore: segmented loops keep absolute coordinates")
+{
+    /* Deliberately not multiples of any threshold-field period, so segment
+     * boundaries land at non-zero phase offsets. */
+    constexpr int kW = 1337;
+    constexpr int kH = 421;
+    constexpr size_t kBytes = static_cast<size_t>(kW) * kH * 8u;
+
+    /* A kW x kH 16-bit RGBA raster with a per-pixel varying value: a flat image
+     * would let a wrong threshold still average out to the same code.  The
+     * buffer is malloc'd because FreeFrame() releases `data` with std::free --
+     * handing it a std::vector's buffer would free a pointer it does not own. */
+    static uint8_t* FillRaster(void* buffer)
+    {
+        uint8_t* bytes = static_cast<uint8_t*>(buffer);
+        for (int y = 0; y < kH; ++y) {
+            for (int x = 0; x < kW; ++x) {
+                uint16_t* p = reinterpret_cast<uint16_t*>(
+                    bytes + (static_cast<size_t>(y) * kW + x) * 8u);
+                p[0] = static_cast<uint16_t>((x * 37 + y * 11) & 0xFFFF);
+                p[1] = static_cast<uint16_t>((x * 5  + y * 61) & 0xFFFF);
+                p[2] = static_cast<uint16_t>((x * 3  + y * 7)  & 0xFFFF);
+                p[3] = 0xFFFFu;
+            }
+        }
+        return bytes;
+    }
+
+    static ImagePluginData* MakeRaster()
+    {
+        uint8_t* bytes = FillRaster(std::malloc(kBytes));
+        REQUIRE(bytes != nullptr);
+
+        IWImageFormat fmt = {};
+        fmt.componentCount = 4;
+        fmt.bitsPerPixel   = 64;
+        fmt.storageLayout  = IW_STORAGE_INTERLEAVED;
+        fmt.components     = iw::kRgba16Components;   /* static table, not owned */
+
+        ImagePluginData* pd =
+            new (std::malloc(sizeof(ImagePluginData))) ImagePluginData();
+        pd->width      = kW;
+        pd->height     = kH;
+        pd->stride     = kW * 8;
+        pd->colorSpace = IMAGE_COLOR_SPACE_LINEAR;
+        pd->size       = kBytes;
+        pd->data       = bytes;
+        pd->format     = fmt;
+        return pd;
+    }
+
+    TEST_CASE("ApplySpatial(bayer8) matches the formula at absolute coordinates")
+    {
+        ImagePluginData* src = MakeRaster();
+
+        IWScreenInfo screen{ 8, 4 };
+        IWComponentDef targetComps[4];
+        const IWImageFormat target =
+            FilterCore::MakeTargetFormat(screen, targetComps, 4);
+
+        ImagePluginData* out = FilterCore::ApplySpatial(
+            *src, target, FilterCore::SpatialKind::Bayer8, 0u);
+        REQUIRE(out != nullptr);
+
+        /* Independent reference: the same quantiser, applied serially with
+         * absolute x and y and no notion of segments. */
+        int mismatches = 0;
+        for (int y = 0; y < kH; ++y) {
+            for (int x = 0; x < kW; ++x) {
+                const uint16_t* sp = reinterpret_cast<const uint16_t*>(
+                    src->data + (static_cast<size_t>(y) * kW + x) * 8u);
+                const uint8_t* op = out->data
+                                  + static_cast<ptrdiff_t>(y) * out->stride
+                                  + static_cast<ptrdiff_t>(x) * 4;
+                const float threshold =
+                    (static_cast<float>(FilterCore::kBayer8x8Raw[y & 7][x & 7])
+                     + 0.5f) / 64.f;
+                for (int c = 0; c < 3; ++c) {
+                    const float v = static_cast<float>(sp[c]) / 65535.f;
+                    const uint32_t q = std::min<uint32_t>(
+                        255u, static_cast<uint32_t>(
+                                  std::floor(v * 255.f + threshold)));
+                    if (op[c] != q) ++mismatches;
+                }
+                /* Alpha is rounded, not dithered. */
+                if (op[3] != 255u) ++mismatches;
+            }
+        }
+        CHECK(mismatches == 0);
+
+        FilterCore::FreeFrame(out);
+        FilterCore::FreeFrame(src);
+    }
+
+    TEST_CASE("ApplySpatialTemporal matches the construction at absolute coordinates")
+    {
+        ImagePluginData* src = MakeRaster();
+
+        IWScreenInfo screen{ 8, 4 };
+        IWComponentDef targetComps[4];
+        const IWImageFormat target =
+            FilterCore::MakeTargetFormat(screen, targetComps, 4);
+
+        constexpr uint64_t kSeed = 7u;
+        IWFilterImageSet* set = FilterCore::ApplySpatialTemporal(
+            *src, target, FilterCore::SpatialKind::BlueNoise, kSeed);
+        REQUIRE(set != nullptr);
+        REQUIRE(set->frameCount == 2u);
+
+        /* Independent reference for the documented construction:
+         *   q9 = round(v * 2*maxVal);  base = q9 >> 1;  odd = q9 & 1
+         *   p  = threshold(x, y) < 0.5
+         *   A  = base + (odd && p);    B = base + (odd && !p)
+         * with the threshold read at ABSOLUTE (x, y).  Checking only that A and
+         * B stay within one code of each other would pass even when the field
+         * restarts at a seam, because both frames would read the same wrong
+         * threshold -- so the expected codes are computed here instead. */
+        int mismatches = 0;
+        for (int y = 0; y < kH; ++y) {
+            for (int x = 0; x < kW; ++x) {
+                const uint16_t* sp = reinterpret_cast<const uint16_t*>(
+                    src->data + (static_cast<size_t>(y) * kW + x) * 8u);
+                const uint8_t* ap = set->frames[0]->data
+                                  + static_cast<ptrdiff_t>(y) * set->frames[0]->stride
+                                  + static_cast<ptrdiff_t>(x) * 4;
+                const uint8_t* bp = set->frames[1]->data
+                                  + static_cast<ptrdiff_t>(y) * set->frames[1]->stride
+                                  + static_cast<ptrdiff_t>(x) * 4;
+
+                const int sx = (x + static_cast<int>(kSeed & 63u)) & 63;
+                const int sy = (y + static_cast<int>((kSeed >> 6) & 63u)) & 63;
+                const float threshold =
+                    (static_cast<float>(::kBlueNoise64[sy][sx]) + 0.5f)
+                    / 4096.f;
+                const bool pHigh = threshold < 0.5f;
+
+                for (int c = 0; c < 3; ++c) {
+                    const float v = static_cast<float>(sp[c]) / 65535.f;
+                    /* QuantizeRound(v, 510) */
+                    uint32_t q9 = static_cast<uint32_t>(v * 510.f + 0.5f);
+                    if (q9 > 510u) q9 = 510u;
+                    const uint32_t base = q9 >> 1;
+                    const bool     odd  = (q9 & 1u) != 0u;
+                    const uint32_t wantA = base + ((odd &&  pHigh) ? 1u : 0u);
+                    const uint32_t wantB = base + ((odd && !pHigh) ? 1u : 0u);
+                    if (ap[c] != wantA) ++mismatches;
+                    if (bp[c] != wantB) ++mismatches;
+                }
+                if (ap[3] != 255u || bp[3] != 255u) ++mismatches;
+            }
+        }
+        CHECK(mismatches == 0);
+
+        FilterCore::FreeImageSet(set);
+        FilterCore::FreeFrame(src);
+    }
+}

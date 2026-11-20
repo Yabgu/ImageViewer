@@ -22,6 +22,7 @@ target_include_directories(iview_tests PRIVATE
 
 target_link_libraries(iview_tests PRIVATE
     doctest::doctest
+    Threads::Threads
 )
 
 include(CTest)
