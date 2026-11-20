@@ -23,6 +23,14 @@
 # display stack can still build and test every plugin, which is what makes
 # the plugin ABI testable in CI.
 
+# FilterCore runs its per-pixel loops on segmented std::thread workers.  That is
+# the C++ runtime, not OpenMP, so it needs no runtime DLL on MSVC; on MinGW it
+# links libwinpthread, which the packaging step already collects next to the
+# plugins.  Both the filter plugin and the FilterCore unit tests instantiate
+# those loops, so the import is declared one level up in src/CMakeLists.txt
+# where both can see it -- in this directory it would not be visible to
+# src/tests.
+
 find_package(PNG REQUIRED)
 
 # ── Per-plugin optional dependencies (QUIET — skip plugin if not found) ────────
@@ -426,7 +434,7 @@ if(DEFINED PIXMAN_TARGET AND PIXMAN_TARGET)
     target_include_directories(FilterPixman PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
     )
-    target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET})
+    target_link_libraries(FilterPixman PRIVATE ${PIXMAN_TARGET} Threads::Threads)
 
 endif()
 
